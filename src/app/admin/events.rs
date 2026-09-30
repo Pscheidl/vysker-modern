@@ -218,6 +218,7 @@ fn EventForm(event: Event, reload: RwSignal<u64>) -> impl IntoView {
                         <TextArea id="event-description" label="Popis akce" value=description maxlength="10000"/>
                     </section>
                     <section class="admin-panel admin-form-section"><h2>"Termín"</h2>
+                        {(id>0 && (!event.start_time_known || !event.end_time_known)).then(||view!{<p class="info-banner">"Původní web neuváděl všechny časy. Hodnoty 00:00 a 23:59:59 zastupují hranice dne a na veřejném webu jsou označené jako neuvedené. Změnou času doplníte přesný údaj."</p>})}
                         <p id="event-time-help">{move ||if explicit.get(){"Zadejte datum a čas včetně UTC posunu, například 2026-10-25T02:30:00+02:00. Veřejný web zobrazí odpovídající místní čas ve Vyskři. Před uložením zkontrolujte oba termíny."}else{"Čas odpovídá místnímu času ve Vyskři (Europe/Prague). Při změně letního času může být nutné zadat UTC posun."}}</p>
                         <label class="admin-checkbox"><input type="checkbox" prop:checked=move ||explicit.get() on:change=move |ev|explicit.set(event_target_checked(&ev))/><span>"Zadat čas s UTC posunem"</span></label>
                         <EventDateField id="event-start" label="Začátek" local=start precise=start_precise explicit/>

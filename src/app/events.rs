@@ -26,7 +26,19 @@ fn EventFailure(on_retry: Callback<()>) -> impl IntoView {
 fn EventTimes(event: Event) -> impl IntoView {
     let start = event.start_label();
     let end = event.end_label();
-    view! {<p class="event-times"><span>"Začátek: "<time datetime=event.starts_at>{start}</time></span><br/><span>"Konec: "<time datetime=event.ends_at>{end}</time></span></p>}
+    let start_datetime = if event.start_time_known {
+        event.starts_at
+    } else {
+        event.starts_at[..10].to_owned()
+    };
+    let end_datetime = if !event.end_date_known {
+        None
+    } else if event.end_time_known {
+        Some(event.ends_at)
+    } else {
+        Some(event.ends_at[..10].to_owned())
+    };
+    view! {<p class="event-times"><span>"Začátek: "<time datetime=start_datetime>{start}</time></span><br/><span>"Konec: "<time datetime=end_datetime>{end}</time></span></p>}
 }
 
 #[component]
@@ -128,7 +140,7 @@ pub fn EventDetail() -> impl IntoView {
                     <EventTimes event=times/>
                     <p class="field-note">"Místní čas pro Vyskeř (Europe/Prague)."</p>
                     <p><strong>"Místo: "</strong>{if item.location.is_empty() {"Místo bude upřesněno".into()} else {item.location}}</p>
-                    <div class="event-description-text">{item.description.split('\n').map(|line|view!{<p>{line.to_owned()}</p>}).collect_view()}</div>
+                    <div class="event-description-text markdown-content" inner_html=crate::markdown::render(&item.description)></div>
                 }.into_any()
             }
         })}</Suspense>
@@ -145,7 +157,8 @@ pub fn UpcomingEvents() -> impl IntoView {
             Ok(items)=>items.into_iter().map(|event|{
                 let href=site_url(&event.href());
                 let date=event.start_label();
-                view!{<A href><span><time datetime=event.starts_at>{date}</time></span>{event.cancelled.then(||view!{<strong class="status-badge warning">"Zrušeno"</strong>})}{event.title}</A>}
+                let datetime=if event.start_time_known {event.starts_at.clone()} else {event.starts_at.chars().take(10).collect()};
+                view!{<A href><span><time datetime=datetime>{date}</time></span>{event.cancelled.then(||view!{<strong class="status-badge warning">"Zrušeno"</strong>})}{event.title}</A>}
             }).collect_view().into_any(),
         })}</Suspense>
         <A href=site_url("/kalendar") attr:class="text-link">"Kalendář akcí"<Icon name="external"/></A>

@@ -51,8 +51,9 @@ Use Markdown for headings, emphasis, lists, links, quotes and code. For example:
 ```
 
 **Náhled textu** uses exactly the same renderer as public pages. Raw HTML is shown
-as text. Embedded images are disabled, so page content cannot load tracking
-pixels. Links allow HTTP, HTTPS, mailto, tel, local absolute paths and fragments.
+as text. Remote embedded images are disabled, so page content cannot load tracking
+pixels. Verified migrated images from `/api/v1/legacy-media/{id}` are allowed.
+Links allow HTTP, HTTPS, mailto, tel, local absolute paths and fragments.
 Other schemes and protocol-relative addresses are neutralized. A body-level H1
 is rendered as H2 because the page title already supplies H1.
 

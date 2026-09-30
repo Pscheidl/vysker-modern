@@ -25,6 +25,9 @@ struct EventRecord {
     location: String,
     starts_at: OffsetDateTime,
     ends_at: OffsetDateTime,
+    start_time_known: bool,
+    end_time_known: bool,
+    end_date_known: bool,
     published: bool,
     cancelled: bool,
     version: i64,
@@ -40,6 +43,9 @@ impl From<EventRecord> for Event {
             location: record.location,
             starts_at: timestamp(record.starts_at.to_timezone(PRAGUE)),
             ends_at: timestamp(record.ends_at.to_timezone(PRAGUE)),
+            start_time_known: record.start_time_known,
+            end_time_known: record.end_time_known,
+            end_date_known: record.end_date_known,
             published: record.published,
             cancelled: record.cancelled,
             version: record.version,
@@ -202,7 +208,7 @@ pub async fn update(
     let version = expected_version(input.expected_version)?;
     let now = OffsetDateTime::now_utc();
     let mut tx = crate::db::begin_write(&s.pool).await?;
-    let record: Option<EventRecord> = sqlx::query_as("UPDATE events SET title=$1,description=$2,location=$3,starts_at=$4,ends_at=$5,published=$6,cancelled=$7,updated_at=$8,version=version+1 WHERE id=$9 AND version=$10 RETURNING *")
+    let record: Option<EventRecord> = sqlx::query_as("UPDATE events SET title=$1,description=$2,location=$3,start_time_known=start_time_known OR starts_at IS DISTINCT FROM $4,end_time_known=end_time_known OR ends_at IS DISTINCT FROM $5,end_date_known=end_date_known OR ends_at IS DISTINCT FROM $5,starts_at=$4,ends_at=$5,published=$6,cancelled=$7,updated_at=$8,version=version+1 WHERE id=$9 AND version=$10 RETURNING *")
         .bind(value.title).bind(value.description).bind(value.location)
         .bind(value.starts_at).bind(value.ends_at).bind(input.published).bind(input.cancelled)
         .bind(timestamp(now)).bind(id).bind(version).fetch_optional(&mut *tx).await?;

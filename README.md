@@ -64,6 +64,7 @@ Documentation:
 - [Deployment requirements and hosting considerations](docs/deployment.md)
 - [Production operations, backups and recovery](docs/operations.md)
 - [Remaining implementation work](docs/roadmap.md)
+- [Original website migration and later host transfer](docs/migration.md)
 
 The SSR website supports subscriptions, attachment downloads and published
 content. The GitHub Pages preview uses **sample data** and sends no email.

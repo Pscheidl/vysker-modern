@@ -11,7 +11,7 @@ COPY tests ./tests
 COPY scripts ./scripts
 
 FROM source AS test
-RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-psycopg && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-psycopg python3-bs4 tzdata && rm -rf /var/lib/apt/lists/*
 COPY --from=postgres-tools /usr/lib/postgresql/18/bin/ /usr/local/bin/
 COPY --from=postgres-tools /usr/lib/x86_64-linux-gnu/libpq.so.5* /usr/lib/x86_64-linux-gnu/
 CMD ["./scripts/test.sh", "--smtp"]

@@ -43,6 +43,10 @@ async fn main() -> anyhow::Result<()> {
         ))
         .with_state(options)
         .merge(backend::router(state.clone()))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            backend::legacy::redirects,
+        ))
         .layer(axum::middleware::from_fn(backend::auth::admin_page_headers))
         .layer(axum::middleware::from_fn_with_state(
             state.config.clone(),

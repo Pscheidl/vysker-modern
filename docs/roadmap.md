@@ -5,8 +5,9 @@ claims that every item is a legal requirement or part of the original scope.
 The core notice board, document management, verified subscriptions, read-only
 audit and content page workflows are implemented.
 
-Priority update, 30 September 2026: migration of the existing website is the last
-planned implementation phase, after the agreed application and operational work.
+Priority update, 30 September 2026: the requested migration tooling is implemented
+and the existing public website has been imported into an isolated local preview.
+Content acceptance and the final domain switch remain deployment tasks.
 
 ## Prioritize before public launch
 
@@ -57,8 +58,8 @@ backup/restore tooling, Nix and Compose instances, and isolated integration test
 The initial schema replaces the SQLite migrations because the application has
 not been deployed. Database setup is documented in [database.md](database.md).
 
-The authorized application workflows listed above are implemented. Existing
-website migration remains the final phase. SMTP account, sender authentication
+The authorized application workflows listed above and migration tooling are
+implemented. SMTP account, sender authentication
 and provider-specific delivery handling remain part of the deployment handover,
 as described in [mail.md](mail.md).
 
@@ -70,31 +71,23 @@ select hosting, configure the domain and SMTP, assign operational ownership and
 complete accessibility and security acceptance. These are launch tasks even when
 no additional application feature is needed.
 
-## Final phase: migrate the existing website
+## Existing website migration
 
-Begin migration after the agreed features, production configuration, monitoring
-and backup/recovery work are ready. Pavel already has an existing website crawler
-in [Pscheidl/scrape](https://github.com/Pscheidl/scrape), available locally at
-`/home/pavel/dev/scrape`, with SSH remote `git@github.com:Pscheidl/scrape.git`.
-Use this implementation as the starting point.
+The tools build on the menu and content discovery used by Pavel's
+[scraper](https://github.com/Pscheidl/scrape), without running its notification
+worker. They capture full page bodies and files, validate checksums, import into
+PostgreSQL with immutable provenance, preserve available dates, rewrite links,
+create structured calendar entries and resolve historical URLs through HTTP 301.
+Repeated imports skip unchanged records and refuse source conflicts.
 
-Source review on 30 September 2026 identified a Rust crawler using SQLx and
-PostgreSQL. It discovers pages through the website menu, extracts attachment links
-from the Vismo content area and stores page titles, URLs, attachment link names
-and discovery timestamps in the `pages` and `assets` tables. It also sends email
-notifications about newly discovered attachment links.
+Before launch, reconcile the failed original link and empty source pages, review
+fragment links and archived document classifications, approve content and verify
+active notice publication continuity. The current capture found no active notices
+to transfer. Take a fresh snapshot and reconcile later changes before cutover.
+Private subscriber lists, old accounts and original audit records are not present
+in the public source and cannot be recovered by crawling it.
 
-The current code does not persist page bodies or download attachment files.
-Migration work will need to extend extraction and storage accordingly, check
-coverage of nested detail pages and archives, and capture original publication
-and withdrawal dates where available. The `first_visited` and `observation_time`
-fields record crawler discovery times, not original publication dates. These
-findings come from reading the source, without running the crawler.
-
-Adapt its output into an import of active notices, documents and pages. Preserve
-source URLs, attachments and available publication evidence, prevent duplicate
-imports and prepare redirects for existing public URLs. Verify the imported
-content and notice board workflow before switching the domain.
+See [migration.md](migration.md) for the operator workflow and acceptance steps.
 
 See [deployment.md](deployment.md), [operations.md](operations.md) and
 [hosting.md](hosting.md).

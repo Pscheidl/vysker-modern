@@ -17,7 +17,8 @@ database. The test script creates a temporary local PostgreSQL cluster by defaul
 then removes it on exit. Alternatively, supply `TEST_DATABASE_URL` for a test
 server account with `CREATEDB`. The script creates and removes a random database
 on that server, without using its existing application data. Python tests require
-psycopg and PostgreSQL 18 client tools, all included in Nix and the test image.
+psycopg, Beautiful Soup, timezone data and PostgreSQL 18 client tools, all included
+in Nix and the test image.
 
 ## Browser regressions
 
@@ -88,3 +89,19 @@ Run Rust tests before building the full web for browser tests. `cargo test --bin
 can replace the SSR binary with a build lacking cargo-leptos's compile-time asset
 settings. Rebuild with `cargo leptos build` before testing hydration. Do not run
 Cargo builds that share the same target directory concurrently with browser tests.
+
+## Legacy migration coverage
+
+`tests/test_legacy.py` uses synthetic offline bundles and disposable PostgreSQL
+databases. It checks source identities, extraction, attachment hashes, unsafe
+paths, original dates, missing event times, DST ambiguity, draft defaults,
+incomplete-capture rejection, idempotence, preserved editor changes, notice
+attachment privacy, page revisions and the absence of notification messages.
+`tests/legacy.rs` covers publication-aware historical redirects, local image
+rendering and access revocation, and the explanation for missing original times.
+
+For an actual captured website, `scripts/legacy_verify.py` checks every imported
+historical redirect and downloads every public imported attachment to compare
+its checksum and size with PostgreSQL. Run it only against the intended preview
+and its database. See [migration.md](migration.md) for commands and limits.
+Real municipal data stays under ignored `data/` and is not uploaded as a CI artifact.

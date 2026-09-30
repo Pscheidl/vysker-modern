@@ -16,8 +16,9 @@
           rust = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
         in {
           default = pkgs.mkShell {
-            packages = with pkgs; [ rust pkg-config openssl postgresql_18 git curl (python3.withPackages (ps: [ ps.psycopg ])) nodejs pnpm cargo-leptos trunk mailpit docker-compose ];
+            packages = with pkgs; [ rust pkg-config openssl postgresql_18 git curl (python3.withPackages (ps: [ ps.psycopg ps.beautifulsoup4 ])) nodejs pnpm cargo-leptos trunk mailpit docker-compose ];
             RUST_BACKTRACE = "1";
+            PYTHONTZPATH = "${pkgs.tzdata}/share/zoneinfo";
             shellHook = ''
               export OBEC_DATABAZE="''${OBEC_DATABAZE:-postgresql://vysker:vysker@127.0.0.1:''${OBEC_PG_PORT:-5432}/vysker}"
               if [ -f scripts/postgres.sh ]; then bash scripts/postgres.sh start; fi

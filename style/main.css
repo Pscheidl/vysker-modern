@@ -59,3 +59,4 @@
 .revision-list{list-style:none;padding:0}.revision-list li{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:12px 0;border-bottom:1px solid var(--line)}
 .admin-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.admin-panel+.admin-table-wrap{margin-top:24px}
 .desktop-nav{min-width:0;flex-wrap:wrap;gap:0 24px;align-content:center;height:auto;max-height:180px;overflow:auto}.desktop-nav a{min-height:38px;white-space:normal;overflow-wrap:anywhere;max-width:220px}.header-inner{height:auto;min-height:76px;padding-block:8px}.brand,.header-actions{flex-shrink:0}.mobile-nav a{overflow-wrap:anywhere}
+.markdown-content img { max-width: 100%; height: auto; }

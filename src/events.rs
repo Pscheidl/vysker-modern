@@ -17,6 +17,9 @@ pub struct Event {
     /// RFC3339 with the Europe/Prague offset at the event's instant.
     pub starts_at: String,
     pub ends_at: String,
+    pub start_time_known: bool,
+    pub end_time_known: bool,
+    pub end_date_known: bool,
     pub published: bool,
     pub cancelled: bool,
     pub version: i64,
@@ -29,12 +32,26 @@ impl Event {
     }
 
     pub fn start_label(&self) -> String {
-        date_label(&self.starts_at)
+        precise_label(&self.starts_at, self.start_time_known)
     }
 
     pub fn end_label(&self) -> String {
-        date_label(&self.ends_at)
+        if !self.end_date_known {
+            return "Původní web datum konce neuváděl".into();
+        }
+        precise_label(&self.ends_at, self.end_time_known)
     }
+}
+
+fn precise_label(value: &str, known: bool) -> String {
+    if known {
+        return date_label(value);
+    }
+    let label = date_label(value);
+    format!(
+        "{} (původní web čas neuváděl)",
+        label.split(" v ").next().unwrap_or(&label)
+    )
 }
 
 pub fn date_label(value: &str) -> String {

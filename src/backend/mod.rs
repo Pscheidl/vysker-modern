@@ -3,6 +3,7 @@ pub mod accounts;
 pub mod auth;
 pub mod documents;
 pub mod events;
+pub mod legacy;
 pub mod mail;
 pub mod management;
 pub mod navigation;
@@ -164,6 +165,7 @@ async fn health(State(s): State<Backend>) -> Result<Json<serde_json::Value>> {
 pub fn router(state: Backend) -> Router {
     let config = state.config.clone();
     Router::new()
+        .route("/api/v1/legacy-media/{id}", get(legacy::media))
         .route("/api/v1/health", get(health))
         .route(
             "/api/v1/admin/events",

@@ -11,11 +11,24 @@ fn safe_link(value: &str) -> bool {
                 .any(|p| lower.starts_with(p)))
 }
 pub fn render(source: &str) -> String {
+    let mut local_image = false;
     let events = Parser::new(source).filter_map(|event| match event {
         Event::Html(value) | Event::InlineHtml(value) => Some(Event::Text(value)),
         Event::Start(Tag::HtmlBlock) | Event::End(TagEnd::HtmlBlock) => None,
-        // Remote images would let page authors embed visitor tracking.
-        Event::Start(Tag::Image { .. }) | Event::End(TagEnd::Image) => None,
+        // Only verified migrated images served by this application may be embedded.
+        Event::Start(tag @ Tag::Image { .. }) => {
+            if let Tag::Image { ref dest_url, .. } = tag {
+                local_image = dest_url
+                    .strip_prefix("/api/v1/legacy-media/")
+                    .is_some_and(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()));
+            }
+            local_image.then_some(Event::Start(tag))
+        }
+        Event::End(TagEnd::Image) => {
+            let keep = local_image;
+            local_image = false;
+            keep.then_some(Event::End(TagEnd::Image))
+        }
         Event::Start(Tag::Link {
             link_type,
             dest_url,
