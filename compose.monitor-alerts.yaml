@@ -1,0 +1,9 @@
+# Optional overlay. Store the HTTPS webhook URL in the ignored secret file.
+services:
+  monitor:
+    environment:
+      OBEC_ALERT_WEBHOOK_FILE: /run/secrets/alert_webhook
+    secrets: [alert_webhook]
+secrets:
+  alert_webhook:
+    file: ./deploy/secrets/alert-webhook.txt

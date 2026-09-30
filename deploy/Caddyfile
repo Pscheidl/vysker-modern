@@ -1,0 +1,24 @@
+{
+	email {$TLS_EMAIL}
+	admin off
+	log {
+		format filter {
+			wrap json
+			fields {
+				request delete
+			}
+		}
+	}
+}
+{$DOMAIN} {
+	encode zstd gzip
+	@adminDenied {
+		path /admin /admin/* /api/v1/admin/*
+		not remote_ip {$ADMIN_NETWORKS}
+	}
+	respond @adminDenied "Administrace je dostupna pouze z povolene site." 403
+	reverse_proxy web:3000 {
+		header_up X-Real-IP {remote_host}
+	}
+	# Access logging is intentionally absent, so token URLs are not persisted.
+}

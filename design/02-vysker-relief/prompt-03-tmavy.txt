@@ -1,0 +1,9 @@
+Use case: lighting-weather.
+Asset type: DARK THEME counterpart of the existing transparent Vyskeř municipal website landscape.
+
+Image 1 is the EDIT TARGET: the corrected light ceramic Vyskeř relief with a completely treeless Hůra hill and the actual Chapel of Saint Anne with its onion bell turret.
+Image 2 is a MATERIAL AND LIGHTING REFERENCE ONLY: the previous charcoal/dark website landscape. Do not transfer its buildings, trees, geometry or layout.
+
+Change ONLY materials and lighting of image 1 to match the elegant dark graphite ceramic style of image 2. Warm-white porcelain becomes dark charcoal gray ceramic. Soft directional studio highlights should reveal every thin contour layer clearly against a near-black website. Add small subtle warm amber glows to existing chapel and village window openings. Give the existing lavender path a gently luminous violet-lavender finish. Keep the restrained matte ceramic texture, no excessive glow or glossy metal.
+
+CRITICAL INVARIANTS: exact landscape geometry, building shapes, all positions and scale, chapel onion turret and cross, same camera and framing, identical 3:1 aspect ratio and 2172x724 dimensions. Hůra hill must stay COMPLETELY BARE OF TREES, including summit, ridgeline, slopes and flanks. Trees remain ONLY inside the lower village exactly where they are in image 1. Do not add any trees, buildings, windows, objects, sky or labels. Preserve the terrain contour pattern and tiny Way of the Cross posts. True transparent alpha outside the complete island. No black rectangular background, no checkerboard, no border, no watermark.

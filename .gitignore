@@ -1,0 +1,17 @@
+/target
+/data
+/dist
+/.env
+/.direnv
+/result
+
+# Deployment secrets and local operational files
+/deploy/.env
+/deploy/secrets/
+/config/*.production.json
+/backups/
+
+__pycache__/
+/node_modules/
+/playwright-report/
+/test-results/

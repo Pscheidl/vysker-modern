@@ -1,0 +1,17 @@
+# Build vysker-web:test with Dockerfile.web first.
+FROM vysker-web:test AS application
+FROM node:24-bookworm-slim
+WORKDIR /app
+COPY --from=application /app/obecni-web /app/obec-admin ./
+COPY --from=application /app/target/site ./target/site
+COPY Cargo.toml package.json pnpm-lock.yaml playwright.config.ts ./
+COPY config/privacy.example.json ./config/privacy.example.json
+COPY scripts/e2e-server.py scripts/postgres.py ./scripts/
+COPY tests/browser ./tests/browser
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-psycopg ca-certificates \
+    && npm install --global pnpm@11.19.0 \
+    && pnpm install --frozen-lockfile \
+    && pnpm exec playwright install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/*
+ENV E2E_WEB_BINARY=/app/obecni-web E2E_ADMIN_BINARY=/app/obec-admin
+CMD ["pnpm", "test:e2e"]

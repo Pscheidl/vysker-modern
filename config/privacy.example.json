@@ -1,0 +1,22 @@
+{
+  "version": "development-example-1",
+  "approved_on": null,
+  "controller_name": "Obec Vyskeř",
+  "controller_address": "DOPLNIT úřední adresu obce",
+  "controller_email": "privacy@example.test",
+  "dpo_email": "dpo@example.test",
+  "processors": "DOPLNIT smluvního provozovatele, hosting, SMTP, dohled a zálohy.",
+  "international_transfers": "DOPLNIT skutečný režim předávání údajů a případné záruky.",
+  "public_records_legal_basis": "DOPLNIT schválené právní důvody zveřejňování jednotlivých typů dokumentů.",
+  "security_legal_basis": "DOPLNIT schválený právní důvod provozních logů a auditu.",
+  "consent_evidence_legal_basis": "DOPLNIT schválený důvod a dobu uchování dokladu o souhlasu po odhlášení.",
+  "retention": {
+    "pending_days": 2,
+    "withdrawn_days": 30,
+    "mail_days": 30,
+    "audit_days": 365,
+    "operational_log_days": 14,
+    "backup_days": 30,
+    "notice_internal_days": 365
+  }
+}

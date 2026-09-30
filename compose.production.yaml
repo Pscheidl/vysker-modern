@@ -1,0 +1,178 @@
+name: vysker-production
+services:
+  postgres:
+    image: postgres:18-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      APP_DB_PASSWORD_FILE: /run/secrets/database_password
+    secrets: [postgres_password, database_password]
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - ./deploy/init-postgres.sh:/docker-entrypoint-initdb.d/10-application.sh:ro
+    networks:
+      application:
+        ipv4_address: 172.30.64.5
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "3"
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1g
+    pids_limit: 128
+    stop_grace_period: 60s
+    environment:
+      OBEC_PRODUCTION: "true"
+      OBEC_ADRESA: 0.0.0.0:3000
+      OBEC_MIN_PASSWORD_LENGTH: ${OBEC_MIN_PASSWORD_LENGTH:-24}
+      OBEC_DATABAZE_FILE: /run/secrets/database_url
+      OBEC_VEREJNA_URL: https://${DOMAIN:?Set DOMAIN in deploy/.env}
+      OBEC_UKAZKOVA_DATA: "false"
+      OBEC_PRIVACY_CONFIG: /run/secrets/privacy
+      OBEC_SMTP_HOST: ${SMTP_HOST:?Set SMTP_HOST}
+      OBEC_SMTP_PORT: ${SMTP_PORT:-587}
+      OBEC_SMTP_TLS: starttls
+      OBEC_SMTP_UZIVATEL: ${SMTP_USERNAME:?Set SMTP_USERNAME}
+      OBEC_SMTP_HESLO_FILE: /run/secrets/smtp_password
+      OBEC_EMAIL_OD: ${EMAIL_FROM:?Set EMAIL_FROM}
+      OBEC_TRUSTED_PROXY: 172.30.64.2
+    secrets: [privacy, smtp_password, database_url]
+    volumes:
+      - backups:/app/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    tmpfs: [/tmp:size=32m,mode=1777]
+    networks:
+      application:
+        ipv4_address: 172.30.64.3
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "3"
+  backup:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    pids_limit: 32
+    command: ["python3", "scripts/database.py", "daemon", "--directory", "/app/backups", "--privacy-config", "/run/secrets/privacy"]
+    secrets: [privacy, database_url]
+    environment:
+      OBEC_DATABAZE_FILE: /run/secrets/database_url
+    volumes:
+      - backups:/app/backups
+    networks:
+      application:
+        ipv4_address: 172.30.64.6
+    healthcheck:
+      disable: true
+    depends_on:
+      web:
+        condition: service_healthy
+    logging:
+      driver: local
+      options:
+        max-size: 5m
+        max-file: "2"
+  monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+    pids_limit: 32
+    command: ["python3", "scripts/monitor.py", "daemon", "--database-disk", "/app/database-volume"]
+    environment:
+      OBEC_DATABAZE_FILE: /run/secrets/database_url
+    secrets: [database_url]
+    volumes:
+      - postgres-data:/app/database-volume:ro
+      - backups:/app/backups:ro
+      - monitor-state:/app/monitor
+    networks:
+      application:
+        ipv4_address: 172.30.64.4
+    depends_on:
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "scripts/monitor.py", "health"]
+      interval: 60s
+      timeout: 5s
+      start_period: 120s
+      retries: 2
+    logging:
+      driver: local
+      options:
+        max-size: 5m
+        max-file: "2"
+  proxy:
+    image: caddy:2.11.4
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN}
+      TLS_EMAIL: ${TLS_EMAIL:?Set TLS_EMAIL}
+      ADMIN_NETWORKS: ${ADMIN_NETWORKS:?Set ADMIN_NETWORKS to office or VPN CIDRs}
+    ports: ["80:80", "443:443", "443:443/udp"]
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      web:
+        condition: service_healthy
+    networks:
+      application:
+        ipv4_address: 172.30.64.2
+    logging:
+      driver: local
+      options:
+        max-size: 5m
+        max-file: "2"
+secrets:
+  database_url:
+    file: ./deploy/secrets/database-url.txt
+  database_password:
+    file: ./deploy/secrets/database-password.txt
+  postgres_password:
+    file: ./deploy/secrets/postgres-password.txt
+  privacy:
+    file: ./deploy/secrets/privacy.json
+  smtp_password:
+    file: ./deploy/secrets/smtp-password.txt
+volumes:
+  postgres-data:
+  backups:
+  monitor-state:
+  caddy-data:
+  caddy-config:
+networks:
+  application:
+    ipam:
+      config:
+        - subnet: 172.30.64.0/29

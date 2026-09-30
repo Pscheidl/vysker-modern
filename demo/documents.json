@@ -1,0 +1,147 @@
+{
+  "today": "Ukázka k 29. září 2026",
+  "notices": [
+    {
+      "id": 1,
+      "title": "Veřejná vyhláška: opatření obecné povahy, stanovení přechodné úpravy provozu na silnici III/2809",
+      "category": "Veřejná vyhláška",
+      "reference": "OUV-412/2026",
+      "issuer": "Městský úřad Turnov, odbor dopravní",
+      "description": "Městský úřad Turnov, odbor dopravní, stanovuje přechodnou úpravu provozu na silnici III/2809 mezi Vyskří a Troskovicemi z důvodu opravy propustku.",
+      "posted": "25. 9. 2026",
+      "posted_iso": "2026-09-25",
+      "ends": "10. 10. 2026",
+      "ends_iso": "2026-10-10",
+      "archived": false,
+      "retain_files": true,
+      "remaining": 11,
+      "attachments": [
+        {
+          "name": "Opatření obecné povahy",
+          "size": "248 kB",
+          "removed": false
+        },
+        {
+          "name": "Situační výkres",
+          "size": "1.1 MB",
+          "removed": false
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Záměr obce pronajmout pozemek p. č. 412/3 v katastrálním území Vyskeř",
+      "category": "Záměr obce",
+      "reference": "OUV-405/2026",
+      "issuer": "Obec Vyskeř",
+      "description": "Obec Vyskeř zveřejňuje záměr pronajmout pozemek p. č. 412/3 o výměře 1 240 m². Nabídky lze podávat po celou dobu vyvěšení.",
+      "posted": "23. 9. 2026",
+      "posted_iso": "2026-09-23",
+      "ends": "8. 10. 2026",
+      "ends_iso": "2026-10-08",
+      "archived": false,
+      "retain_files": true,
+      "remaining": 9,
+      "attachments": [
+        {
+          "name": "Záměr obce",
+          "size": "96 kB",
+          "removed": false
+        },
+        {
+          "name": "Snímek katastrální mapy",
+          "size": "1.4 MB",
+          "removed": false
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Oznámení o konání 5. zasedání Zastupitelstva obce Vyskeř",
+      "category": "Zastupitelstvo",
+      "reference": "OUV-398/2026",
+      "issuer": "Obec Vyskeř",
+      "description": "Zasedání se koná v zasedací místnosti obecního úřadu. Jednání je veřejné.",
+      "posted": "20. 9. 2026",
+      "posted_iso": "2026-09-20",
+      "ends": "2. 10. 2026",
+      "ends_iso": "2026-10-02",
+      "archived": false,
+      "retain_files": false,
+      "remaining": 3,
+      "attachments": [
+        {
+          "name": "Pozvánka a program",
+          "size": "112 kB",
+          "removed": false
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Rozpočtové opatření č. 4/2026",
+      "category": "Rozpočet",
+      "reference": "OUV-391/2026",
+      "issuer": "Obec Vyskeř",
+      "description": "Rozpočtové opatření schválené zastupitelstvem obce. Zveřejňuje se po dobu své platnosti.",
+      "posted": "13. 9. 2026",
+      "posted_iso": "2026-09-13",
+      "ends": "Bez omezení",
+      "ends_iso": null,
+      "archived": false,
+      "retain_files": true,
+      "remaining": null,
+      "attachments": [
+        {
+          "name": "Rozpočtové opatření",
+          "size": "184 kB",
+          "removed": false
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Oznámení o době a místě konání voleb do Poslanecké sněmovny",
+      "category": "Volby",
+      "reference": "OUV-377/2026",
+      "issuer": "Obec Vyskeř",
+      "description": "Volební místnost je v budově obecního úřadu.",
+      "posted": "9. 9. 2026",
+      "posted_iso": "2026-09-09",
+      "ends": "24. 9. 2026",
+      "ends_iso": "2026-09-24",
+      "archived": true,
+      "retain_files": true,
+      "remaining": -5,
+      "attachments": [
+        {
+          "name": "Oznámení",
+          "size": "88 kB",
+          "removed": false
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Dražební vyhláška: nedobrovolná dražba nemovité věci",
+      "category": "Dražba",
+      "reference": "OUV-361/2026",
+      "issuer": "Exekutorský úřad Semily",
+      "description": "Dražební vyhláška podle exekučního řádu.",
+      "posted": "28. 8. 2026",
+      "posted_iso": "2026-08-28",
+      "ends": "12. 9. 2026",
+      "ends_iso": "2026-09-12",
+      "archived": true,
+      "retain_files": false,
+      "remaining": -17,
+      "attachments": [
+        {
+          "name": "Dražební vyhláška",
+          "size": "200 kB",
+          "removed": true
+        }
+      ]
+    }
+  ]
+}

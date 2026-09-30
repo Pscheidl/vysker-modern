@@ -1,0 +1,17 @@
+trunk-version = "=0.21.14"
+
+[build]
+target = "demo/index.html"
+dist = "dist"
+public_url = "/"
+locked = true
+
+[serve]
+addresses = ["127.0.0.1"]
+port = 8080
+open = false
+
+[[hooks]]
+stage = "post_build"
+command = "python3"
+command_arguments = ["scripts/demo-routes.py"]
