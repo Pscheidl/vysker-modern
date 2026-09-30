@@ -232,6 +232,7 @@ async fn smtp_failures_retry_without_losing_security_mail_and_expired_mail_is_ca
 async fn mailpit_accepts_recovery_and_history_excludes_the_link() {
     let mut app = App::new().await;
     let mut cfg = (*app.state.config).clone();
+    cfg.smtp_host = std::env::var("TEST_SMTP_HOST").unwrap_or_else(|_| "127.0.0.1".into());
     cfg.smtp_port = std::env::var("TEST_SMTP_PORT")
         .unwrap_or_else(|_| "1025".into())
         .parse()
