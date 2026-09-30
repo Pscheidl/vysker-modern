@@ -1,6 +1,7 @@
 mod admin;
 mod catalog;
 mod components;
+mod events;
 mod pages;
 mod search;
 
@@ -95,6 +96,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("kontakt") view=Contact/>
                     <Route path=path!("odber") view=Subscribe/>
                     <Route path=path!("kalendar") view=Calendar/>
+                    <Route path=path!("kalendar/:id") view=events::EventDetail ssr=leptos_router::SsrMode::Async/>
                     <Route path=path!("pristupnost") view=Accessibility/>
                     <Route path=path!("ochrana-udaju") view=Privacy/>
                 </Routes>

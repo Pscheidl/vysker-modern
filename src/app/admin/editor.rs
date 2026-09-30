@@ -47,7 +47,9 @@ fn EditorForm(
     reload: RwSignal<u64>,
 ) -> impl IntoView {
     let ctx = expect_context::<AdminContext>();
+    let site = use_context::<crate::app::SiteResource>();
     let id = entry.id;
+    let version = entry.version;
     let status = entry.status().to_string();
     let draft = id == 0 || status == "draft";
     let archived = matches!(status.as_str(), "archived" | "withdrawn");
@@ -137,7 +139,7 @@ fn EditorForm(
                 json!({"title":name.get_untracked(),"description":description.get_untracked()})
             }
             Kind::Page => {
-                json!({"title":name.get_untracked(),"slug":slug.get_untracked(),"content":content.get_untracked(),"published":published.get_untracked()})
+                json!({"title":name.get_untracked(),"slug":slug.get_untracked(),"content":content.get_untracked(),"published":published.get_untracked(),"expected_version":version})
             }
         };
         async move {
@@ -150,6 +152,9 @@ fn EditorForm(
             match api::save(if id == 0 { "POST" } else { "PUT" }, &path, Some(payload)).await {
                 Ok(result) => {
                     ctx.dirty.set(false);
+                    if let Some(site) = site {
+                        site.refetch();
+                    }
                     ctx.changed("Změny jsou uložené.");
                     if id == 0 {
                         if let Some(id) = result["id"].as_i64() {
@@ -176,6 +181,7 @@ fn EditorForm(
             {
                 Ok(_) => {
                     ctx.dirty.set(false);
+                    if let Some(site)=site {site.refetch();}
                     ctx.changed(if operation == "publish" {
                         "Zveřejnění je uložené. Oznámení dostanou ověření odběratelé při vyvěšení."
                     } else {
@@ -221,9 +227,9 @@ fn EditorForm(
                             <Field id="page-slug" label="Adresa stránky" value=slug required=true maxlength="80" help="Například spolky. Malá písmena bez diakritiky, číslice a pomlčky."/>
                             <p class="admin-url">{move||format!("/stranky/{}",slug.get())}</p>
                             <TextArea id="page-content" label="Obsah stránky" value=content required=true maxlength="100000" rows="16"/>
-                            <p class="admin-caption">"Text zachovává odstavce. HTML se zobrazuje jako text."</p>
+                            <p class="admin-caption">"Formátování: ## nadpis, **tučně**, - položka, [odkaz](/kontakt). HTML a obrázky jsou vypnuté."</p>
                             <button class="button secondary" type="button" on:click=move |_|preview.update(|v|*v=!*v)>{move||if preview.get(){"Zavřít náhled"}else{"Náhled textu"}}</button>
-                            <Show when=move||preview.get()><section class="admin-page-preview" aria-label="Náhled textu stránky"><h2>{move||name.get()}</h2><div>{move||content.get()}</div></section></Show>
+                            <Show when=move||preview.get()><section class="admin-page-preview" aria-label="Náhled textu stránky"><h2>{move||name.get()}</h2><div class="markdown-content" inner_html=move||crate::markdown::render(&content.get())></div></section></Show>
                         }.into_any()}else{view!{
                             <TextArea id="entry-description" label="Popis" value=description/>
                             {(kind==Kind::Notice).then(move ||view!{
@@ -255,6 +261,7 @@ fn EditorForm(
                     {(kind==Kind::Page).then(move||view!{<section class="admin-panel admin-form-section"><h2>"Dostupnost stránky"</h2><label class="admin-check"><input type="checkbox" prop:checked=move||published.get() on:change=move|ev|{published.set(event_target_checked(&ev));ctx.dirty.set(true);}/><span><strong>"Zveřejnit na webu"</strong><small>"Změna se projeví po uložení. Bez zaškrtnutí zůstává stránka konceptem."</small></span></label></section>})}
                 </fieldset>
             </form>
+            {(kind==Kind::Page&&id>0).then(move||view!{<PageHistory id name content busy/>})}
             {(kind==Kind::Notice&&entry.published_at.is_some()).then(move||view!{<IncidentForm id/>})}
             {(kind!=Kind::Page).then(move||view!{<Files kind id files=entry.attachments editable=draft busy working=file_busy reload/>})}
         </div>
@@ -375,4 +382,35 @@ fn IncidentForm(id: i64) -> impl IntoView {
         <label class="admin-field" for="incident-reason"><span>"Popis a přijaté opatření bez osobních údajů"</span><textarea id="incident-reason" maxlength="2000" required on:input=move|ev|reason.set(event_target_value(&ev))></textarea></label>
         <ErrorMessage error/><button class="button secondary" type="submit" disabled=move||action.pending().get()>"Zapsat do dokladu"</button><Show when=move||success.get()><p role="status">"Výpadek je zaznamenán v dokladu vyvěšení."</p></Show>
     </form></details>}
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct PageRevision {
+    version: i64,
+    title: String,
+    content: String,
+    saved_at: String,
+}
+#[component]
+fn PageHistory(
+    id: i64,
+    name: RwSignal<String>,
+    content: RwSignal<String>,
+    busy: Signal<bool>,
+) -> impl IntoView {
+    let ctx = expect_context::<AdminContext>();
+    let offset = RwSignal::new(0usize);
+    let revisions = LocalResource::new(move || async move {
+        api::get::<Vec<PageRevision>>(&format!(
+            "/api/v1/admin/pages/{id}/revisions?limit=20&offset={}",
+            offset.get()
+        ))
+        .await
+    });
+    view! {<section class="admin-panel admin-form-section"><h2>"Historie stránky"</h2><p class="admin-caption">"Starší verzi načtete do editoru a před uložením zkontrolujete. Adresa a zveřejnění zůstávají podle aktuální stránky."</p>
+        <Suspense fallback=Pending>{move||revisions.get().map(|r|match r{
+            Err(error)=>view!{<FailureView error/>}.into_any(),
+            Ok(items)=>{let more=items.len()==20;view!{<ul class="revision-list">{items.into_iter().map(|item|view!{<li><span>{format!("Verze {} · {} · {}",item.version,api::date(&item.saved_at),item.title)}</span><button class="button secondary" type="button" disabled=move||busy.get() on:click=move |_|{if !busy.get_untracked() && ctx.leave(){name.set(item.title.clone());content.set(item.content.clone());ctx.dirty.set(true);}}>"Načíst do editoru"</button></li>}).collect_view()}</ul><div class="admin-actions"><button class="button secondary" type="button" disabled=move||offset.get()==0 on:click=move |_|offset.update(|v|*v=v.saturating_sub(20))>"Novější verze"</button><button class="button secondary" type="button" disabled=!more on:click=move |_|offset.update(|v|*v+=20)>"Starší verze"</button></div>}.into_any()}
+        })}</Suspense>
+    </section>}
 }

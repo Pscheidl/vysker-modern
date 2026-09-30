@@ -43,7 +43,7 @@ pub fn ContentPage() -> impl IntoView {
         load_page,
     );
     view! {<div class="page-width interior prose"><Suspense fallback=Loading>{move ||page.get().map(|result|match result {
-        Ok(Some(page))=>view!{<Title text=format!("{} · Vyskeř",page.title)/><header class="page-heading"><h1>{page.title}</h1></header><div style="white-space:pre-wrap">{page.content}</div>}.into_any(),
+        Ok(Some(page))=>view!{<Title text=format!("{} · Vyskeř",page.title)/><header class="page-heading"><h1>{page.title}</h1></header><div class="markdown-content" inner_html=crate::markdown::render(&page.content)></div>}.into_any(),
         Ok(None)=>view!{<NotFound/>}.into_any(),
         Err(_)=>view!{<p role="alert">"Stránku se nepodařilo načíst."</p>}.into_any()
     })}</Suspense></div>}

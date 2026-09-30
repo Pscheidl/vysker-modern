@@ -5,7 +5,15 @@ mod api;
 #[cfg(not(feature = "demo"))]
 mod editor;
 #[cfg(not(feature = "demo"))]
+mod events;
+#[cfg(not(feature = "demo"))]
 mod lists;
+#[cfg(not(feature = "demo"))]
+mod navigation;
+#[cfg(not(feature = "demo"))]
+mod recovery;
+#[cfg(not(feature = "demo"))]
+mod subscribers;
 #[cfg(not(feature = "demo"))]
 mod ui;
 
@@ -102,15 +110,24 @@ mod workspace {
             });
             on_cleanup(move || listener.remove());
         }
+        let location = use_location();
         view! {<Title text="Správa webu · Vyskeř"/>
             {move || match context.access.get() {
                 Access::Checking=>view!{<div class="admin-login"><Pending/></div>}.into_any(),
-                Access::SignedOut=>view!{<Login/>}.into_any(),
+                Access::SignedOut=>view!{<SignedOut/>}.into_any(),
                 Access::Failed(error)=>view!{<div class="admin-login"><div class="admin-login-card"><FailureView error/><a href="/admin" class="button secondary">"Zkusit znovu"</a></div></div>}.into_any(),
+                Access::Ready(_) if location.pathname.get()=="/admin/obnova"=>view!{<super::recovery::Recovery/>}.into_any(),
                 Access::Ready(session)=>view!{<AdminShell email=session.email/>}.into_any(),
             }}
             <noscript><p class="admin-noscript">"Pro správu webu zapněte JavaScript."</p></noscript>
         }
+    }
+    #[component]
+    fn SignedOut() -> impl IntoView {
+        let location = use_location();
+        view! {{move || if location.pathname.get()=="/admin/obnova" {
+            view!{<super::recovery::Recovery/>}.into_any()
+        } else { view!{<Login/>}.into_any() }}}
     }
     #[component]
     fn Login() -> impl IntoView {
@@ -149,6 +166,7 @@ mod workspace {
                             <button class="button primary" type="submit">{move || if login.pending().get(){"Přihlašuji…"}else{"Přihlásit se"}}<Icon/></button>
                         </fieldset>
                     </form>
+                    <a href="/admin/obnova" class="back-link">"Zapomenuté heslo"</a>
                     <p class="admin-caption">"Přístup pro pověřené správce obce. Potřebujete účet? Obraťte se na správce webu."</p><ThemeSwitch/>
                 </div>
             </div>
@@ -185,6 +203,10 @@ mod workspace {
                         <AdminLink href="/admin/uredni-deska" label="Úřední deska" icon="board"/>
                         <AdminLink href="/admin/dokumenty" label="Dokumenty" icon="paper"/>
                         <AdminLink href="/admin/stranky" label="Stránky" icon="pages"/>
+                        <AdminLink href="/admin/kalendar" label="Kalendář" icon="calendar"/>
+                        <AdminLink href="/admin/odberatele" label="Odběratelé" icon="mail"/>
+                        <AdminLink href="/admin/navigace" label="Navigace" icon="pages"/>
+                        <AdminLink href="/admin/kategorie" label="Kategorie" icon="grid"/>
                         <AdminLink href="/admin/posta" label="Rozesílání" icon="mail"/>
                         <AdminLink href="/admin/ucty" label="Účty a hesla" icon="grid"/>
                         <AdminLink href="/admin/audit" label="Audit" icon="history"/>
@@ -203,11 +225,20 @@ mod workspace {
                             "uredni-deska"=>view!{<Entries kind=Kind::Notice/>}.into_any(),
                             "dokumenty"=>view!{<Entries kind=Kind::Document/>}.into_any(),
                             "stranky"=>view!{<Entries kind=Kind::Page/>}.into_any(),
+                            "kalendar"=>view!{<super::events::Events/>}.into_any(),
+                            "odberatele"=>view!{<super::subscribers::Subscribers/>}.into_any(),
+                            "navigace"=>view!{<super::navigation::NavigationSettings/>}.into_any(),
+                            "kategorie"=>view!{<super::navigation::NavigationSettings categories=true/>}.into_any(),
                             "posta"=>view!{<MailHistory/>}.into_any(),
                             "ucty"=>view!{<Accounts/>}.into_any(),
                             "audit"=>view!{<AuditLog/>}.into_any(),
                             _=> {
                                 let (section,id)=tail.split_once('/').unwrap_or(("",""));
+                                if section=="kalendar" {
+                                    return if id=="nove"{view!{<super::events::EventEditor id=0/>}.into_any()}
+                                    else if let Ok(id)=id.parse::<i64>(){view!{<super::events::EventEditor id/>}.into_any()}
+                                    else{view!{<h1>"Akce neexistuje"</h1>}.into_any()};
+                                }
                                 let kind=match section {"uredni-deska"=>Some(Kind::Notice),"dokumenty"=>Some(Kind::Document),"stranky"=>Some(Kind::Page),_=>None};
                                 match (kind, id) {
                                     (Some(kind),"nove")=>view!{<Editor kind id=0/>}.into_any(),

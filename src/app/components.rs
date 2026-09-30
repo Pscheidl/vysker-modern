@@ -90,12 +90,16 @@ pub fn Header() -> impl IntoView {
 
 #[component]
 fn Navigation() -> impl IntoView {
-    view! {
-        <A href=site_url("/") exact=true>"Přehled"</A>
-        <A href=site_url("/uredni-deska")>"Úřední deska"</A>
-        <A href=site_url("/dokumenty")>"Dokumenty"</A>
-        <A href=site_url("/obec")>"Obec a úřad"</A>
-    }
+    let info = expect_context::<super::SiteResource>();
+    let links = move || {
+        info.get()
+            .and_then(Result::ok)
+            .map(|i| i.navigation)
+            .unwrap_or_else(crate::catalog::default_navigation)
+    };
+    view! {<Suspense fallback=move||view!{<A href=site_url("/uredni-deska")>"Úřední deska"</A>}>
+        {move||links().into_iter().map(|item|view!{<A href=site_url(&item.path) exact=item.path=="/">{item.label}</A>}).collect_view()}
+    </Suspense>}
 }
 
 #[component]
@@ -270,9 +274,12 @@ pub fn Loading() -> impl IntoView {
 }
 
 #[component]
-pub fn LoadError(message: String) -> impl IntoView {
+pub fn LoadError(
+    message: String,
+    #[prop(optional)] on_retry: Option<Callback<()>>,
+) -> impl IntoView {
     let board = expect_context::<super::BoardResource>();
-    view! {<div class="empty-state" role="alert"><Icon name="info"/><h2>"Dokumenty nejsou právě dostupné"</h2><p>{message}</p><button class="button secondary" type="button" on:click=move |_| board.refetch()>"Zkusit znovu"</button></div>}
+    view! {<div class="empty-state" role="alert"><Icon name="info"/><h2>"Dokumenty nejsou právě dostupné"</h2><p>{message}</p><button class="button secondary" type="button" on:click=move |_|if let Some(retry)=on_retry{retry.run(())}else{board.refetch()}>"Zkusit znovu"</button></div>}
 }
 
 #[component]

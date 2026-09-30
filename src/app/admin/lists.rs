@@ -129,6 +129,12 @@ fn operation(value: &str) -> String {
         "availability_incident" => "Výpadek dostupnosti",
         "password_changed" => "Změna hesla",
         "password_reset_by_operator" => "Obnova hesla provozovatelem",
+        "password_recovery_requested" => "Žádost o obnovu hesla",
+        "password_recovered" => "Obnova hesla e-mailem",
+        "subscriber_exported" => "Export údajů odběratele",
+        "subscriber_withdrawn" => "Odvolání odběru správcem",
+        "subscriber_erased" => "Výmaz odběratele",
+        "deleted" => "Odstranění",
         "activated" => "Aktivace účtu",
         "deactivated" => "Deaktivace účtu",
         "sessions_revoked" => "Odhlášení všech zařízení",
@@ -142,6 +148,9 @@ fn object(value: &str) -> &str {
         "notice" | "vyveseni" => "Úřední deska",
         "document" | "dokument" => "Dokument",
         "page" | "stranka" => "Stránka",
+        "event" => "Akce",
+        "navigation" => "Navigace",
+        "category" => "Kategorie",
         "attachment" | "soubor" => "Příloha",
         "administrator" => "Správce",
         "subscriber" | "odberatel" => "Odběratel",
@@ -160,6 +169,6 @@ pub fn MailHistory() -> impl IntoView {
     view! {<Title text="Rozesílání · Správa Vyskře"/><Heading title="Rozesílané zprávy" description="Komu byla zpráva určena a zda ji přijal SMTP server. Záznamy zůstávají po schválenou dobu uchování."/><p>"Přijetí SMTP serverem nepotvrzuje doručení do schránky ani přečtení."</p><button class="button secondary" type="button" on:click=move |_|data.refetch()>"Obnovit"</button>
     <section class="admin-panel admin-list-panel"><Suspense fallback=Pending>{move||data.get().map(|result|match result {
         Err(error)=>view!{<FailureView error/>}.into_any(),
-        Ok(rows)=>{let count=rows.len();view!{<div class="admin-table-wrap"><table class="admin-table"><caption class="sr-only">"Historie rozesílání"</caption><thead><tr><th>"Příjemce"</th><th>"Zpráva"</th><th>"Stav a čas v UTC"</th><th>"Přihlášení k odběru"</th></tr></thead><tbody>{rows.into_iter().take(20).map(|row|view!{<tr><td>{row.email}</td><td><strong>{row.subject}</strong><small>{if row.purpose=="verification"{"Ověření adresy"}else{"Nový dokument"}}" · #"{row.id}</small></td><td>{match row.status.as_str(){"sent"=>"Přijato SMTP serverem","cancelled"=>"Zrušeno","retrying"=>"Čeká na další pokus",_=>"Ve frontě"}}<small>{api::unix_date(row.sent_at.unwrap_or(row.created_at))}</small><small>{format!("Pokusů: {}",row.attempts)}</small></td><td><a class="text-link" href=format!("/api/v1/admin/subscribers/{}/consents",row.subscriber_id) download="doklad-odberu.json">"Stáhnout doklad"</a></td></tr>}).collect_view()}</tbody></table></div><Pager offset count/>}.into_any()}
+        Ok(rows)=>{let count=rows.len();view!{<div class="admin-table-wrap"><table class="admin-table"><caption class="sr-only">"Historie rozesílání"</caption><thead><tr><th>"Příjemce"</th><th>"Zpráva"</th><th>"Stav a čas v UTC"</th><th>"Přihlášení k odběru"</th></tr></thead><tbody>{rows.into_iter().take(20).map(|row|view!{<tr><td>{row.email}</td><td><strong>{row.subject}</strong><small>{match row.purpose.as_str(){"verification"=>"Ověření adresy","recovery"=>"Obnova hesla",_=>"Nový dokument"}}" · #"{row.id}</small></td><td>{match row.status.as_str(){"sent"=>"Přijato SMTP serverem","cancelled"=>"Zrušeno","expired"=>"Odkaz vypršel před odesláním","retrying"=>"Čeká na další pokus",_=>"Ve frontě"}}<small>{api::unix_date(row.sent_at.unwrap_or(row.created_at))}</small><small>{format!("Pokusů: {}",row.attempts)}</small></td><td>{row.subscriber_id.map(|id|view!{<a class="text-link" href=format!("/api/v1/admin/subscribers/{id}/export") download="doklad-odberu.json">"Stáhnout doklad"</a>})}</td></tr>}).collect_view()}</tbody></table></div><Pager offset count/>}.into_any()}
     })}</Suspense></section>}
 }

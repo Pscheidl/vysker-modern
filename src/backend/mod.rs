@@ -2,13 +2,17 @@
 pub mod accounts;
 pub mod auth;
 pub mod documents;
+pub mod events;
 pub mod mail;
 pub mod management;
+pub mod navigation;
 pub mod notices;
 pub mod pages;
 pub mod privacy;
+pub mod recovery;
 pub mod search;
 pub mod server;
+pub mod subscriber_admin;
 pub mod subscriptions;
 
 use crate::config::Config;
@@ -161,6 +165,29 @@ pub fn router(state: Backend) -> Router {
     let config = state.config.clone();
     Router::new()
         .route("/api/v1/health", get(health))
+        .route(
+            "/api/v1/admin/events",
+            get(events::list).post(events::create),
+        )
+        .route(
+            "/api/v1/admin/events/{id}",
+            get(events::get).put(events::update).delete(events::delete),
+        )
+        .route("/api/v1/events", get(events::public_list))
+        .route("/api/v1/events/{id}", get(events::detail))
+        .route("/api/v1/admin/subscribers", get(subscriber_admin::list))
+        .route(
+            "/api/v1/admin/subscribers/{id}/export",
+            get(subscriber_admin::export),
+        )
+        .route(
+            "/api/v1/admin/subscribers/{id}/withdraw",
+            post(subscriber_admin::withdraw),
+        )
+        .route(
+            "/api/v1/admin/subscribers/{id}",
+            axum::routing::delete(subscriber_admin::erase),
+        )
         .route("/api/v1/search", get(search::endpoint))
         .route("/api/v1/ready", get(ready))
         .route("/api/v1/admin/mail", get(management::mail_history))
@@ -186,6 +213,9 @@ pub fn router(state: Backend) -> Router {
             axum::routing::put(accounts::change_password),
         )
         .route("/api/v1/admin/login", post(auth::login))
+        .route("/api/v1/admin/password-policy", get(recovery::policy))
+        .route("/api/v1/admin/password-recovery", post(recovery::request))
+        .route("/api/v1/admin/password-reset", post(recovery::reset))
         .route(
             "/api/v1/admin/session",
             get(auth::session).delete(auth::logout),
@@ -220,6 +250,22 @@ pub fn router(state: Backend) -> Router {
         .route("/api/v1/notices", get(notices::public_list))
         .route("/api/v1/notices/{id}", get(notices::detail))
         .route("/api/v1/categories", get(notices::categories))
+        .route(
+            "/api/v1/admin/navigation",
+            get(navigation::list).post(navigation::create),
+        )
+        .route(
+            "/api/v1/admin/navigation/{id}",
+            axum::routing::put(navigation::update).delete(navigation::remove),
+        )
+        .route(
+            "/api/v1/admin/categories",
+            get(navigation::categories).post(navigation::create_category),
+        )
+        .route(
+            "/api/v1/admin/categories/{id}",
+            axum::routing::put(navigation::update_category).delete(navigation::remove_category),
+        )
         .route(
             "/api/v1/admin/documents",
             get(management::documents).post(documents::create),
@@ -261,6 +307,7 @@ pub fn router(state: Backend) -> Router {
                 .layer(DefaultBodyLimit::max(1024 * 1024)),
         )
         .route("/api/v1/pages/{slug}", get(pages::detail))
+        .route("/api/v1/admin/pages/{id}/revisions", get(pages::revisions))
         .route("/api/v1/subscriptions", post(subscriptions::subscribe))
         .route("/api/v1/subscriptions/verify", post(subscriptions::confirm))
         .route(

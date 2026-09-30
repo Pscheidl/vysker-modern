@@ -41,7 +41,7 @@ pub fn Home() -> impl IntoView {
                 })}</Suspense>
             </div>
         </section>
-        <div class="page-width"><Newsletter/><PreviewOnly><section class="events-strip" aria-label="Nejbližší události"><h2>"Dění v obci"</h2><A href=super::site_url("/kalendar#setkani")><span>"10. října"</span>"Podzimní setkání sousedů"</A><A href=super::site_url("/kalendar#svoz")><span>"12. října"</span>"Svoz bioodpadu"</A><A href=super::site_url("/kalendar") attr:class="text-link">"Kalendář akcí"<Icon name="external"/></A></section></PreviewOnly></div>
+        <div class="page-width"><Newsletter/><HomeEvents/></div>
     }
 }
 
@@ -159,7 +159,7 @@ pub fn NoticeDetail() -> impl IntoView {
             <Suspense fallback=Loading>{move ||document.get().map(|result|match result {
                 Ok(Some(notice))=>view!{<DetailContent notice/>}.into_any(),
                 Ok(None)=>view!{<NotFound/>}.into_any(),
-                Err(e)=>view!{<LoadError message=e.to_string()/>}.into_any(),
+                Err(e)=>view!{<LoadError message=e.to_string() on_retry=Callback::new(move|()|document.refetch())/>}.into_any(),
             })}</Suspense>
         </div>
     }
@@ -218,6 +218,7 @@ pub fn Subscribe() -> impl IntoView {
     view! {<Title text="Odběr novinek · Vyskeř"/><div class="page-width interior"><PageHeading title="Důležité zprávy vám neutečou." description="Nové dokumenty a oznámení z úřední desky přímo do vaší schránky." eyebrow="ODBĚR NOVINEK"/><Newsletter/><div class="steps-grid"><article><span>"01"</span><h2>"Zadáte e-mail"</h2><p>"Stačí adresa, na kterou chcete dostávat nové dokumenty."</p></article><article><span>"02"</span><h2>"Potvrdíte odběr"</h2><p>"Ve zprávě otevřete ověřovací odkaz a potvrďte přihlášení."</p></article><article><span>"03"</span><h2>"Budete v obraze"</h2><p>{if cfg!(feature="demo"){"Toto je ukázkový náhled, rozesílání zde není aktivní."}else{"Z každé zprávy se snadno odhlásíte."}}</p></article></div><p class="field-note">"Ochrana soukromí: "<A href=super::site_url("/ochrana-udaju")>"jak nakládáme s údaji"</A>"."</p></div>}
 }
 
+#[cfg(feature = "demo")]
 #[component]
 fn CalendarPreview() -> impl IntoView {
     view! {<Title text="Kalendář akcí · Vyskeř"/><div class="page-width interior"><PageHeading title="Dění na Vyskři." description="Setkání, události a praktické termíny na jednom místě." eyebrow="KALENDÁŘ AKCÍ"/>
@@ -287,7 +288,10 @@ pub fn Contact() -> impl IntoView {
 
 #[component]
 pub fn Calendar() -> impl IntoView {
-    view! {<ManagedPage slug="kalendar"><CalendarPreview/></ManagedPage>}
+    #[cfg(feature = "demo")]
+    return view! {<ManagedPage slug="kalendar"><CalendarPreview/></ManagedPage>};
+    #[cfg(not(feature = "demo"))]
+    view! {<super::events::Calendar/>}
 }
 
 #[component]
@@ -310,7 +314,7 @@ fn ManagedPage(slug: &'static str, children: ChildrenFn) -> impl IntoView {
     let page = Resource::new(move || slug, |slug| crate::catalog::load_page(slug.into()));
     view! {<Suspense fallback=Loading>{move||{
         match (info.get(),page.get()) {
-            (_,Some(Ok(Some(page))))=>view!{<Title text=format!("{} · Vyskeř",page.title)/><div class="page-width interior prose"><h1>{page.title}</h1><div class="managed-content">{page.content}</div></div>}.into_any(),
+            (_,Some(Ok(Some(page))))=>view!{<Title text=format!("{} · Vyskeř",page.title)/><div class="page-width interior prose"><h1>{page.title}</h1><div class="markdown-content" inner_html=crate::markdown::render(&page.content)></div></div>}.into_any(),
             (Some(Ok(i)),Some(Ok(None))) if !i.production=>children().into_any(),
             (Some(_),Some(_))=>view!{<div class="page-width interior prose"><h1>"Informace nejsou dostupné"</h1><p>"Stránku se nepodařilo načíst. Zkuste to později."</p></div>}.into_any(),
             _=>view!{<Loading/>}.into_any()
@@ -326,4 +330,12 @@ pub fn PagesIndex() -> impl IntoView {
 #[component]
 pub fn SearchResults() -> impl IntoView {
     view! {<super::search::SearchListing/>}
+}
+
+#[component]
+fn HomeEvents() -> impl IntoView {
+    #[cfg(feature = "demo")]
+    return view! {<PreviewOnly><section class="events-strip" aria-label="Nejbližší události"><h2>"Dění v obci"</h2><A href=super::site_url("/kalendar#setkani")><span>"10. října"</span>"Podzimní setkání sousedů"</A><A href=super::site_url("/kalendar#svoz")><span>"12. října"</span>"Svoz bioodpadu"</A><A href=super::site_url("/kalendar") attr:class="text-link">"Kalendář akcí"<Icon name="external"/></A></section></PreviewOnly>};
+    #[cfg(not(feature = "demo"))]
+    view! {<super::events::UpcomingEvents/>}
 }

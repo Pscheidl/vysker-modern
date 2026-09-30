@@ -95,6 +95,6 @@ async fn production_requires_real_information_pages_and_preserves_their_routes()
         router: backend::router(prod),
         ..app
     };
-    let response=prod_app.call("PUT",&format!("/api/v1/admin/pages/{first}"),Some(json!({"slug":"kontakt","title":"Kontakt","content":"Aktualizace","published":false})),true).await;
+    let response=prod_app.call("PUT",&format!("/api/v1/admin/pages/{first}"),Some(json!({"slug":"kontakt","title":"Kontakt","content":"Aktualizace","published":false,"expected_version":1})),true).await;
     assert_eq!(response.status(), StatusCode::CONFLICT);
 }

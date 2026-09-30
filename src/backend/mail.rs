@@ -87,6 +87,9 @@ pub async fn deliver_one(
     smtp: &AsyncSmtpTransport<Tokio1Executor>,
     now: OffsetDateTime,
 ) -> anyhow::Result<bool> {
+    if super::recovery::deliver_one(s, smtp, now).await? {
+        return Ok(true);
+    }
     if s.config.privacy.is_none() {
         return Ok(false);
     }

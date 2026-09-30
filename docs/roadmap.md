@@ -1,6 +1,6 @@
 # Remaining implementation work
 
-Repository review dated 29 September 2026. These are proposed next steps, not
+Repository review updated 30 September 2026. These are proposed next steps, not
 claims that every item is a legal requirement or part of the original scope.
 The core notice board, document management, verified subscriptions, read-only
 audit and content page workflows are implemented.
@@ -23,16 +23,20 @@ If broader access is required, implement an appropriate second factor or managed
 identity integration. Role separation and editorial approval are useful if several
 people will publish content, but the required workflow must be agreed first.
 
-## Useful editorial improvements
+## Implemented editorial workflows
 
-- Structured calendar events with a real homepage feed. At present, the calendar
-  is an editable text page and example homepage events are hidden in production.
-- Accessible rich text or restricted Markdown, content revisions and conflict
-  detection for simultaneous edits. Current content pages use escaped plain text.
-- Configurable navigation and category management. Published pages already appear
-  in the footer-linked page index.
-- A subscriber administration workflow for support, export and erasure requests,
-  with access controls and audit. Evidence export and unsubscribe links already exist.
+- Password recovery with expiring single-use links, durable security email and
+  session revocation. Password minimum is configurable, default 24 characters.
+- Restricted Markdown page editing, preview, immutable revision history and
+  optimistic conflict detection. Older content can be loaded for review and saved.
+- Navigation and category management, including ordering, safe local destinations
+  and protection of categories referenced by notices.
+- Structured calendar events, Prague time, cancellation, public details, archive
+  and live homepage feed.
+- Subscriber search, filters, evidence export, withdrawal and erasure with
+  reauthentication, audit and active SMTP lease protection.
+
+See [editorial.md](editorial.md) for the complete workflows.
 
 ## Mail and file handling
 
@@ -53,10 +57,10 @@ backup/restore tooling, Nix and Compose instances, and isolated integration test
 The initial schema replaces the SQLite migrations because the application has
 not been deployed. Database setup is documented in [database.md](database.md).
 
-The next authorized application phases are password recovery, the page editor
-with revisions and edit-conflict detection, navigation and category management,
-structured calendar events, and subscriber administration. Existing website
-migration remains the final phase.
+The authorized application workflows listed above are implemented. Existing
+website migration remains the final phase. SMTP account, sender authentication
+and provider-specific delivery handling remain part of the deployment handover,
+as described in [mail.md](mail.md).
 
 ## Configuration and approvals outside application code
 

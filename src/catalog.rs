@@ -128,9 +128,15 @@ pub struct PageLink {
     pub title: String,
 }
 #[derive(Clone, Serialize, Deserialize)]
+pub struct NavigationLink {
+    pub label: String,
+    pub path: String,
+}
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SiteInfo {
     pub production: bool,
     pub pages: Vec<PageLink>,
+    pub navigation: Vec<NavigationLink>,
 }
 #[cfg(not(feature = "demo"))]
 #[server]
@@ -143,7 +149,12 @@ pub async fn load_site_info() -> Result<SiteInfo, ServerFnError> {
     .fetch_all(&state.pool)
     .await
     .map_err(|_| ServerFnError::new("Stránky nelze načíst."))?;
+    let navigation:Vec<(String,String)>=sqlx::query_as("SELECT label,path FROM navigation_items n WHERE visible=TRUE AND (path NOT LIKE '/stranky/%' OR EXISTS(SELECT 1 FROM pages p WHERE n.path='/stranky/'||p.slug AND p.published=TRUE)) ORDER BY sort_order,id LIMIT 20").fetch_all(&state.pool).await.map_err(|_|ServerFnError::new("Navigaci nelze načíst."))?;
     Ok(SiteInfo {
+        navigation: navigation
+            .into_iter()
+            .map(|(label, path)| NavigationLink { label, path })
+            .collect(),
         production: state.config.production,
         pages: rows
             .into_iter()
@@ -156,5 +167,21 @@ pub async fn load_site_info() -> Result<SiteInfo, ServerFnError> {
     Ok(SiteInfo {
         production: false,
         pages: vec![],
+        navigation: default_navigation(),
     })
+}
+
+pub fn default_navigation() -> Vec<NavigationLink> {
+    [
+        ("Přehled", "/"),
+        ("Úřední deska", "/uredni-deska"),
+        ("Dokumenty", "/dokumenty"),
+        ("Obec a úřad", "/obec"),
+    ]
+    .into_iter()
+    .map(|(label, path)| NavigationLink {
+        label: label.into(),
+        path: path.into(),
+    })
+    .collect()
 }

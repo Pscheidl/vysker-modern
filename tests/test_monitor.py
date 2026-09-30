@@ -18,6 +18,8 @@ class Monitoring(unittest.TestCase):
             root=Path(root)
             with connect(database) as db:
                 db.execute('CREATE TABLE mail_queue(created_at INTEGER,attempts INTEGER,sent_at INTEGER,cancelled BOOLEAN)')
+                db.execute('CREATE TABLE recovery_mail(LIKE mail_queue)')
+                db.execute('ALTER TABLE recovery_mail ADD delivery_expired_at BIGINT')
                 db.execute('INSERT INTO mail_queue VALUES (1,4,NULL,FALSE)')
                 db.execute('INSERT INTO mail_queue VALUES (1,99,NULL,TRUE)')
             snapshot=root/'vysker-test.dump'
@@ -39,6 +41,26 @@ class Monitoring(unittest.TestCase):
                 self.assertIn('application_not_ready',report['alerts'])
                 self.assertIn('backup_missing',report['alerts'])
                 self.assertIn('database_check_failed',report['alerts'])
+
+    def test_recovery_failure_is_visible_before_and_after_expiry(self):
+        with tempfile.TemporaryDirectory() as root, temporary_database() as database:
+            with connect(database) as db:
+                db.execute('CREATE TABLE mail_queue(created_at BIGINT,attempts BIGINT,sent_at BIGINT,cancelled BOOLEAN)')
+                db.execute('CREATE TABLE recovery_mail(LIKE mail_queue)')
+                db.execute('ALTER TABLE recovery_mail ADD delivery_expired_at BIGINT')
+                db.execute('INSERT INTO recovery_mail VALUES (9000,3,NULL,FALSE,NULL)')
+            with patch.object(monitor.urllib.request,'urlopen',side_effect=OSError()):
+                report=monitor.check(database,root,'http://localhost',now=10000)
+                self.assertIn('recovery_mail_stalled',report['alerts'])
+                with connect(database) as db:
+                    db.execute('UPDATE recovery_mail SET cancelled=TRUE,delivery_expired_at=10800')
+                report=monitor.check(database,root,'http://localhost',now=11000)
+                self.assertIn('recovery_delivery_expired',report['alerts'])
+                self.assertEqual(report['metrics']['expired_recovery_last_day'],1)
+                with connect(database) as db:
+                    db.execute('UPDATE recovery_mail SET delivery_expired_at=NULL')
+                report=monitor.check(database,root,'http://localhost',now=11000)
+                self.assertNotIn('recovery_delivery_expired',report['alerts'])
 
     def test_notifications_are_deduplicated_and_recovery_is_sent(self):
         report={'alerts':['backup_stale'],'checked_at':10000}

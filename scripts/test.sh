@@ -22,5 +22,5 @@ cargo test --locked --no-default-features --features ssr --lib --bins --tests
 python3 tests/test_database.py
 python3 tests/test_monitor.py
 if [[ "${1:-}" == "--smtp" ]]; then
-  cargo test --locked --no-default-features --features ssr --test smtp -- --ignored
+  cargo test --locked --no-default-features --features ssr --test smtp --test recovery -- --ignored
 fi

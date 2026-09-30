@@ -633,6 +633,7 @@ async fn generic_documents_and_pages_are_private_until_published() {
     );
     let mut page = page;
     page["published"] = json!(true);
+    page["expected_version"] = json!(1);
     assert_eq!(
         app.call(
             "PUT",

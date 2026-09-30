@@ -14,7 +14,7 @@ import urllib.parse
 
 
 def check(database, backups, ready_url, *, now=None, backup_hours=30,
-          mail_minutes=30, max_pending=1000, min_free_mib=1024, min_free_percent=10, database_disk=None):
+          mail_minutes=30, recovery_minutes=10, max_pending=1000, min_free_mib=1024, min_free_percent=10, database_disk=None):
     now = time.time() if now is None else now
     alerts, metrics = [], {}
     try:
@@ -47,7 +47,14 @@ def check(database, backups, ready_url, *, now=None, backup_hours=30,
         alerts.append('backup_missing')
     try:
         with connect(database, options='-c default_transaction_read_only=on') as conn:
-            pending, oldest, retries = conn.execute('SELECT count(*),min(created_at),coalesce(max(attempts),0) FROM mail_queue WHERE sent_at IS NULL AND cancelled=FALSE').fetchone()
+            pending, oldest, retries = conn.execute('SELECT count(*),min(created_at),coalesce(max(attempts),0) FROM (SELECT created_at,attempts FROM mail_queue WHERE sent_at IS NULL AND cancelled=FALSE UNION ALL SELECT created_at,attempts FROM recovery_mail WHERE sent_at IS NULL AND cancelled=FALSE) pending').fetchone()
+            recovery_oldest = conn.execute('SELECT min(created_at) FROM recovery_mail WHERE sent_at IS NULL AND cancelled=FALSE').fetchone()[0]
+            recovery_expired = conn.execute('SELECT count(*) FROM recovery_mail WHERE sent_at IS NULL AND delivery_expired_at>=%s', (int(now)-86400,)).fetchone()[0]
+        metrics['expired_recovery_last_day'] = recovery_expired
+        if recovery_oldest is not None and now-recovery_oldest > recovery_minutes*60:
+            alerts.append('recovery_mail_stalled')
+        if recovery_expired:
+            alerts.append('recovery_delivery_expired')
         metrics.update(pending_mail=pending, oldest_mail_age_seconds=max(0, int(now-oldest)) if oldest else 0, maximum_mail_attempts=retries)
         if pending >= max_pending:
             alerts.append('mail_queue_large')
@@ -103,11 +110,12 @@ def main():
     parser.add_argument('--interval', type=int, default=60)
     parser.add_argument('--backup-hours', type=int, default=30)
     parser.add_argument('--mail-minutes', type=int, default=30)
+    parser.add_argument('--recovery-minutes', type=int, default=10)
     parser.add_argument('--max-pending', type=int, default=1000)
     parser.add_argument('--min-free-mib', type=int, default=1024)
     parser.add_argument('--min-free-percent', type=int, default=10)
     args = parser.parse_args()
-    if min(args.interval,args.backup_hours,args.mail_minutes,args.max_pending,args.min_free_mib) <= 0 or not 1<=args.min_free_percent<=99:
+    if min(args.interval,args.backup_hours,args.mail_minutes,args.recovery_minutes,args.max_pending,args.min_free_mib) <= 0 or not 1<=args.min_free_percent<=99:
         parser.error('Thresholds must be positive, disk percentage must be 1 to 99')
     if args.mode == 'health':
         try:
@@ -116,7 +124,7 @@ def main():
         except (OSError, ValueError, KeyError):
             return 1
     while True:
-        report = check(database_url(args.database),args.backups,args.ready_url,backup_hours=args.backup_hours,mail_minutes=args.mail_minutes,max_pending=args.max_pending,min_free_mib=args.min_free_mib,min_free_percent=args.min_free_percent,database_disk=args.database_disk)
+        report = check(database_url(args.database),args.backups,args.ready_url,backup_hours=args.backup_hours,mail_minutes=args.mail_minutes,recovery_minutes=args.recovery_minutes,max_pending=args.max_pending,min_free_mib=args.min_free_mib,min_free_percent=args.min_free_percent,database_disk=args.database_disk)
         if args.mode == 'check':
             print(json.dumps(report),flush=True)
             return 0 if report['status']=='ok' else 2

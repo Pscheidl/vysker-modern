@@ -13,6 +13,8 @@ pub mod config;
 pub mod content;
 #[cfg(feature = "ssr")]
 pub mod db;
+pub mod events;
+pub mod markdown;
 #[cfg(feature = "ssr")]
 pub mod model;
 pub mod privacy;

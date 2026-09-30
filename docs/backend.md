@@ -100,7 +100,8 @@ Sign in using an account created with `obec-admin`. The standalone Compose
 - Publication requires selecting the applicable rule and reviewing the content.
 - Withdrawal dialogs explain what will happen to attachments.
 - Draft attachments can be downloaded and removed. Published attachments are immutable.
-- Content pages have a plain text editor, a preview, a slug and a publication switch.
+- Content pages have a restricted Markdown editor, a live preview, revisions, a slug,
+  a publication switch and optimistic edit conflict checks.
 - Audit history is read-only and identifies an administrator or system action.
 - `/admin/posta` lists recipients and SMTP acceptance status without message bodies.
 - Publication evidence can be downloaded, and availability incidents can be recorded.
@@ -231,10 +232,12 @@ A document accepts `title` and `description`. Edit and attach files while it is
 a draft, then publish. Archived general documents are hidden from public access.
 Public document URLs are `/dokumenty/{id}`.
 
-A page accepts `slug`, `title`, `content` and `published`. Its generic public URL
-is `/stranky/{slug}`. Content is escaped plain text with preserved line breaks.
-The editor includes a preview. Published pages appear under `/stranky`, linked
-from the footer. Rich text, revisions and configurable navigation remain future work.
+A page accepts `slug`, `title`, `content` and `published`. Updates also require
+`expected_version`. Its generic public URL is `/stranky/{slug}`. Content uses
+restricted Markdown with escaped raw HTML and disabled embedded images. The
+editor shares the public renderer, preserves revisions and detects concurrent
+changes. Published pages appear under `/stranky`, linked from the footer.
+Navigation is configurable in `/admin/navigace`. See [editorial.md](editorial.md).
 
 The slugs `kontakt`, `obec`, `kalendar`, `pristupnost` and `povinne-informace`
 also populate their dedicated public routes. Production requires these pages to
@@ -357,7 +360,9 @@ Authentication is rechecked inside the write transaction so concurrent password
 changes or deactivation cannot be bypassed by a login already in progress.
 Reauthentication is limited to ten attempts per account per fifteen minutes.
 
-For forgotten passwords, the operator runs the following with the same database
+For forgotten passwords, use **Zapomenuté heslo** on the login screen. See
+[editorial.md](editorial.md) for token lifetime, password policy and session revocation.
+When email recovery is unavailable, the operator runs the following with the same database
 and application configuration as the server. The password prompt is hidden.
 
 ```sh
@@ -371,3 +376,31 @@ Recovery revokes sessions and records `password_reset_by_operator` in the audit.
 It does not activate a disabled account. Another active administrator can do that
 in the UI. Existing `obec-admin EMAIL` usage still creates a new account, and
 `obec-admin create EMAIL` is an explicit equivalent.
+
+
+## Editorial API additions
+
+All administrator mutations require the session cookie and CSRF token, except
+unauthenticated password recovery/reset which check Origin and rate limits.
+Page, navigation, category and event updates require `expected_version`.
+
+| Method and path under `/api/v1` | Purpose |
+| --- | --- |
+| `GET /admin/password-policy` | Configured minimum password length |
+| `POST /admin/password-recovery` | Generic request by email |
+| `POST /admin/password-reset` | Token and new password |
+| `GET /admin/pages/{id}/revisions` | Paginated immutable revision history |
+| `GET, POST /admin/navigation` | Menu list and creation |
+| `PUT, DELETE /admin/navigation/{id}` | Versioned menu changes |
+| `GET, POST /admin/categories` | Category management |
+| `PUT, DELETE /admin/categories/{id}` | Rename/order or remove unused categories |
+| `GET, POST /admin/events` | Calendar management |
+| `GET, PUT, DELETE /admin/events/{id}` | Versioned event management |
+| `GET /events` | Published upcoming or archived events, pagination |
+| `GET /events/{id}` | Published event details |
+| `GET /admin/subscribers` | Search, status filter, paginated list and count |
+| `GET /admin/subscribers/{id}/export` | Audited private JSON evidence export |
+| `POST /admin/subscribers/{id}/withdraw` | Withdraw with current password |
+| `DELETE /admin/subscribers/{id}` | Erase with current password |
+
+See [editorial.md](editorial.md) for user workflows and [mail.md](mail.md) for SMTP.

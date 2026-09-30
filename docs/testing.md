@@ -72,3 +72,19 @@ runs the Rust and Python tests, including the Mailpit check.
 
 Automated checks do not replace manual accessibility assessment, review of actual
 municipal documents, an operator alert delivery drill, or offsite restore testing.
+
+
+## Editorial regression coverage
+
+The Rust tests cover single-use email recovery, expiration, revocation, salted
+passwords, configured minimum length, safe Markdown, page revisions, concurrent
+edit conflicts, navigation validation and category preservation. Calendar tests
+cover publication, cancellation, Prague time and DST validation. Subscriber tests
+cover authorization, search, evidence export, withdrawal, erasure and SMTP leases.
+
+Browser scenarios exercise recovery, Markdown preview, conflicts between tabs,
+restoring revisions, menu changes, calendar publication and subscriber workflows.
+Run Rust tests before building the full web for browser tests. `cargo test --bins`
+can replace the SSR binary with a build lacking cargo-leptos's compile-time asset
+settings. Rebuild with `cargo leptos build` before testing hydration. Do not run
+Cargo builds that share the same target directory concurrently with browser tests.

@@ -109,7 +109,9 @@ its own new database if restoring or sanitizing it fails.
 The required flag removes subscribers, consent evidence, tokens and the mail queue
 from the restored copy. Subscribers must opt in again. This prevents reactivating
 people who unsubscribed after the snapshot. Administrator sessions are invalidated
-too. The original database and snapshot remain unchanged.
+too. Outstanding password recovery links and security mail are removed when
+present, including when restoring a backup from before those tables were added.
+The original database and snapshot remain unchanged.
 
 Review the restored database, especially publication states and dates, before
 switching `OBEC_DATABAZE` and reopening the service. Rehearse recovery regularly.
@@ -215,5 +217,11 @@ with a default of **24**. Values must be between 1 and 1024. The independent
 maximum is 1024 UTF-8 bytes. Set the environment value and restart the application
 and any administrator CLI process. Browser forms read the policy from the current
 session response. Raising the minimum applies to new passwords, not verification
-of existing passwords. Account creation, password changes and operator recovery
+of existing passwords. Account creation, password changes, email recovery and operator recovery
 all enforce the same setting.
+
+
+SMTP account and domain setup are documented in [mail.md](mail.md). Administrator
+email recovery is documented in [editorial.md](editorial.md). Both mail queues
+are monitored, and database restore also discards outstanding recovery tokens
+and security messages.

@@ -22,16 +22,19 @@ Current illustration and identity: [Saint Anne's Chapel and the treeless Hůra h
 - Official notice board, archive and document details backed by PostgreSQL.
 - Category filters, sorting and browser search that ignores Czech diacritics.
 - General documents and forms, search, municipal information and contact details.
-- Calendar page, subscriptions, accessibility, privacy and a 404 page.
+- Structured calendar with a homepage feed, event details and archive, subscriptions, accessibility, privacy and a 404 page.
 - Light and dark themes with a saved preference, mobile navigation and Ctrl/⌘ K.
 - Administration at `/admin`, including notice and document editors, content
   pages, attachments, a read-only audit log and outgoing mail history.
 - Published content pages listed under `/stranky`, linked from the footer.
+- Markdown page editor with preview, immutable revisions and edit conflict protection.
+- Editable navigation and categories, subscriber evidence export, withdrawal and erasure.
+- Email password recovery and configurable password minimum, default 24 characters.
 
 Production uses municipal content stored in the database for contact details,
 municipal information, the calendar, accessibility and mandatory disclosures.
-The example homepage events are shown only in preview mode. A structured event
-editor and live homepage event feed remain future work.
+The full application uses structured event records for the calendar and homepage.
+The GitHub Pages demo keeps illustrative sample events.
 
 ## Backend and local tests
 
@@ -56,6 +59,8 @@ Documentation:
 
 - [Local setup, administrator accounts, tests and API reference](docs/backend.md)
 - [Database schema and migrations](docs/database.md)
+- [Editorial workflows and password recovery](docs/editorial.md)
+- [Outgoing mail setup and provider handover](docs/mail.md)
 - [Deployment requirements and hosting considerations](docs/deployment.md)
 - [Production operations, backups and recovery](docs/operations.md)
 - [Remaining implementation work](docs/roadmap.md)

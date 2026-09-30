@@ -193,7 +193,7 @@ pub async fn remove_file(
 #[derive(sqlx::FromRow, Serialize)]
 pub struct MailRecord {
     id: i64,
-    subscriber_id: i64,
+    subscriber_id: Option<i64>,
     email: String,
     purpose: String,
     subject: String,
@@ -208,6 +208,6 @@ pub async fn mail_history(
     Query(p): Query<Pagination>,
 ) -> Result<Json<Vec<MailRecord>>> {
     let (limit, offset) = p.bounds()?;
-    Ok(Json(sqlx::query_as("SELECT m.id,m.subscriber_id,s.email,m.purpose,m.subject,m.created_at,m.sent_at,m.attempts,CASE WHEN m.sent_at IS NOT NULL THEN 'sent' WHEN m.cancelled=TRUE THEN 'cancelled' WHEN m.attempts>0 THEN 'retrying' ELSE 'pending' END AS status FROM mail_queue m JOIN subscribers s ON s.id=m.subscriber_id ORDER BY m.id DESC LIMIT $1 OFFSET $2")
+    Ok(Json(sqlx::query_as("SELECT id,subscriber_id,email,purpose,subject,created_at,sent_at,attempts,CASE WHEN sent_at IS NOT NULL THEN 'sent' WHEN delivery_expired_at IS NOT NULL THEN 'expired' WHEN cancelled=TRUE THEN 'cancelled' WHEN attempts>0 THEN 'retrying' ELSE 'pending' END AS status FROM (SELECT m.id,m.subscriber_id,s.email,m.purpose,m.subject,m.created_at,m.sent_at,m.attempts,m.cancelled,NULL::BIGINT AS delivery_expired_at FROM mail_queue m JOIN subscribers s ON s.id=m.subscriber_id UNION ALL SELECT m.id,NULL::BIGINT,a.email,'recovery','Obnova hesla správy webu Vyskeř',m.created_at,m.sent_at,m.attempts,m.cancelled,m.delivery_expired_at FROM recovery_mail m JOIN administrators a ON a.id=m.administrator_id) messages ORDER BY created_at DESC,purpose,id DESC LIMIT $1 OFFSET $2")
         .bind(limit).bind(offset).fetch_all(&s.pool).await?))
 }

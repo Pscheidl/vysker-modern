@@ -81,7 +81,7 @@ pub fn NoticeListing() -> impl IntoView {
         <Filters query path="/uredni-deska" board=true/>
         <Suspense fallback=Loading>{move ||result.get().map(|r|match r {
             Ok(page)=>view!{<Pager query=query.get() page=page.page total=page.total path="/uredni-deska"/>{if page.items.is_empty() {view!{<EmptyState/>}.into_any()} else {view!{<div class="document-list">{page.items.into_iter().map(|notice|view!{<NoticeRow notice/>}).collect_view()}</div>}.into_any()}}}.into_any(),
-            Err(e)=>view!{<LoadError message=e.to_string()/>}.into_any(),
+            Err(e)=>view!{<LoadError message=e.to_string() on_retry=Callback::new(move|()|result.refetch())/>}.into_any(),
         })}</Suspense><Newsletter/>
     </div>}
 }
@@ -105,7 +105,7 @@ fn Results(
     view! {<Title text=format!("{title} · Vyskeř")/><div class="page-width interior"><PageHeading title description/><Filters query path/>
         <Suspense fallback=Loading>{move ||result.get().map(|r|match r {
             Ok(page)=>view!{<Pager query=query.get() page=page.page total=page.total path/>{if page.items.is_empty(){view!{<EmptyState title="Nic jsme nenašli"/>}.into_any()} else {view!{<div class="document-list">{page.items.into_iter().map(|hit|view!{<article class="site-result"><div><p class="eyebrow">{match hit.kind.as_str(){"notice" if hit.archived=>"ÚŘEDNÍ DESKA · ARCHIV","notice"=>"ÚŘEDNÍ DESKA","document"=>"DOKUMENT",_=>"STRÁNKA"}}</p><h2><A href=site_url(&hit.path)>{hit.title}</A></h2><p>{hit.description}</p></div><Icon/></article>}).collect_view()}</div>}.into_any()}}}.into_any(),
-            Err(e)=>view!{<LoadError message=e.to_string()/>}.into_any(),
+            Err(e)=>view!{<LoadError message=e.to_string() on_retry=Callback::new(move|()|result.refetch())/>}.into_any(),
         })}</Suspense>
     </div>}
 }

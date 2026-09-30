@@ -44,6 +44,7 @@ pub struct Entry {
     pub slug: String,
     pub content: String,
     pub published: Option<bool>,
+    pub version: i64,
 }
 impl Entry {
     pub fn status(&self) -> &str {
@@ -245,7 +246,7 @@ pub fn date(value: &str) -> String {
 #[derive(Clone, Deserialize)]
 pub struct MailRecord {
     pub id: i64,
-    pub subscriber_id: i64,
+    pub subscriber_id: Option<i64>,
     pub email: String,
     pub purpose: String,
     pub subject: String,

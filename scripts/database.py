@@ -43,6 +43,11 @@ def restore_database(source, destination):
             # A stale backup must never reactivate a subscription withdrawn later.
             conn.execute('DELETE FROM subscribers')
             conn.execute('DELETE FROM sessions')
+            # Backups from the PostgreSQL baseline predate recovery tables.
+            if conn.execute("SELECT to_regclass('password_resets') IS NOT NULL").fetchone()[0]:
+                conn.execute('DELETE FROM password_resets')
+            if conn.execute("SELECT to_regclass('recovery_mail') IS NOT NULL").fetchone()[0]:
+                conn.execute('DELETE FROM recovery_mail')
             conn.execute('DELETE FROM rate_limits')
             conn.execute("INSERT INTO audit_log(occurred_at,operation,entity_type,entity_id) VALUES (%s,'restored','database',1)",
                          (dt.datetime.now(dt.timezone.utc).isoformat().replace('+00:00', 'Z'),))

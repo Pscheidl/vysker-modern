@@ -130,7 +130,7 @@ pub async fn change_password(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn set_password(
+pub(super) async fn set_password(
     conn: &mut sqlx::PgConnection,
     id: i64,
     password_hash: String,
@@ -146,6 +146,7 @@ async fn set_password(
         .bind(id)
         .execute(&mut *conn)
         .await?;
+    super::recovery::invalidate(conn, id).await?;
     audit(
         conn,
         actor,
@@ -196,6 +197,7 @@ pub async fn set_active(
         }
     }
     if active != input.active {
+        super::recovery::invalidate(&mut tx, id).await?;
         sqlx::query("UPDATE administrators SET active=$1 WHERE id=$2")
             .bind(input.active)
             .bind(id)

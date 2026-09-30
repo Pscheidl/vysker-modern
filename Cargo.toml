@@ -51,8 +51,9 @@ tower-http = { version = "0.7.1", optional = true, features = ["trace", "fs"] }
 tracing = { version = "0.1.44", optional = true }
 tracing-subscriber = { version = "0.3.23", optional = true, features = ["env-filter"] }
 wasm-bindgen = { version = "0.2", optional = true }
-web-sys = { version = "0.3", features = ["Window", "Document", "Element", "Storage", "MediaQueryList", "HtmlElement", "HtmlInputElement", "KeyboardEvent", "HtmlDialogElement", "BeforeUnloadEvent", "File", "FileList", "FormData", "RequestCredentials"] }
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "Storage", "MediaQueryList", "HtmlElement", "HtmlInputElement", "KeyboardEvent", "HtmlDialogElement", "BeforeUnloadEvent", "File", "FileList", "FormData", "RequestCredentials", "Location", "History"] }
 console_error_panic_hook = { version = "0.1", optional = true }
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 
 [features]
 default = ["ssr"]
