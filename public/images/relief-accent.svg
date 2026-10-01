@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Isolate the violet path by its excess blue. Preserve neutral terrain
+         and the warm window lights, which a global hue rotation would change. -->
+    <filter id="green" color-interpolation-filters="sRGB" x="0" y="0" width="100%" height="100%">
+      <feColorMatrix in="SourceGraphic" type="matrix" values="
+        0 0 0 0 0
+        0 0 0 0 0
+        0 0 0 0 0
+        -4 0 4 0 0" result="violet"/>
+      <feComposite in="violet" in2="SourceGraphic" operator="in" result="mask"/>
+      <feColorMatrix in="SourceGraphic" type="matrix" values="
+        .85 0 0 0 0
+        -.65 1 .65 0 0
+        .7 0 .15 0 0
+        0 0 0 1 0" result="green"/>
+      <feComposite in="green" in2="mask" operator="in" result="path"/>
+      <feComposite in="SourceGraphic" in2="mask" operator="out" result="terrain"/>
+      <feComposite in="path" in2="terrain" operator="arithmetic" k1="0" k2="1" k3="1" k4="0"/>
+    </filter>
+  </defs>
+</svg>

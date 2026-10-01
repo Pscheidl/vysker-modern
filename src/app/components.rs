@@ -66,13 +66,7 @@ pub fn ImportNote() -> impl IntoView {
 #[component]
 pub fn Logo() -> impl IntoView {
     view! {
-        <svg class="logo-mark" viewBox="0 0 64 48" fill="none" aria-hidden="true">
-            <g stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M30 2v5m-2-3h4M28 12v5m4-5v5M23 23l5-6h12l8 6H23Zm2 0v9m21-9v9M28 32v-5h4v5m7-6v2"/>
-                <path d="M3 39c10 0 14-7 22-7h20c7 0 9 7 16 7M3 46c12 0 20-6 30-6s18 6 28 6"/>
-            </g>
-            <path d="M30 6c0 1.6-2.8 2.3-2.8 4.3a2.8 2.8 0 0 0 5.6 0C32.8 8.3 30 7.6 30 6Z" fill="currentColor"/>
-        </svg>
+        <span class="logo-mark" aria-hidden="true"></span>
     }
 }
 

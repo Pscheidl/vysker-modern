@@ -6,19 +6,28 @@ Revision of the approved ceramic illustration style, dated 29 September 2026.
 
 - [Light relief](../../public/images/relief-vysker-light.png), 2172 × 724 px, transparent PNG.
 - [Dark relief](../../public/images/relief-vysker-dark.png), 2171 × 724 px, transparent PNG.
-- [Chapel mark](../../public/images/vysker-mark.svg), standalone SVG.
-- [Favicon](../../public/favicon.svg), simplified mark on a violet background.
+- [Chapel mark and favicon](../../public/images/chapel-cutout.png), transparent PNG from Za Vyskeř.
+- [Green relief filter](../../public/images/relief-accent.svg), shared with Za Vyskeř.
 
-The header mark uses the same strokes as the standalone SVG and inherits its
-colour from the current theme. The reliefs appear on the homepage and in the
-municipal information preview.
+Since 1 October 2026, the site uses the green identity from
+[Za Vyskeř](https://zavysker.cz/). The chapel cutout and relief filter were copied
+from the local `zavysker/assets/img` directory. The cutout was created with
+ImageGen from the user's chapel reference for that project. Its alpha channel
+forms a CSS mask, so the public header and administration use the current
+theme's green. The same PNG serves as the favicon and touch icon.
+
+The light theme uses `#26734d` and the dark theme uses `#85d4a4`, with matching
+surfaces and button text colours. The reliefs appear on the homepage, in the
+municipal information preview and on the administration login page. The SVG
+filter changes the violet path to green while preserving neutral terrain,
+warm window lights and transparency. The source PNGs remain unchanged.
 
 ## Changes
 
 - Saint Anne's Chapel has a low nave, a polygonal roof end and an onion-shaped
   turret topped with a cross.
 - Hůra is a distinct hill, with village buildings and a larger church at its foot.
-- A violet path connects the village to the chapel.
+- A green path connects the village to the chapel when rendered on the site.
 - **Hůra must remain entirely treeless. Trees belong only in the village.**
   This is an explicit user requirement and takes precedence over woodland shown
   in reference photographs.
@@ -45,8 +54,8 @@ website's public assets. Materials and illustration style follow the approved co
 
 ## Creation
 
-Raster reliefs were produced with the built-in imagegen tool. The SVG mark and
-favicon were edited directly as vector assets.
+Raster reliefs were produced with the built-in imagegen tool. The original SVG
+mark and favicon were replaced by the shared chapel cutout on 1 October 2026.
 
 Original prompts, in order:
 

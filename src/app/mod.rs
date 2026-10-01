@@ -49,7 +49,8 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <meta charset="utf-8"/>
                 <meta name="viewport" content="width=device-width, initial-scale=1"/>
                 <meta name="color-scheme" content="light dark"/>
-                <link rel="icon" type="image/svg+xml" href="/favicon.svg"/>
+                <link rel="icon" type="image/png" href="/images/chapel-cutout.png"/>
+                <link rel="apple-touch-icon" href="/images/chapel-cutout.png"/>
                 <link rel="preload" href="/fonts/geist.woff2" r#as="font" type="font/woff2" crossorigin="anonymous"/>
                 <script src="/theme.js"></script>
                 <AutoReload options=options.clone()/>
