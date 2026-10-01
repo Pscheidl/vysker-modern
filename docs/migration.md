@@ -67,6 +67,20 @@ drafts by default. A repeated import skips unchanged identities. Changed source
 records cause a conflict before any writes, including when an editor has already
 changed the imported record. The importer never overwrites local edits.
 
+Content pages linking to successfully captured documents are omitted. Only their
+files are imported, with the usual document or notice classification. This applies
+even when the page also contains text, and to import, sync and local library
+reimport alike. Verified image attachments alone do not exclude a page. Structured
+calendar entries and notices keep their existing import behavior.
+
+The report lists these pages in `skipped_document_pages`, with their source URLs,
+document identities and `already_imported` flag. Omitted pages do not get new page
+records, revisions or redirects. Links to omitted pages remain on the original
+website and appear in `unresolved_internal_links` for editorial review. File URLs
+keep their normal attachment redirects. Repeated imports still deduplicate files.
+Previously imported pages and local edits are retained, with the usual conflict
+checks. Removing those existing pages requires a separate reviewed cleanup.
+
 `--publish-content` publishes ordinary pages, documents and calendar entries for
 a reviewed test environment. Notices remain drafts. This option does not send
 subscription notifications. It also does not publish previously imported drafts
@@ -185,6 +199,21 @@ template controls and remote embeds are removed. Imported verified raster images
 can be shown inline through `/api/v1/legacy-media/{id}`. Other files use the normal
 attachment download path. Original HTML remains available for comparison.
 
+Photo detail URLs (`g:`), including slideshow and ASP variants, are aliases of
+their owning article or gallery, not separate content pages. The importer uses
+explicit gallery backlinks and embedded gallery lists to establish ownership.
+It replaces thumbnails with verified full-size photographs, preserves captions
+and article text, and includes each photograph only once. An embedded gallery
+(`gs:`) also redirects to its article. A standalone gallery remains one page.
+Missing or ambiguous ownership is deferred for review instead of creating photo
+pages. `grouped_gallery_pages` lists the source identities and their owners.
+
+Grouped content participates in change detection, so photos added through a
+detail page are proposed for review during sync without overwriting an edited
+article. Original photo addresses retain their own provenance and redirect to
+the article while it is public. Image files continue using the existing attachment
+storage and editor image library.
+
 Calendar entries are converted to structured events when their dates can be
 parsed unambiguously. Missing clock times and end dates are explicitly marked as unknown.
 Internal day boundaries are used only to sort and filter such events. Public
@@ -270,6 +299,15 @@ so links already embedded in pages and calendar entries remain valid. Document
 and notice IDs are not reset or reused. Local edits to documents/notices and
 non-imported library entries are intentionally removed, and recoverable from the
 backup. Start the updated app before testing the replacement library.
+
+To replace **all previously imported content**, including pages, their revisions
+and uploaded images, calendar entries and pending sync proposals, add
+`--all-imported`. This mode selects records through import provenance and retains
+unrelated local pages, documents, notices and events. Local edits to imported
+records are removed with those records and remain recoverable from the backup.
+Pass `--page-map config/legacy-vysker-pages.json` to retain the reviewed page slugs.
+The same source validation, backup, local-only guard and atomic rollback apply.
+The updated import omits pages linking to documents and imports their files.
 
 ## Historical URLs
 

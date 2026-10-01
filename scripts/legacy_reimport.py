@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Explicit local-only library reset and atomic reimport, with a full backup first."""
+"""Explicit local-only reset and atomic reimport, with a full backup first."""
 import argparse
 import json
 import os
@@ -44,11 +44,56 @@ def reset_library(conn):
     return counts, attachment_ids
 
 
+def reset_import(conn):
+    """Remove all imported content and its dependents, retaining unrelated local records."""
+    require_local_preview()
+    conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':vysker-write', 0))")
+    ids = {kind: [row[0] for row in conn.execute(
+        f'SELECT DISTINCT {kind}_id FROM legacy_sources WHERE {kind}_id IS NOT NULL')]
+        for kind in ('page', 'event', 'document', 'notice')}
+    ids['notice'] = sorted(set(ids['notice']) | {
+        row[0] for row in conn.execute('SELECT notice_id FROM legacy_notice_imports')})
+    attachment_ids = dict(conn.execute(
+        'SELECT source_key,attachment_id FROM legacy_sources WHERE attachment_id IS NOT NULL'))
+    protected = {
+        'legacy_notice_imports': 'legacy_notice_imports_no_delete',
+        'legacy_sources': 'legacy_sources_no_delete',
+        'attachments': 'attachments_preserve_metadata',
+        'notice_events': 'notice_events_no_delete',
+        'notices': 'notices_preserve_record',
+        'page_revisions': 'page_revisions_no_delete',
+    }
+    for table, trigger in protected.items():
+        conn.execute(f'ALTER TABLE {table} DISABLE TRIGGER {trigger}')
+    counts = {}
+    for table, predicate, params in [
+        ('legacy_sync_reviews', 'TRUE', ()),
+        ('legacy_notice_imports', 'TRUE', ()),
+        ('legacy_sources', 'TRUE', ()),
+        ('attachments', 'document_id=ANY(%s) OR notice_id=ANY(%s)', (ids['document'], ids['notice'])),
+        ('notice_events', 'notice_id=ANY(%s)', (ids['notice'],)),
+        ('page_images', 'page_id=ANY(%s)', (ids['page'],)),
+        ('page_revisions', 'page_id=ANY(%s)', (ids['page'],)),
+        ('pages', 'id=ANY(%s)', (ids['page'],)),
+        ('events', 'id=ANY(%s)', (ids['event'],)),
+        ('notices', 'id=ANY(%s)', (ids['notice'],)),
+        ('documents', 'id=ANY(%s)', (ids['document'],)),
+    ]:
+        counts[table] = conn.execute(f'DELETE FROM {table} WHERE {predicate}', params).rowcount
+    for table, trigger in protected.items():
+        conn.execute(f'ALTER TABLE {table} ENABLE TRIGGER {trigger}')
+    conn.execute("INSERT INTO audit_log(occurred_at,operation,entity_type,entity_id) VALUES (%s,'local_import_reset','migration',0)", (now(),))
+    return counts, attachment_ids
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bundle', required=True)
     parser.add_argument('--output', required=True, help='New directory for the full backup and import report')
     parser.add_argument('--notice-map', required=True)
+    parser.add_argument('--page-map', help='JSON mapping of source keys to reviewed page slugs')
+    parser.add_argument('--all-imported', action='store_true',
+                        help='Replace all imported pages, events and files, preserving unrelated local content.')
     parser.add_argument('--allow-incomplete', action='store_true')
     args = parser.parse_args()
     require_local_preview()
@@ -56,18 +101,20 @@ def main():
     load_bundle(args.bundle, args.allow_incomplete)
     output = Path(args.output)
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
-    backup = output / 'before-library-reset.dump'
+    backup = output / ('before-import-reset.dump' if args.all_imported else 'before-library-reset.dump')
     run_tool('pg_dump', database_url(), '--format=custom', '--file', str(backup))
     os.chmod(backup, 0o600)
     subprocess.run(['pg_restore', '--list', str(backup)], check=True, stdout=subprocess.DEVNULL)
     with connect() as conn:
-        counts, attachment_ids = reset_library(conn)
+        counts, attachment_ids = reset_import(conn) if args.all_imported else reset_library(conn)
         report = import_bundle(conn, args.bundle, publish_content=True,
+                               page_map=json.loads(Path(args.page_map).read_text()) if args.page_map else None,
                                allow_incomplete=args.allow_incomplete, classify_navigation=True,
                                preview_notices=True, notice_map=json.loads(Path(args.notice_map).read_text()),
                                attachment_ids=attachment_ids)
         report['reset_counts'] = counts
         report['backup'] = str(backup)
+        report['reset_scope'] = 'all_imported' if args.all_imported else 'library'
     (output / 'import.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
     print(json.dumps({key: report[key] for key in ('classification', 'reset_counts', 'backup')}, indent=2))
 

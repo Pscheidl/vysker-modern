@@ -15,7 +15,7 @@ from legacy import Capture, digest, source_key
 from legacy_import import import_bundle
 from legacy_sync import SYNC_LOCK, acknowledge, export_reviews, run_sync
 from postgres import connect, temporary_database
-from test_legacy import bundle, navigation_bundle, FILE
+from test_legacy import add_page, bundle, navigation_bundle, FILE
 
 
 def save(root, data):
@@ -45,15 +45,16 @@ class SyncTests(unittest.TestCase):
 
     def test_new_changed_missing_and_repeated_items_preserve_identity_and_local_edits(self):
         data = navigation_bundle(self.root)
+        add_page(self.root, data, '<div id="stred"><h1>Historie</h1><p>Historie obce.</p></div>')
         with connect(self.url) as conn:
             import_bundle(conn, self.root, classify_navigation=True, publish_content=True)
             identities = conn.execute('SELECT * FROM legacy_sources ORDER BY source_key').fetchall()
             conn.execute("UPDATE pages SET content='Local editorial change'")
             original = conn.execute('SELECT * FROM attachments ORDER BY id').fetchall()
         # One old page and its document disappear. Their imported records must remain.
-        new_page = copy.deepcopy(data['pages'].pop())
+        new_page = copy.deepcopy(data['pages'].pop(1))
         new_page.update(key='ms:8888', url='https://vysker.cz/novinky/ms-8888', title='Nová stránka')
-        data['pages'][0]['content'] = 'Změněná stránka'
+        data['pages'][1]['content'] = 'Změněná stránka'
         data['pages'].append(new_page)
         new_file = data['assets'].pop()
         new_file.update(url=FILE.replace('123', '789'), title='Nový dokument', parents=['ms:8888'])
@@ -64,11 +65,11 @@ class SyncTests(unittest.TestCase):
         for attempt in range(2):
             with connect(self.url) as conn:
                 report = import_bundle(conn, self.root, classify_navigation=True, publish_content=True, sync=True)
-                self.assertEqual(len(report['new']), 2 if attempt == 0 else 0)
+                self.assertEqual(len(report['new']), 1 if attempt == 0 else 0)
                 self.assertEqual(len(report['conflicts']), 2)
                 self.assertEqual(report['pending_reviews'], 2)
-                self.assertEqual(conn.execute('SELECT count(*) FROM legacy_sources').fetchone()[0], 6)
-                self.assertEqual(conn.execute('SELECT count(*) FROM pages').fetchone()[0], 3)
+                self.assertEqual(conn.execute('SELECT count(*) FROM legacy_sources').fetchone()[0], 4)
+                self.assertEqual(conn.execute('SELECT count(*) FROM pages').fetchone()[0], 1)
                 self.assertEqual(conn.execute('SELECT count(*) FROM documents').fetchone()[0], 2)
                 self.assertEqual(conn.execute('SELECT count(*) FROM notices').fetchone()[0], 1)
                 self.assertEqual(conn.execute('SELECT count(*) FROM attachments').fetchone()[0], 3)
@@ -77,7 +78,7 @@ class SyncTests(unittest.TestCase):
                 self.assertEqual(conn.execute('SELECT * FROM legacy_sources WHERE source_key=ANY(%s) ORDER BY source_key',
                     ([row[0] for row in identities],)).fetchall(), identities)
                 self.assertEqual(conn.execute('SELECT content FROM pages ORDER BY id LIMIT 2').fetchall(),
-                    [('Local editorial change',), ('Local editorial change',)])
+                    [('Local editorial change',)])
                 self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
                 self.assertEqual(conn.execute('SELECT status FROM notices').fetchone()[0], 'draft')
 
@@ -108,7 +109,7 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(conn.execute('SELECT count(*) FROM attachments').fetchone()[0], 1)
 
     def test_review_acknowledgement_is_bound_to_exact_change_and_survives_missing_source(self):
-        data = bundle(self.root)
+        data = bundle(self.root, document_links=False)
         key = data['pages'][0]['key']
         with connect(self.url) as conn:
             import_bundle(conn, self.root)
@@ -161,14 +162,36 @@ class SyncTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=2) as executor:
             futures = [executor.submit(import_once) for _ in range(2)]
             reports = [future.result(timeout=20) for future in futures]
-        self.assertEqual(sorted(len(report['new']) for report in reports), [0, 2])
+        self.assertEqual(sorted(len(report['new']) for report in reports), [0, 1])
         with connect(self.url) as conn:
-            self.assertEqual(conn.execute('SELECT count(*) FROM legacy_sources').fetchone()[0], 2)
+            self.assertEqual(conn.execute('SELECT count(*) FROM legacy_sources').fetchone()[0], 1)
             self.assertEqual(conn.execute('SELECT count(*) FROM attachments').fetchone()[0], 1)
-            self.assertEqual(conn.execute('SELECT count(*) FROM page_revisions').fetchone()[0], 1)
+            self.assertEqual(conn.execute('SELECT count(*) FROM page_revisions').fetchone()[0], 0)
+
+    def test_sync_discovers_new_documents_on_previously_skipped_pages(self):
+        data = bundle(self.root)
+        with connect(self.url) as conn:
+            import_bundle(conn, self.root, sync=True)
+        second = copy.deepcopy(data['assets'][0])
+        second.update(url=FILE.replace('123', '456'), title='Nový zápis')
+        data['assets'].append(second)
+        data['pages'][0]['assets'].append(dict(url=second['url']))
+        data['pages'][0]['content'] += f'\n[Nový zápis](<{second["url"]}>)'
+        save(self.root, data)
+        with connect(self.url) as conn:
+            report = import_bundle(conn, self.root, sync=True)
+            self.assertEqual(report['new'], [source_key(second['url'])])
+            self.assertEqual(report['pending_reviews'], 0)
+            self.assertEqual(len(report['skipped_document_pages']), 1)
+            repeated = import_bundle(conn, self.root, sync=True)
+            self.assertEqual(repeated['new'], [])
+            self.assertEqual(len(repeated['unchanged']), 2)
+            self.assertEqual(conn.execute('SELECT count(*) FROM pages').fetchone()[0], 0)
+            self.assertEqual(conn.execute('SELECT count(*) FROM documents').fetchone()[0], 2)
+            self.assertEqual(conn.execute('SELECT count(*) FROM attachments').fetchone()[0], 2)
 
     def test_sync_is_atomic_and_corrupt_source_does_not_change_live_records(self):
-        data = bundle(self.root)
+        data = bundle(self.root, document_links=False)
         with connect(self.url) as conn:
             import_bundle(conn, self.root)
         data['pages'][0]['content'] = 'Changed'
@@ -191,7 +214,7 @@ class SyncTests(unittest.TestCase):
         def crawl(capture, *_):
             roots.append(capture.root)
             self.assertEqual(list(capture.root.iterdir()), [])
-            data = bundle(capture.root)
+            data = bundle(capture.root, document_links=False)
             if len(roots) > 1:
                 data['pages'][0]['content'] = 'Updated source'
                 save(capture.root, data)

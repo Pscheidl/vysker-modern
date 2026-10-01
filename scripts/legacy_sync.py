@@ -76,7 +76,7 @@ def export_reviews(conn, output, base_url=''):
 <p>Poprvé zachyceno: {escape(row['first_seen_at'])}<br>
 Naposledy zachyceno: {escape(row['last_seen_at'])}</p>
 <h3>Současný obsah</h3><pre>{escape(row['current_title'] or '')}\n{escape(row['current_content'] or '')}</pre>
-<h3>Změna z původního webu</h3><pre>{escape(proposal.get('content', proposal.get('evidence', '')))}</pre>
+<h3>Změna z původního webu</h3><pre>{escape(proposal.get('gallery_content', proposal.get('content', proposal.get('evidence', ''))))}</pre>
 {attachment}<details><summary>Podklady a identifikátor pro potvrzení kontroly</summary>
 <pre>{escape(json.dumps(row, ensure_ascii=False, indent=2))}</pre></details>
 </article>''')
@@ -175,7 +175,7 @@ def main():
                 page_map=json.loads(Path(args.page_map).read_text()) if args.page_map else None,
                 notice_map=json.loads(Path(args.notice_map).read_text()) if args.notice_map else None)
             summary = {key: report[key] for key in ('status', 'reason', 'pending_reviews') if key in report}
-            summary.update({key: len(report[key]) for key in ('new', 'unchanged', 'conflicts', 'capture_errors') if key in report})
+            summary.update({key: len(report[key]) for key in ('new', 'unchanged', 'conflicts', 'capture_errors', 'skipped_document_pages', 'grouped_gallery_pages') if key in report})
             print(json.dumps(summary, ensure_ascii=False), flush=True)
         elif args.command == 'reviews':
             print(json.dumps({'pending_reviews': export_reviews(conn, args.output, args.base_url)}))

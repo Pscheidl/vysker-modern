@@ -8,6 +8,7 @@ import re
 import unicodedata
 
 from legacy import Capture, VERSION, canonical, digest, file_type, now, source_key
+from legacy_galleries import group_galleries
 from legacy_scope import notice_sections, notice_values, require_local_preview, source_dates
 from postgres import connect
 
@@ -17,6 +18,10 @@ def fingerprint(item):
     fields = {k: item.get(k) for k in ('key', 'url', 'title', 'content', 'kind', 'dates', 'event', 'assets', 'name', 'mime')}
     if item.get('capture') and 'mime' in item:
         fields['sha256'] = item['capture']['sha256']
+    # Derived gallery content is deterministic and includes child-only changes.
+    for key in ('page_alias', 'gallery_content', 'gallery_members'):
+        if key in item:
+            fields[key] = item[key]
     return digest(json.dumps(fields, sort_keys=True, ensure_ascii=False).encode())
 
 
@@ -56,14 +61,34 @@ def load_bundle(root, allow_incomplete=False):
         for value in item.get('dates', {}).values():
             date.fromisoformat(value)
         items.append(dict(item, key=key))
-    return manifest, items, capture
+    return manifest, group_galleries(items, capture), capture
+
+
+def document_pages(items):
+    """Find content pages linking to captured documents, excluding image assets."""
+    documents = {item['key'] for item in items
+                 if 'mime' in item and not item['mime'].startswith('image/')}
+    result = {}
+    for item in items:
+        if 'mime' in item:
+            continue
+        # These records have structured destinations instead of content pages.
+        if item['kind'] == 'notice' and item.get('dates', {}).get('published_on'):
+            continue
+        if item.get('event') and len(item['content']) <= 10_000:
+            continue
+        linked = {source_key(asset['url']) for asset in item.get('assets', [])}
+        if files := sorted(linked & documents):
+            result[item['key']] = files
+    return result
 
 
 def prepare(conn, root, allow_incomplete=False, classify_navigation=False):
     manifest, items, capture = load_bundle(root, allow_incomplete)
     known = {key: (signature, metadata) for key, signature, metadata in conn.execute(
         'SELECT source_key,fingerprint,metadata FROM legacy_sources')}
-    result = {'new': [], 'unchanged': [], 'conflicts': [], 'review': [],
+    skipped = document_pages(items)
+    result = {'new': [], 'unchanged': [], 'conflicts': [], 'review': [], 'skipped_document_pages': [], 'grouped_gallery_pages': [],
               'capture_errors': manifest['errors'], 'source_summary': {'pages': len(manifest['pages']), 'assets': len(manifest['assets'])}}
     sections = notice_sections(items, capture) if classify_navigation else {}
     if classify_navigation:
@@ -79,13 +104,18 @@ def prepare(conn, root, allow_incomplete=False, classify_navigation=False):
                 result['conflicts'].append(item['key'])
     for item in items:
         key = item['key']
+        if 'page_alias' in item:
+            result['grouped_gallery_pages'].append({'key': key, 'parent': item['page_alias']})
+        if key in skipped:
+            result['skipped_document_pages'].append({
+                'key': key, 'url': item['url'], 'documents': skipped[key], 'already_imported': key in known})
         if item.get('review_required'):
             result['review'].append({'key': key, 'reason': item['review_required']})
         if key in known:
             signature, metadata = known[key]
             same = signature == fingerprint(item) and metadata.get('evidence') == item.get('evidence')
             result['unchanged' if same else 'conflicts'].append(key)
-        elif not item.get('review_required'):
+        elif not item.get('review_required') and key not in skipped:
             result['new'].append(key)
         for reason in item.get('warnings', []):
             result['review'].append({'key': key, 'reason': reason})
@@ -152,14 +182,27 @@ def import_bundle(conn, root, publish_content=False, allow_incomplete=False, pag
     routes = dict(conn.execute('SELECT source_key,destination FROM legacy_sources').fetchall())
     notice_keys = {item['key'] for item in items if item.get('kind') == 'notice'}
     new_pages = []
-    for item in items:
+    # Aliases can refer to pages occurring later in the original capture.
+    ordered = [item for item in items if 'page_alias' not in item] + [item for item in items if 'page_alias' in item]
+    for item in ordered:
         if item['key'] not in new:
             continue
         page_id = document_id = attachment_id = notice_id = event_id = None
         metadata = {k: item.get(k) for k in ('dates', 'event', 'warnings', 'parents', 'evidence', 'capture')}
         metadata['original_title'] = item['title']
+        for key in ('page_alias', 'gallery_members'):
+            if key in item:
+                metadata[key] = item[key]
         notice_metadata = None
-        if 'mime' in item:
+        if 'page_alias' in item:
+            owner = conn.execute('''SELECT p.id,s.destination FROM legacy_sources s
+                JOIN pages p ON p.id=s.page_id WHERE s.source_key=%s''', (item['page_alias'],)).fetchone()
+            if not owner:
+                report['review'].append({'key': item['key'], 'reason': 'Gallery parent was not imported. Review photo ownership.'})
+                report['new'].remove(item['key'])
+                continue
+            page_id, destination = owner
+        elif 'mime' in item:
             on_board = bool(set(item.get('parents', [])) & sections.keys())
             owners = conn.execute('SELECT notice_id FROM legacy_sources WHERE source_key=ANY(%s) AND notice_id IS NOT NULL ORDER BY source_key', (item.get('parents', []),)).fetchall() if not classify_navigation or on_board else []
             if owners:
@@ -251,7 +294,7 @@ def import_bundle(conn, root, publish_content=False, allow_incomplete=False, pag
                 unresolved.add(url)
             # Do not embed anything from the original origin.
             return f'[{label}](<{url}>)'
-        content = re.sub(r'(!?)\[([^\n]*?)\]\(<([^>]+)>\)', rewrite, item['content'])
+        content = re.sub(r'(!?)\[([^\n]*?)\]\(<([^>]+)>\)', rewrite, item.get('gallery_content', item['content']))
         if page_slug is None:
             conn.execute('UPDATE events SET description=%s WHERE id=%s', (content, page_id))
         else:
@@ -288,7 +331,7 @@ def main():
                                    args.classify_navigation, args.preview_notices, notice_map,
                                    sync=args.command == 'sync')
     Path(args.report).write_text(json.dumps(report, ensure_ascii=False, indent=2))
-    print(json.dumps({k: len(report[k]) for k in ('new', 'unchanged', 'conflicts', 'review')}, indent=2))
+    print(json.dumps({k: len(report[k]) for k in ('new', 'unchanged', 'conflicts', 'review', 'skipped_document_pages', 'grouped_gallery_pages')}, indent=2))
 
 
 if __name__ == '__main__':

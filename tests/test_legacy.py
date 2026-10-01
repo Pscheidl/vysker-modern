@@ -12,9 +12,9 @@ from datetime import date
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from legacy import Capture, canonical, digest, extract, source_key, event_timing, markdown, dates
 from bs4 import BeautifulSoup
-from legacy_import import import_bundle, load_bundle, prepare
+from legacy_import import fingerprint, import_bundle, load_bundle, prepare
 from legacy_reconcile import reconcile, require_local_preview
-from legacy_reimport import reset_library
+from legacy_reimport import reset_import, reset_library
 from legacy_scope import notice_values
 from postgres import connect, temporary_database
 
@@ -28,22 +28,34 @@ HTML = f'''<title>Dokumenty: obec Vyskeř</title><div id="menu"><a href="/obec/d
 <form>Search noise</form></div><div class="dpopis">Vytvořeno / změněno: 1.3.2020 / 2.3.2020</div></div>'''
 
 
-def bundle(root, notice=False):
+def bundle(root, notice=False, document_links=True):
     capture = Capture(root, 0)
     objects = Path(root) / 'objects'
     objects.mkdir()
-    page = extract(HTML.encode(), URL)
+    raw_html = HTML if document_links else '<div id="stred"><h1>Historie</h1><p>Historie obce.</p></div>'
+    page = extract(raw_html.encode(), URL)
     if notice:
         page.update(kind='notice', dates={'published_on': '2020-03-02', 'withdraw_on': '2020-03-20'})
-    file = dict(url=FILE, title='Zápis', parents=[page['key']], dates={'published_on': '2020-03-02'},
+    file = dict(url=FILE, title='Zápis', parents=[page['key']] if document_links else [], dates={'published_on': '2020-03-02'},
                 name='zapis.pdf', mime='application/pdf', evidence='Vyvěšeno: 2. 3. 2020')
-    for item, raw in [(page, HTML.encode()), (file, b'%PDF-1.7\nfixture\n%%EOF')]:
+    for item, raw in [(page, raw_html.encode()), (file, b'%PDF-1.7\nfixture\n%%EOF')]:
         sha = digest(raw)
         (objects / sha).write_bytes(raw)
         item['capture'] = {'sha256': sha, 'size': len(raw), 'captured_at': '2026-09-30T12:00:00+00:00'}
     manifest = dict(version=1, origin='https://vysker.cz', pages=[page], assets=[file], aliases={}, errors=[], complete=True)
     (Path(root) / 'manifest.json').write_text(json.dumps(manifest))
     return manifest
+
+
+def add_page(root, data, html, url='https://vysker.cz/historie/ms-7777'):
+    raw = html.encode()
+    page = extract(raw, url)
+    sha = digest(raw)
+    (Path(root) / 'objects' / sha).write_bytes(raw)
+    page['capture'] = dict(sha256=sha, size=len(raw), captured_at='2026-09-30T12:00:00+00:00')
+    data['pages'].append(page)
+    (Path(root) / 'manifest.json').write_text(json.dumps(data))
+    return page
 
 
 def navigation_bundle(root):
@@ -181,20 +193,24 @@ class ImportTests(unittest.TestCase):
                 self.assertEqual(conn.execute('SELECT title,published_on,withdraw_on,status FROM notices').fetchone(), ('Zápis',None,None,'archived'))
                 self.assertEqual(conn.execute('SELECT title FROM documents').fetchone(), ('Obyčejný dokument',))
                 self.assertEqual(conn.execute('SELECT count(*) FROM attachments').fetchone()[0], 2)
+                self.assertEqual(conn.execute('SELECT count(*) FROM pages').fetchone()[0], 0)
+                self.assertEqual(len(result['skipped_document_pages']), 2)
                 self.assertEqual(conn.execute('SELECT count(*) FROM notice_events').fetchone()[0], 0)
                 self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
                 notice_metadata = conn.execute('SELECT metadata FROM legacy_notice_imports').fetchone()[0]
                 self.assertIn(data['pages'][0]['key'], notice_metadata['navigation'])
                 again = import_bundle(conn, self.root, publish_content=True, classify_navigation=True, preview_notices=True)
                 self.assertEqual(again['new'], [])
-                self.assertEqual(len(again['unchanged']), 4)
+                self.assertEqual(len(again['unchanged']), 2)
 
     def test_local_reset_preserves_pages_and_file_links_and_restores_protection(self):
         navigation_bundle(self.root)
         with patch.dict(os.environ, {'OBEC_PRODUCTION':'false', 'OBEC_VEREJNA_URL':'http://127.0.0.1:3000', 'OBEC_DATABAZE':self.url}):
             with connect(self.url) as conn:
                 import_bundle(conn, self.root, publish_content=True)
-                conn.execute("UPDATE pages SET content=content || ' Local edit'")
+                attachment_id = conn.execute('SELECT id FROM attachments ORDER BY id LIMIT 1').fetchone()[0]
+                conn.execute("INSERT INTO pages(slug,title,content,updated_at) VALUES ('local','Local page',%s,'2026-10-01T12:00:00+00:00')",
+                             (f'Local edit [Zápis](</api/v1/attachments/{attachment_id}>)',))
                 pages = conn.execute('SELECT * FROM pages ORDER BY id').fetchall()
                 ids = dict(conn.execute('SELECT source_key,attachment_id FROM legacy_sources WHERE attachment_id IS NOT NULL'))
                 with self.assertRaisesRegex(ValueError, 'reconciliation'):
@@ -214,6 +230,70 @@ class ImportTests(unittest.TestCase):
             with connect(self.url) as conn:
                 self.assertEqual(conn.execute('SELECT count(*) FROM notices').fetchone()[0], 1)
                 self.assertEqual(conn.execute("SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgenabled='D'").fetchone()[0], 0)
+
+    def test_full_reimport_removes_only_imported_records_and_rolls_back_failures(self):
+        data = navigation_bundle(self.root)
+        page = add_page(self.root, data, '<div id="stred"><h1>Historie</h1><p>Text.</p></div>')
+        event = add_page(self.root, data, '<div id="stred"><h1>Setkání</h1><p>Na návsi.</p></div>',
+                         'https://vysker.cz/setkani/a-1')
+        event['event'] = dict(event_timing('1.10.2026 19:00'), location='Náves')
+        (Path(self.root) / 'manifest.json').write_text(json.dumps(data))
+        tables = ('pages', 'page_revisions', 'page_images', 'events', 'documents', 'notices',
+                  'attachments', 'notice_events', 'legacy_sources', 'legacy_notice_imports', 'legacy_sync_reviews')
+        with patch.dict(os.environ, {'OBEC_PRODUCTION':'false', 'OBEC_VEREJNA_URL':'http://127.0.0.1:3000', 'OBEC_DATABAZE':self.url}):
+            with connect(self.url) as conn:
+                import_bundle(conn, self.root, classify_navigation=True)
+                local_page = conn.execute("INSERT INTO pages(slug,title,content,updated_at) VALUES ('local','Local','Edited','2026-10-01') RETURNING id").fetchone()[0]
+                local_document = conn.execute("INSERT INTO documents(title,created_at) VALUES ('Local','2026-10-01') RETURNING id").fetchone()[0]
+                conn.execute("INSERT INTO notices(title) VALUES ('Local')")
+                conn.execute("INSERT INTO events(title,starts_at,ends_at,updated_at) VALUES ('Local','2026-10-01','2026-10-02','2026-10-01')")
+                conn.execute("INSERT INTO attachments(document_id,name,content_type,size_bytes,data) VALUES (%s,'local.pdf','application/pdf',1,%s)", (local_document, b'x'))
+                conn.execute('''INSERT INTO page_revisions(page_id,version,title,content,slug,published,saved_at)
+                    SELECT id,version,title,content,slug,published,updated_at FROM pages WHERE id=%s''', (local_page,))
+                conn.execute('''INSERT INTO page_images(page_id,name,content_type,size_bytes,width,height,data,sha256,created_at)
+                    SELECT id,'local.png','image/png',1,1,1,%s,'test','2026-10-01' FROM pages''', (b'x',))
+                conn.execute("INSERT INTO notice_events(notice_id,occurred_at,kind,payload,sha256) SELECT id,'2026-10-01','test','{}','test' FROM notices")
+                attachment_ids = dict(conn.execute('SELECT source_key,attachment_id FROM legacy_sources WHERE attachment_id IS NOT NULL'))
+                # The updated source page now links to a document and must disappear on reimport.
+                page['assets'].append(dict(url=FILE))
+                page['content'] += f'\n[Zápis](<{FILE}>)'
+                (Path(self.root) / 'manifest.json').write_text(json.dumps(data))
+                import_bundle(conn, self.root, classify_navigation=True, sync=True)
+                self.assertEqual(conn.execute('SELECT count(*) FROM legacy_sync_reviews').fetchone()[0], 1)
+                before = {table: conn.execute('SELECT * FROM '+table+' ORDER BY 1').fetchall() for table in tables}
+                local = {table: conn.execute('SELECT * FROM '+table+" WHERE title='Local' ORDER BY id").fetchall()
+                         for table in ('pages', 'events', 'documents', 'notices')}
+            with self.assertRaisesRegex(ValueError, 'Invalid mapped page slug'), connect(self.url) as conn:
+                reset_import(conn)
+                import_bundle(conn, self.root, page_map={'ms:1': 'invalid/slug'})
+            with connect(self.url) as conn:
+                self.assertEqual(before, {table: conn.execute('SELECT * FROM '+table+' ORDER BY 1').fetchall() for table in tables})
+                self.assertEqual(conn.execute("SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgenabled='D'").fetchone()[0], 0)
+                counts, preserved = reset_import(conn)
+                self.assertEqual(counts['pages'], 1)
+                self.assertEqual(counts['events'], 1)
+                self.assertEqual(counts['documents'], 1)
+                self.assertEqual(counts['notices'], 1)
+                self.assertEqual(counts['attachments'], 2)
+                self.assertEqual(counts['page_images'], 1)
+                self.assertEqual(counts['page_revisions'], 1)
+                self.assertEqual(counts['notice_events'], 1)
+                self.assertEqual(counts['legacy_sync_reviews'], 1)
+                self.assertEqual(preserved, attachment_ids)
+                result = import_bundle(conn, self.root, classify_navigation=True, attachment_ids=preserved)
+                self.assertEqual(len(result['skipped_document_pages']), 3)
+                self.assertEqual(conn.execute('SELECT count(*) FROM pages').fetchone()[0], 1)
+                self.assertEqual(conn.execute('SELECT count(*) FROM page_images').fetchone()[0], 1)
+                self.assertEqual(conn.execute('SELECT count(*) FROM page_revisions').fetchone()[0], 1)
+                self.assertEqual(conn.execute('SELECT count(*) FROM events').fetchone()[0], 2)
+                self.assertEqual(conn.execute('SELECT count(*) FROM attachments').fetchone()[0], 3)
+                self.assertEqual(conn.execute('SELECT count(*) FROM legacy_sync_reviews').fetchone()[0], 0)
+                self.assertEqual(local, {table: conn.execute('SELECT * FROM '+table+" WHERE title='Local' ORDER BY id").fetchall() for table in local})
+                self.assertEqual(preserved, dict(conn.execute('SELECT source_key,attachment_id FROM legacy_sources WHERE attachment_id IS NOT NULL')))
+                self.assertEqual(conn.execute("SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgenabled='D'").fetchone()[0], 0)
+            with patch.dict(os.environ, {'OBEC_PRODUCTION': 'true'}), connect(self.url) as conn:
+                with self.assertRaisesRegex(ValueError, 'local'):
+                    reset_import(conn)
 
     def test_navigation_notice_deadline_is_not_a_withdrawal_date(self):
         item = dict(title='Zápis', url=FILE, parents=['ms:1'], evidence='Vyvěšeno: 2. 3. 2020, Lhůta do: 20. 3. 2020')
@@ -236,24 +316,27 @@ class ImportTests(unittest.TestCase):
         with connect(self.url) as conn:
             conn.execute('SET TRANSACTION READ ONLY')
             report, _, _ = prepare(conn, self.root)
-            self.assertEqual(len(report['new']), 2)
+            self.assertEqual(len(report['new']), 1)
+            self.assertEqual(report['skipped_document_pages'], [{
+                'key': source_key(URL), 'url': URL, 'documents': [source_key(FILE)], 'already_imported': False}])
             self.assertEqual(conn.execute('SELECT count(*) FROM pages').fetchone()[0], 0)
         with connect(self.url) as conn:
             first = import_bundle(conn, self.root)
-            self.assertEqual(len(first['new']), 2)
+            self.assertEqual(len(first['new']), 1)
         with connect(self.url) as conn:
             second = import_bundle(conn, self.root)
             self.assertEqual(len(second['new']), 0)
-            self.assertEqual(len(second['unchanged']), 2)
+            self.assertEqual(len(second['unchanged']), 1)
             self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
-            self.assertEqual(conn.execute('SELECT count(*) FROM page_revisions').fetchone()[0], 1)
-            self.assertEqual(conn.execute('SELECT published FROM pages').fetchone()[0], False)
+            self.assertEqual(conn.execute('SELECT count(*) FROM page_revisions').fetchone()[0], 0)
+            self.assertEqual(conn.execute('SELECT count(*) FROM pages').fetchone()[0], 0)
             self.assertEqual(conn.execute('SELECT published_at FROM documents').fetchone()[0], None)
-            self.assertIn('/api/v1/attachments/', conn.execute('SELECT content FROM pages').fetchone()[0])
+            self.assertEqual(conn.execute('SELECT source_key,destination FROM legacy_sources').fetchall(),
+                             [(source_key(FILE), '/api/v1/attachments/1')])
             self.assertEqual(conn.execute("SELECT metadata->'dates'->>'published_on' FROM legacy_sources WHERE attachment_id IS NOT NULL").fetchone()[0], '2020-03-02')
 
     def test_conflicts_preserve_editor_changes_and_abort_whole_batch(self):
-        data = bundle(self.root)
+        data = bundle(self.root, document_links=False)
         with connect(self.url) as conn:
             import_bundle(conn, self.root)
             conn.execute("UPDATE pages SET content='Local editorial change'")
@@ -264,6 +347,89 @@ class ImportTests(unittest.TestCase):
         with connect(self.url) as conn:
             self.assertEqual(conn.execute('SELECT content FROM pages').fetchone()[0], 'Local editorial change')
             self.assertEqual(conn.execute('SELECT count(*) FROM attachments').fetchone()[0], 1)
+
+    def test_all_documents_import_without_their_container_or_duplicate_files(self):
+        data = bundle(self.root)
+        second = copy.deepcopy(data['assets'][0])
+        second.update(url=FILE.replace('123', '456'), title='Další zápis')
+        data['assets'].append(second)
+        data['pages'][0]['assets'].extend([dict(url=second['url']), dict(url=FILE)])
+        data['pages'][0]['content'] += f'\n[Další zápis](<{second["url"]}>)'
+        add_page(self.root, data, f'<div id="stred"><h1>Další stránka</h1><a href="{FILE}">Zápis</a></div>')
+        with connect(self.url) as conn:
+            first = import_bundle(conn, self.root, publish_content=True, page_map={source_key(URL): 'dokumenty'})
+            self.assertEqual(len(first['skipped_document_pages']), 2)
+            self.assertEqual(first['skipped_document_pages'][0]['documents'], sorted([source_key(FILE), source_key(second['url'])]))
+            self.assertEqual(conn.execute('SELECT count(*) FROM pages').fetchone()[0], 0)
+            self.assertEqual(conn.execute('SELECT count(*) FROM page_revisions').fetchone()[0], 0)
+            self.assertEqual(conn.execute('SELECT count(*) FROM documents WHERE status=\'published\'').fetchone()[0], 2)
+            self.assertEqual(conn.execute('SELECT count(*) FROM attachments').fetchone()[0], 2)
+            repeated = import_bundle(conn, self.root, publish_content=True)
+            self.assertEqual(repeated['new'], [])
+            self.assertEqual(len(repeated['unchanged']), 2)
+
+    def test_plain_pages_and_image_articles_keep_their_content_and_revisions(self):
+        data = bundle(self.root, document_links=False)
+        image = copy.deepcopy(data['assets'][0])
+        # The importer verifies file signatures, image decoding belongs to the upload API.
+        raw = b'\x89PNG\r\n\x1a\nfixture'
+        sha = digest(raw)
+        (Path(self.root) / 'objects' / sha).write_bytes(raw)
+        image.update(url='https://vysker.cz/assets/Image.ashx?id_obrazky=10', name='kaple.png', mime='image/png',
+                     parents=['ms:7777'], capture=dict(image['capture'], sha256=sha, size=len(raw)))
+        data['assets'].append(image)
+        add_page(self.root, data, f'<div id="stred"><h1>Kaple</h1><p>Naše kaple.</p><img src="{image["url"]}" alt="Kaple"></div>')
+        with connect(self.url) as conn:
+            report = import_bundle(conn, self.root)
+            self.assertEqual(report['skipped_document_pages'], [])
+            self.assertEqual(conn.execute('SELECT count(*) FROM pages WHERE NOT published').fetchone()[0], 2)
+            self.assertEqual(conn.execute('SELECT count(*) FROM page_revisions').fetchone()[0], 2)
+            self.assertIn('![Kaple](</api/v1/legacy-media/', conn.execute("SELECT content FROM pages WHERE title='Kaple'").fetchone()[0])
+            self.assertEqual(import_bundle(conn, self.root)['new'], [])
+
+    def test_existing_document_pages_keep_local_edits_and_source_conflicts(self):
+        data = bundle(self.root)
+        page = data['pages'][0]
+        with connect(self.url) as conn:
+            # Reproduce a page imported before document containers were excluded.
+            page_id = conn.execute("INSERT INTO pages(slug,title,content,updated_at) VALUES ('existing','Local title','Local edit','2026-10-01T12:00:00+00:00') RETURNING id").fetchone()[0]
+            conn.execute('''INSERT INTO legacy_sources
+                (source_key,source_url,fingerprint,captured_at,imported_at,metadata,page_id,destination)
+                VALUES (%s,%s,%s,%s,%s,'{}',%s,'/stranky/existing')''',
+                (page['key'], page['url'], fingerprint(page), page['capture']['captured_at'], page['capture']['captured_at'], page_id))
+            report = import_bundle(conn, self.root, sync=True)
+            self.assertTrue(report['skipped_document_pages'][0]['already_imported'])
+            self.assertEqual(report['unchanged'], [page['key']])
+            self.assertEqual(conn.execute('SELECT title,content FROM pages').fetchall(), [('Local title', 'Local edit')])
+            page['content'] = 'Changed source'
+            (Path(self.root) / 'manifest.json').write_text(json.dumps(data))
+            report = import_bundle(conn, self.root, sync=True)
+            self.assertEqual(report['conflicts'], [page['key']])
+            self.assertEqual(report['pending_reviews'], 1)
+            self.assertEqual(conn.execute('SELECT content FROM pages').fetchall(), [('Local edit',)])
+
+    def test_links_to_skipped_pages_remain_available_for_editorial_review(self):
+        data = bundle(self.root)
+        add_page(self.root, data, f'<div id="stred"><h1>Přehled</h1><a href="{URL}">Dokumenty</a></div>')
+        with connect(self.url) as conn:
+            report = import_bundle(conn, self.root, publish_content=True)
+            self.assertEqual(report['unresolved_internal_links'], [URL])
+            self.assertIn(URL, conn.execute('SELECT content FROM pages').fetchone()[0])
+            self.assertEqual(conn.execute('SELECT count(*) FROM legacy_sources WHERE source_key=%s', (source_key(URL),)).fetchone()[0], 0)
+            self.assertEqual(conn.execute('SELECT destination FROM legacy_sources WHERE source_key=%s', (source_key(FILE),)).fetchone()[0], '/api/v1/attachments/1')
+
+    def test_failed_document_capture_does_not_silently_drop_its_page(self):
+        data = bundle(self.root)
+        data['assets'][0]['error'] = '404'
+        data.update(complete=False, errors=[{'url': FILE, 'error': '404'}])
+        (Path(self.root) / 'manifest.json').write_text(json.dumps(data))
+        with connect(self.url) as conn:
+            report = import_bundle(conn, self.root, allow_incomplete=True)
+            self.assertEqual(report['skipped_document_pages'], [])
+            self.assertEqual(report['unresolved_internal_links'], [FILE])
+            self.assertEqual(len(report['capture_errors']), 1)
+            self.assertEqual(conn.execute('SELECT count(*) FROM pages').fetchone()[0], 1)
+            self.assertEqual(conn.execute('SELECT count(*) FROM documents').fetchone()[0], 0)
 
     def test_preview_does_not_publish_notices_or_their_files(self):
         bundle(self.root, notice=True)
