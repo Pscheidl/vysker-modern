@@ -77,6 +77,100 @@ Incomplete captures are refused by default. After reading the capture errors,
 Failures remain in the import report. This flag is **not** a claim of complete
 coverage, and missing documents must be reconciled before launch.
 
+## Periodic synchronization while both websites run
+
+`legacy_sync.py run` is the cron entry point. The original website remains the
+source for new items during parallel operation. Every run downloads a fresh
+snapshot without reusing response caches, imports new identities, and records
+changed identities for human review. It never updates or deletes existing
+content, including when an item disappears from the original site. Local edits,
+publication decisions and attachment URLs remain intact.
+
+The database primary key on `legacy_sources.source_key` and the application's
+transactional write lock prevent duplicate inserts, including concurrent imports
+and retries after interruption. A separate nonblocking database lock covers the
+whole scheduled crawl. If another sync is already running, the job exits
+successfully with `status: skipped` without downloading anything.
+
+Changed source content, file bytes, attachment descriptions and notice ownership
+are kept in `legacy_sync_reviews`, with at most one current proposal per original
+identity. Repeated detection updates that proposal instead of creating duplicates.
+New items continue importing even when other items require review. Missing source
+items leave both the live record and any pending review unchanged. The original
+strict `legacy_import.py import` command still aborts on changed identities.
+Use `legacy_import.py sync` for the same additive import from an existing bundle.
+
+Deploy the updated image and start the updated application first to apply migration
+`0008_legacy_sync_reviews.sql`. After reviewing the target database and its backup,
+run once on the host where production Compose is already running:
+
+```sh
+docker compose --env-file deploy/.env -f compose.production.yaml exec -T web \
+  python3 scripts/legacy_sync.py run \
+  --state /app/migration \
+  --page-map config/legacy-vysker-pages.json \
+  --notice-map config/legacy-vysker-notices.json \
+  --publish-content
+```
+
+The updated web image contains the Python dependencies, scripts and maps. The
+private `migration-state` volume stores reports and temporary captures, outside
+the public website. Database access uses the existing `OBEC_DATABAZE_FILE` secret.
+The crawler downloads the whole site, so choose the interval with the site's size
+and available bandwidth in mind. Completed runs remove temporary captures.
+Changed source bytes are retained in PostgreSQL with their proposal and are
+included in normal database backups. Private exported review files may be removed
+and regenerated from the database.
+
+`deploy/legacy-sync.cron.example` is an hourly `/etc/cron.d/` example. Replace
+`/srv/vysker` with the deployment checkout and arrange rotation of
+`/var/log/vysker-legacy-sync.log`. Installing the cron entry is a separate server
+operation. The job returns a nonzero exit code on failure, writes a compact result
+to stdout on success, and keeps these private files in `/app/migration`:
+
+- `last-run.json`: running, completed or failed attempt, including whether import committed
+- `last-success.json`: last completed synchronization and item counts/lists
+- `capture-errors.json`: failed source requests, including any deliberately allowed subset
+- `reviews.html` and `reviews.json`: all pending proposals with existing destinations,
+  current local text, source text/metadata and downloadable changed attachments
+
+Monitor the age of `last-success.json`, failures and `pending_reviews`. Unchanged
+source items do not create new reviews. No subscriber emails are sent. By default,
+new content is private. The example's `--publish-content` publishes new ordinary
+pages, documents and events, while notices remain drafts for editorial review.
+Previously imported drafts keep their existing publication state.
+
+Incomplete captures fail without database changes by default. Only after reviewing
+`capture-errors.json`, an operator may add `--allow-incomplete` to import the
+successfully captured subset. Missing pages are never treated as deletion requests.
+A failed report export after a committed import also returns failure, and retrying
+still cannot duplicate the already imported records.
+
+Download the private review report to the operator's computer, including its
+linked `review-files` directory:
+
+```sh
+docker compose --env-file deploy/.env -f compose.production.yaml cp web:/app/migration/. data/legacy-sync-review/
+```
+
+Read `reviews.html`, make any accepted changes through the administration, then
+mark the exact proposal reviewed using its `source_key` and `fingerprint` from
+`reviews.json`. This confirmation does not apply content changes:
+
+```sh
+docker compose --env-file deploy/.env -f compose.production.yaml exec -T web \
+  python3 scripts/legacy_sync.py acknowledge \
+  --source-key 'ms:1053' --fingerprint 'FINGERPRINT_FROM_REVIEW'
+
+docker compose --env-file deploy/.env -f compose.production.yaml exec -T web \
+  python3 scripts/legacy_sync.py reviews --output /app/migration
+```
+
+A stale confirmation is refused if another source change has replaced the
+proposal. The same acknowledged change stays closed on later runs. A different
+change reopens the review. Stop the cron entry before switching `vysker.cz` to
+the new application, after the final synchronization and content review.
+
 ## Mapping and fidelity
 
 The optional page map assigns the original office contact, municipality section

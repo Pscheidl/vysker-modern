@@ -61,7 +61,8 @@ def load_bundle(root, allow_incomplete=False):
 
 def prepare(conn, root, allow_incomplete=False, classify_navigation=False):
     manifest, items, capture = load_bundle(root, allow_incomplete)
-    known = dict(conn.execute('SELECT source_key,fingerprint FROM legacy_sources').fetchall())
+    known = {key: (signature, metadata) for key, signature, metadata in conn.execute(
+        'SELECT source_key,fingerprint,metadata FROM legacy_sources')}
     result = {'new': [], 'unchanged': [], 'conflicts': [], 'review': [],
               'capture_errors': manifest['errors'], 'source_summary': {'pages': len(manifest['pages']), 'assets': len(manifest['assets'])}}
     sections = notice_sections(items, capture) if classify_navigation else {}
@@ -80,13 +81,44 @@ def prepare(conn, root, allow_incomplete=False, classify_navigation=False):
         key = item['key']
         if item.get('review_required'):
             result['review'].append({'key': key, 'reason': item['review_required']})
-        elif key in known:
-            result['unchanged' if known[key] == fingerprint(item) else 'conflicts'].append(key)
-        else:
+        if key in known:
+            signature, metadata = known[key]
+            same = signature == fingerprint(item) and metadata.get('evidence') == item.get('evidence')
+            result['unchanged' if same else 'conflicts'].append(key)
+        elif not item.get('review_required'):
             result['new'].append(key)
         for reason in item.get('warnings', []):
             result['review'].append({'key': key, 'reason': reason})
+    result['conflicts'] = sorted(set(result['conflicts']))
+    result['unchanged'] = [key for key in result['unchanged'] if key not in result['conflicts']]
     return result, items, capture
+
+
+def queue_changes(conn, report, items, capture, timestamp):
+    conflicts = set(report['conflicts'])
+    sections = report.get('notice_sections', {})
+    for item in items:
+        if item['key'] not in conflicts:
+            continue
+        proposal = dict(item)
+        if 'notice_sections' in report and 'mime' in item:
+            proposal['notice_owner'] = bool(set(item.get('parents', [])) & sections.keys())
+        # Ownership changes need review even when the file bytes are unchanged.
+        signature = digest(json.dumps([fingerprint(item), item.get('evidence'), proposal.get('notice_owner')]).encode())
+        conn.execute('''INSERT INTO legacy_sync_reviews
+            (source_key,fingerprint,proposal,source_data,first_seen_at,last_seen_at)
+            VALUES (%s,%s,%s::jsonb,%s,%s,%s)
+            ON CONFLICT (source_key) DO UPDATE SET
+                first_seen_at=CASE WHEN legacy_sync_reviews.fingerprint=EXCLUDED.fingerprint
+                    THEN legacy_sync_reviews.first_seen_at ELSE EXCLUDED.first_seen_at END,
+                reviewed_at=CASE WHEN legacy_sync_reviews.fingerprint=EXCLUDED.fingerprint
+                    THEN legacy_sync_reviews.reviewed_at ELSE NULL END,
+                fingerprint=EXCLUDED.fingerprint,proposal=EXCLUDED.proposal,
+                source_data=EXCLUDED.source_data,last_seen_at=EXCLUDED.last_seen_at''',
+            (item['key'], signature, json.dumps(proposal, ensure_ascii=False),
+             capture.blob(item['capture']['sha256']), timestamp, timestamp))
+    report['pending_reviews'] = conn.execute(
+        'SELECT count(*) FROM legacy_sync_reviews WHERE reviewed_at IS NULL').fetchone()[0]
 
 
 def audit(conn, kind, id, timestamp):
@@ -95,15 +127,16 @@ def audit(conn, kind, id, timestamp):
 
 
 def import_bundle(conn, root, publish_content=False, allow_incomplete=False, page_map=None,
-                  classify_navigation=False, preview_notices=False, notice_map=None, attachment_ids=None):
-    """Caller owns transaction. Conflicts abort the entire batch before writes."""
+                  classify_navigation=False, preview_notices=False, notice_map=None, attachment_ids=None,
+                  sync=False):
+    """Caller owns transaction. Sync queues conflicts and imports only new identities."""
     conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':vysker-write', 0))")
     if preview_notices:
         require_local_preview()
         if not classify_navigation:
             raise ValueError('Preview notices require navigation classification')
     report, items, capture = prepare(conn, root, allow_incomplete, classify_navigation)
-    if report['conflicts']:
+    if report['conflicts'] and not sync:
         raise ValueError('Changed source records require manual reconciliation: ' + ', '.join(report['conflicts'][:20]))
     new = set(report['new'])
     page_map = page_map or {}
@@ -227,12 +260,14 @@ def import_bundle(conn, root, publish_content=False, allow_incomplete=False, pag
     report['unresolved_internal_links'] = sorted(unresolved)
     report['published_content'] = publish_content
     report['imported_at'] = timestamp
+    if sync:
+        queue_changes(conn, report, items, capture, timestamp)
     return report
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['plan', 'import'])
+    parser.add_argument('command', choices=['plan', 'import', 'sync'])
     parser.add_argument('--bundle', required=True)
     parser.add_argument('--report', required=True)
     parser.add_argument('--allow-incomplete', action='store_true')
@@ -240,7 +275,7 @@ def main():
     parser.add_argument('--classify-navigation', action='store_true', help='Import files under the original Úřední deska breadcrumb exclusively as notices.')
     parser.add_argument('--notice-map', help='Optional JSON mapping of source section keys to notice categories')
     parser.add_argument('--preview-notices', action='store_true', help='Make imported notices visible only in an isolated local preview.')
-    parser.add_argument('--publish-content', action='store_true', help='Publish ordinary pages/files for a reviewed preview. Notices stay drafts.')
+    parser.add_argument('--publish-content', action='store_true', help='Publish new ordinary pages/files/events. Notices stay drafts.')
     args = parser.parse_args()
     with connect() as conn:
         if args.command == 'plan':
@@ -250,7 +285,8 @@ def main():
             page_map = json.loads(Path(args.page_map).read_text()) if args.page_map else None
             notice_map = json.loads(Path(args.notice_map).read_text()) if args.notice_map else None
             report = import_bundle(conn, args.bundle, args.publish_content, args.allow_incomplete, page_map,
-                                   args.classify_navigation, args.preview_notices, notice_map)
+                                   args.classify_navigation, args.preview_notices, notice_map,
+                                   sync=args.command == 'sync')
     Path(args.report).write_text(json.dumps(report, ensure_ascii=False, indent=2))
     print(json.dumps({k: len(report[k]) for k in ('new', 'unchanged', 'conflicts', 'review')}, indent=2))
 

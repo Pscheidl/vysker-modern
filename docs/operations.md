@@ -72,6 +72,16 @@ CI checks the production image by starting it and downloading JS, WASM and CSS.
 Verify the real TLS certificate and SMTP service on the deployment host. Set up
 SPF, DKIM and DMARC for the sender.
 
+## Synchronization during the website transition
+
+The image also contains `scripts/legacy_sync.py`. While the old website is still
+the content source, a host cron entry can call it through `docker compose exec`.
+It adds new items without duplicates, queues changed items for review and keeps
+disappeared items. See [the synchronization procedure](migration.md#periodic-synchronization-while-both-websites-run)
+and `deploy/legacy-sync.cron.example` for the first run, scheduling and review.
+The private `migration-state` volume holds reports. Pending proposals and their
+captured bytes live in PostgreSQL and are included in database backups.
+
 ## Backups and recovery
 
 The `backup` service creates a consistent PostgreSQL custom archive daily using

@@ -53,6 +53,7 @@ services:
     secrets: [privacy, smtp_password, database_url]
     volumes:
       - backups:/app/backups
+      - migration-state:/app/migration
     depends_on:
       postgres:
         condition: service_healthy
@@ -169,6 +170,7 @@ volumes:
   postgres-data:
   backups:
   monitor-state:
+  migration-state:
   caddy-data:
   caddy-config:
 networks:

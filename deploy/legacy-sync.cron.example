@@ -1,0 +1,6 @@
+# Example for /etc/cron.d/vysker-legacy-sync, adjust /srv/vysker to the checkout.
+# Deploy the updated image and start web once to apply database migrations first.
+# Disable this job before switching vysker.cz to the new website.
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+0 * * * * root cd /srv/vysker && docker compose --env-file deploy/.env -f compose.production.yaml exec -T web python3 scripts/legacy_sync.py run --state /app/migration --page-map config/legacy-vysker-pages.json --notice-map config/legacy-vysker-notices.json --publish-content >> /var/log/vysker-legacy-sync.log 2>&1

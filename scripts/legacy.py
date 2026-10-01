@@ -262,10 +262,11 @@ class SafeRedirect(HTTPRedirectHandler):
 
 
 class Capture:
-    def __init__(self, root, delay=.4):
+    def __init__(self, root, delay=.4, verbose=True):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.delay = delay
+        self.verbose = verbose
         self.opener = build_opener(SafeRedirect())
 
     def fetch(self, url, limit):
@@ -338,7 +339,8 @@ class Capture:
                 for ref in item['assets']:
                     assets.setdefault(ref['url'], dict(ref, parents=[]))['parents'].append(key)
                 queue.extend(item['links'])
-                print(f'page {len(pages)} assets {len(assets)} {url}', flush=True)
+                if self.verbose:
+                    print(f'page {len(pages)} assets {len(assets)} {url}', flush=True)
             except Exception as error:
                 errors.append(dict(url=url, error=f'{type(error).__name__}: {error}'))
                 pages[key] = dict(key=key, url=url, error=str(error))
@@ -363,7 +365,8 @@ class Capture:
                 if not asset['name'].lower().endswith('.' + extension):
                     asset['name'] += '.' + extension
                 asset['mime'] = mime
-                print(f'asset {i+1}/{len(assets)} {len(raw)} bytes', flush=True)
+                if self.verbose:
+                    print(f'asset {i+1}/{len(assets)} {len(raw)} bytes', flush=True)
             except Exception as error:
                 asset['error'] = f'{type(error).__name__}: {error}'
                 errors.append(dict(url=url, error=asset['error']))
@@ -376,7 +379,8 @@ class Capture:
                        bytes=sum(a.get('capture', {}).get('size', 0) for a in assets.values()),
                        complete=not errors)
         (self.root / 'summary.json').write_text(json.dumps(summary, indent=2))
-        print(json.dumps(summary, indent=2))
+        if self.verbose:
+            print(json.dumps(summary, indent=2))
         return manifest
 
 
