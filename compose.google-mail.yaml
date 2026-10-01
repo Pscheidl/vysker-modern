@@ -1,0 +1,13 @@
+# Optional production overlay for Google configured entirely in administration.
+# Requires Docker Compose 2.24.4 or later for !override.
+# Use after compose.production.yaml for every deployment command.
+services:
+  web:
+    environment:
+      OBEC_SMTP_HOST: localhost
+      OBEC_SMTP_PORT: "587"
+      OBEC_SMTP_TLS: starttls
+      OBEC_SMTP_UZIVATEL: !reset null
+      OBEC_SMTP_HESLO_FILE: !reset null
+      OBEC_EMAIL_OD: noreply@localhost
+    secrets: !override [privacy, database_url]

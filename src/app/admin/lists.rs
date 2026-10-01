@@ -139,6 +139,8 @@ fn operation(value: &str) -> String {
         "deactivated" => "Deaktivace účtu",
         "sessions_revoked" => "Odhlášení všech zařízení",
         "retention_applied" => "Úklid po uplynutí lhůty uchování",
+        "test_requested" => "Vyžádání zkušebního e-mailu",
+        "test_sent" => "Přijetí zkušebního e-mailu SMTP serverem",
         _ => value,
     }
     .into()
@@ -155,6 +157,7 @@ fn object(value: &str) -> &str {
         "administrator" => "Správce",
         "subscriber" | "odberatel" => "Odběratel",
         "privacy" => "Ochrana údajů",
+        "mail_settings" => "Nastavení odesílání",
         _ => value,
     }
 }
@@ -166,7 +169,7 @@ pub fn MailHistory() -> impl IntoView {
         let path = format!("/api/v1/admin/mail?limit=21&offset={}", offset.get());
         async move { api::get::<Vec<api::MailRecord>>(&path).await }
     });
-    view! {<Title text="Rozesílání · Správa Vyskře"/><Heading title="Rozesílané zprávy" description="Komu byla zpráva určena a zda ji přijal SMTP server. Záznamy zůstávají po schválenou dobu uchování."/><p>"Přijetí SMTP serverem nepotvrzuje doručení do schránky ani přečtení."</p><button class="button secondary" type="button" on:click=move |_|data.refetch()>"Obnovit"</button>
+    view! {<Title text="Rozesílání · Správa Vyskře"/><div class="admin-title-row"><Heading title="Rozesílané zprávy" description="Komu byla zpráva určena a zda ji přijal SMTP server. Záznamy zůstávají po schválenou dobu uchování."/><div class="admin-create"><AdminLink href="/admin/posta/nastaveni" label="Nastavení odesílání" icon="mail"/></div></div><p>"Přijetí SMTP serverem nepotvrzuje doručení do schránky ani přečtení."</p><button class="button secondary" type="button" on:click=move |_|data.refetch()>"Obnovit"</button>
     <section class="admin-panel admin-list-panel"><Suspense fallback=Pending>{move||data.get().map(|result|match result {
         Err(error)=>view!{<FailureView error/>}.into_any(),
         Ok(rows)=>{let count=rows.len();view!{<div class="admin-table-wrap"><table class="admin-table"><caption class="sr-only">"Historie rozesílání"</caption><thead><tr><th>"Příjemce"</th><th>"Zpráva"</th><th>"Stav a čas v UTC"</th><th>"Přihlášení k odběru"</th></tr></thead><tbody>{rows.into_iter().take(20).map(|row|view!{<tr><td>{row.email}</td><td><strong>{row.subject}</strong><small>{match row.purpose.as_str(){"verification"=>"Ověření adresy","recovery"=>"Obnova hesla",_=>"Nový dokument"}}" · #"{row.id}</small></td><td>{match row.status.as_str(){"sent"=>"Přijato SMTP serverem","cancelled"=>"Zrušeno","expired"=>"Odkaz vypršel před odesláním","retrying"=>"Čeká na další pokus",_=>"Ve frontě"}}<small>{api::unix_date(row.sent_at.unwrap_or(row.created_at))}</small><small>{format!("Pokusů: {}",row.attempts)}</small></td><td>{row.subscriber_id.map(|id|view!{<a class="text-link" href=format!("/api/v1/admin/subscribers/{id}/export") download="doklad-odberu.json">"Stáhnout doklad"</a>})}</td></tr>}).collect_view()}</tbody></table></div><Pager offset count/>}.into_any()}

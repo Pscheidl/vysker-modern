@@ -5,6 +5,7 @@ pub mod documents;
 pub mod events;
 pub mod legacy;
 pub mod mail;
+pub mod mail_settings;
 pub mod management;
 pub mod navigation;
 pub mod notices;
@@ -202,6 +203,14 @@ pub fn router(state: Backend) -> Router {
         .route("/api/v1/search", get(search::endpoint))
         .route("/api/v1/ready", get(ready))
         .route("/api/v1/admin/mail", get(management::mail_history))
+        .route(
+            "/api/v1/admin/mail-settings",
+            get(mail_settings::get).put(mail_settings::update),
+        )
+        .route(
+            "/api/v1/admin/mail-settings/test",
+            post(mail_settings::test),
+        )
         .route("/api/v1/privacy", get(privacy::public_notice))
         .route(
             "/api/v1/admin/subscribers/{id}/consents",

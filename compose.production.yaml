@@ -43,15 +43,17 @@ services:
       OBEC_VEREJNA_URL: https://${DOMAIN:?Set DOMAIN in deploy/.env}
       OBEC_UKAZKOVA_DATA: "false"
       OBEC_PRIVACY_CONFIG: /run/secrets/privacy
-      OBEC_SMTP_HOST: ${SMTP_HOST:?Set SMTP_HOST}
+      OBEC_SMTP_HOST: ${SMTP_HOST:-localhost}
       OBEC_SMTP_PORT: ${SMTP_PORT:-587}
       OBEC_SMTP_TLS: starttls
-      OBEC_SMTP_UZIVATEL: ${SMTP_USERNAME:?Set SMTP_USERNAME}
+      OBEC_SMTP_UZIVATEL: ${SMTP_USERNAME:-}
       OBEC_SMTP_HESLO_FILE: /run/secrets/smtp_password
-      OBEC_EMAIL_OD: ${EMAIL_FROM:?Set EMAIL_FROM}
+      OBEC_EMAIL_OD: ${EMAIL_FROM:-noreply@localhost}
+      OBEC_MAIL_SETTINGS_KEY_FILE: /app/data/mail-settings.key
       OBEC_TRUSTED_PROXY: 172.30.64.2
     secrets: [privacy, smtp_password, database_url]
     volumes:
+      - mail-secrets:/app/data
       - backups:/app/backups
       - migration-state:/app/migration
     depends_on:
@@ -167,6 +169,7 @@ secrets:
   smtp_password:
     file: ./deploy/secrets/smtp-password.txt
 volumes:
+  mail-secrets:
   postgres-data:
   backups:
   monitor-state:

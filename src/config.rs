@@ -20,6 +20,7 @@ pub struct Config {
     pub smtp_tls: String,
     pub smtp_username: Option<String>,
     pub smtp_password: Option<String>,
+    pub mail_settings_key_file: std::path::PathBuf,
     pub email_from: String,
     pub production: bool,
     pub minimum_password_length: usize,
@@ -145,6 +146,11 @@ impl Config {
             smtp_tls,
             smtp_username,
             smtp_password,
+            mail_settings_key_file: env_var(
+                "OBEC_MAIL_SETTINGS_KEY_FILE",
+                "data/mail-settings.key",
+            )
+            .into(),
             email_from: env_var("OBEC_EMAIL_OD", "Vyskeř <noreply@localhost>"),
         })
     }

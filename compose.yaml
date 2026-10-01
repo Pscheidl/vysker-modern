@@ -41,6 +41,7 @@ services:
       OBEC_SMTP_TLS: none
       OBEC_EMAIL_OD: Vyskeř <noreply@vysker.test>
     volumes:
+      - mail-secrets:/app/data
       - ./config/privacy.example.json:/app/config/privacy.example.json:ro
     ports:
       - "127.0.0.1:3000:3000"
@@ -72,6 +73,7 @@ services:
       mailpit:
         condition: service_healthy
 volumes:
+  mail-secrets:
   postgres-data:
   cargo-registry:
   test-target:

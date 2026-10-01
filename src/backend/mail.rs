@@ -20,6 +20,44 @@ pub fn transport(s: &Backend) -> anyhow::Result<AsyncSmtpTransport<Tokio1Executo
     Ok(builder.build())
 }
 
+/// Refresh settings before claiming a message and reuse the SMTP pool until
+/// its credentials or sender change. A settings failure leaves queues untouched.
+pub struct Worker {
+    state: Backend,
+    smtp: AsyncSmtpTransport<Tokio1Executor>,
+}
+
+impl Worker {
+    pub fn new(state: &Backend) -> anyhow::Result<Self> {
+        Ok(Self {
+            state: state.clone(),
+            smtp: transport(state)?,
+        })
+    }
+
+    pub async fn deliver_one(
+        &mut self,
+        state: &Backend,
+        now: OffsetDateTime,
+    ) -> anyhow::Result<bool> {
+        let config = super::mail_settings::effective_config(state).await?;
+        let previous = &self.state.config;
+        if config.smtp_host != previous.smtp_host
+            || config.smtp_port != previous.smtp_port
+            || config.smtp_tls != previous.smtp_tls
+            || config.smtp_username != previous.smtp_username
+            || config.smtp_password != previous.smtp_password
+            || config.email_from != previous.email_from
+        {
+            let mut configured = state.clone();
+            configured.config = std::sync::Arc::new(config);
+            self.smtp = transport(&configured)?;
+            self.state = configured;
+        }
+        deliver_one(&self.state, &self.smtp, now).await
+    }
+}
+
 pub async fn enqueue_publication(
     conn: &mut PgConnection,
     s: &Backend,

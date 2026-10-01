@@ -35,7 +35,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Validate production Compose
-        run: docker compose --env-file deploy/.env.example -f compose.production.yaml config --quiet
+        run: |
+          docker compose --env-file deploy/.env.example -f compose.production.yaml config --quiet
+          docker compose --env-file deploy/.env.example -f compose.production.yaml -f compose.google-mail.yaml config --quiet
       - name: Validate reverse proxy
         run: docker run --rm -e DOMAIN=localhost -e TLS_EMAIL=test@example.test -e ADMIN_NETWORKS=127.0.0.1/32 -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.11.4 caddy validate --config /etc/caddy/Caddyfile
       - name: Build complete Leptos production image

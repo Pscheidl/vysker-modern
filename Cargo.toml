@@ -32,6 +32,7 @@ anyhow = { version = "1.0.104", optional = true }
 axum = { version = "0.8.9", optional = true, features = ["multipart"] }
 argon2 = { version = "0.5.3", optional = true }
 rand = { version = "0.8.5", optional = true }
+ring = { version = "0.17", optional = true }
 sha2 = { version = "0.10.9", optional = true }
 lettre = { version = "0.11", optional = true, default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls", "pool"] }
 time-tz = { version = "2", optional = true }
@@ -58,7 +59,7 @@ pulldown-cmark = { version = "0.13", default-features = false, features = ["html
 
 [features]
 default = ["ssr"]
-ssr = ["dep:image", "dep:anyhow", "dep:axum", "dep:leptos_axum", "dep:sqlx", "dep:tokio", "dep:tower-http", "dep:tracing", "dep:tracing-subscriber", "dep:serde_json", "dep:argon2", "dep:rand", "dep:sha2", "dep:lettre", "dep:time-tz", "dep:url", "dep:percent-encoding", "dep:rpassword", "leptos/ssr", "leptos_meta/ssr", "leptos_router/ssr"]
+ssr = ["dep:image", "dep:anyhow", "dep:axum", "dep:leptos_axum", "dep:sqlx", "dep:tokio", "dep:tower-http", "dep:tracing", "dep:tracing-subscriber", "dep:serde_json", "dep:argon2", "dep:rand", "dep:ring", "dep:sha2", "dep:lettre", "dep:time-tz", "dep:url", "dep:percent-encoding", "dep:rpassword", "leptos/ssr", "leptos_meta/ssr", "leptos_router/ssr"]
 hydrate = ["leptos/hydrate", "dep:wasm-bindgen", "dep:console_error_panic_hook", "dep:gloo-net", "dep:serde_json", "dep:percent-encoding"]
 demo = ["leptos/csr", "dep:serde_json", "dep:console_error_panic_hook"]
 

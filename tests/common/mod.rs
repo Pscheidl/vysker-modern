@@ -41,6 +41,8 @@ impl App {
             smtp_tls: "none".into(),
             smtp_username: None,
             smtp_password: None,
+            mail_settings_key_file: std::env::temp_dir()
+                .join(format!("obec-mail-settings-{}.key", auth::token())),
             email_from: "Vyskeř <noreply@vysker.test>".into(),
         };
         let pool = test_pool().await;

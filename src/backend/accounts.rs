@@ -47,7 +47,11 @@ pub struct AccountState {
 }
 
 // Expensive Argon2 work happens before taking the PostgreSQL advisory write lock.
-async fn reauthenticate(s: &Backend, admin: &auth::Admin, password: String) -> Result<String> {
+pub(super) async fn reauthenticate(
+    s: &Backend,
+    admin: &auth::Admin,
+    password: String,
+) -> Result<String> {
     auth::throttle(
         s,
         &format!("reauth:{}", admin.id),
@@ -66,7 +70,7 @@ async fn reauthenticate(s: &Backend, admin: &auth::Admin, password: String) -> R
     Ok(stored)
 }
 
-async fn current(
+pub(super) async fn current(
     conn: &mut sqlx::PgConnection,
     admin: &auth::Admin,
     password_hash: &str,

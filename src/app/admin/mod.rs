@@ -9,6 +9,8 @@ mod events;
 #[cfg(not(feature = "demo"))]
 mod lists;
 #[cfg(not(feature = "demo"))]
+mod mail_settings;
+#[cfg(not(feature = "demo"))]
 mod markdown_editor;
 #[cfg(not(feature = "demo"))]
 mod navigation;
@@ -232,6 +234,7 @@ mod workspace {
                             "navigace"=>view!{<super::navigation::NavigationSettings/>}.into_any(),
                             "kategorie"=>view!{<super::navigation::NavigationSettings categories=true/>}.into_any(),
                             "posta"=>view!{<MailHistory/>}.into_any(),
+                            "posta/nastaveni"=>view!{<super::mail_settings::MailSettings/>}.into_any(),
                             "ucty"=>view!{<Accounts/>}.into_any(),
                             "audit"=>view!{<AuditLog/>}.into_any(),
                             _=> {

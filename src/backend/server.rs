@@ -38,7 +38,7 @@ pub async fn initialize() -> anyhow::Result<Backend> {
     Ok(state)
 }
 pub async fn serve(state: Backend, app: axum::Router) -> anyhow::Result<()> {
-    let smtp = mail::transport(&state)?;
+    let mut sender = mail::Worker::new(&state)?;
     let listener = tokio::net::TcpListener::bind(state.config.bind_address).await?;
     let (stop, mut stopped) = watch::channel(false);
     let mut mail_stopped = stopped.clone();
@@ -70,7 +70,7 @@ pub async fn serve(state: Backend, app: axum::Router) -> anyhow::Result<()> {
                 _=interval.tick()=>{
                     for _ in 0..20 {
                         if *mail_stopped.borrow() { break; }
-                        match mail::deliver_one(&mail_state,&smtp,OffsetDateTime::now_utc()).await {
+                        match sender.deliver_one(&mail_state,OffsetDateTime::now_utc()).await {
                             Ok(true)=>{}, Ok(false)=>break,
                             Err(error)=>{tracing::error!(%error,"zpracování fronty selhalo");break;}
                         }

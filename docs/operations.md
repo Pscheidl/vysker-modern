@@ -7,11 +7,23 @@ fonts and administrator CLI. `compose.production.yaml` adds Caddy with HTTPS,
 a persistent database, daily local backups and an administration network allowlist
 for the office or VPN. `compose.yaml` remains the development and test setup.
 
+For Google configured entirely through administration, use the optional
+`compose.google-mail.yaml` overlay with Docker Compose 2.24.4 or later.
+Add `-f compose.google-mail.yaml` immediately after `-f compose.production.yaml`
+in every command below, including administrator creation and local preparation.
+Leave `SMTP_*` and `EMAIL_FROM` unset and skip `smtp-password.txt`.
+The overlay removes the SMTP credential environment entries and secret mount,
+using Docker's [reset and override rules](https://docs.docker.com/reference/compose-file/merge/).
+Database and privacy secrets are still required. During local preparation,
+configure Google in **Rozesílání → Nastavení odesílání** and send a test.
+Until then, messages remain queued. With this overlay, returning to server
+settings also leaves messages queued until Google is configured again.
+
 1. Copy `deploy/.env.example` to the ignored `deploy/.env` file. Set the domain,
-   SMTP settings, sender and specific `ADMIN_NETWORKS`. The example `.test`
+   specific `ADMIN_NETWORKS` and, for server-managed SMTP, its settings and sender. The example `.test`
    domains and `192.0.2.1` address are placeholders.
-2. Add municipality-approved `privacy.json` and `smtp-password.txt` files under
-   the ignored `deploy/secrets/` directory. The password file must be readable
+2. Add municipality-approved `privacy.json` under the ignored `deploy/secrets/`
+   directory. Server-managed SMTP also requires `smtp-password.txt`. The password file must be readable
    by container UID 10001. Restrict host directory access to the operator.
    Add separate random passwords in `postgres-password.txt` (database operator)
    and `database-password.txt` (application role). Put
@@ -62,6 +74,12 @@ Stop the preparation server, then start production:
 docker compose --env-file deploy/.env -f compose.production.yaml up -d
 ```
 
+For Google configured through administration, the production start command is:
+
+```bash
+docker compose --env-file deploy/.env -f compose.production.yaml -f compose.google-mail.yaml up -d
+```
+
 Caddy requires correct DNS and reachable ports 80 and 443. The application port
 is not published. `ADMIN_NETWORKS` must contain only approved ranges. Do not
 use `0.0.0.0/0`. An additional proxy or CDN requires a review of trusted IPs,
@@ -89,6 +107,13 @@ The `backup` service creates a consistent PostgreSQL custom archive daily using
 publishing the file atomically. This does not replace a full restore rehearsal.
 Retention comes from the approved `retention.backup_days` value. Files have mode
 0600. Supplement local backups with encrypted offsite copies and monitoring.
+
+Google sending configured in the administration also needs the separate
+`mail-secrets` volume, containing `/app/data/mail-settings.key`. Database dumps
+contain the encrypted credential but do not contain this key. Back up the key
+separately with restricted access and restore it when moving the application.
+All web replicas must share the same key. See [mail.md](mail.md) for configuration
+and recovery when the key is lost.
 
 Create a manual snapshot:
 
