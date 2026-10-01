@@ -173,13 +173,14 @@ fn DetailContent(notice: Notice) -> impl IntoView {
     view! {
         <Title text=format!("{} · Vyskeř",title)/>
         <header class="page-heading detail-heading"><div class="detail-eyebrow"><p class="eyebrow">{notice.category}</p><span class=if archived {"status-badge"}else{"status-badge success"}>{if archived {"Archivováno"}else{"Vyvěšeno"}}</span></div><h1>{notice.title}</h1></header>
+        {notice.import_origin.map(|_| view!{<ImportNote/>})}
         <div class="detail-layout"><article class="detail-content"><h2>"Informace o dokumentu"</h2><p class="document-description">{notice.description}</p><dl class="document-facts"><div><dt>"Číslo jednací"</dt><dd>{notice.reference}</dd></div><div><dt>"Zveřejnil"</dt><dd>{notice.issuer}</dd></div></dl>
             <section class="attachments" aria-labelledby="attachments-title"><h2 id="attachments-title">"Přílohy dokumentu"</h2>
                 <Show when=move || archived && no_files><div class="info-banner"><Icon name="archive"/><div><strong>"Přílohy už nejsou k dispozici."</strong><p>"Po sejmutí byly odstraněny. Záznam o zveřejnění zůstává v archivu."</p></div></div></Show>
                 {notice.attachments.into_iter().map(|file|view!{<div class="attachment"><Icon name="paper"/><div><strong>{file.name}</strong><p>{if file.removed {"Příloha odstraněna".to_string()}else{file.size.clone()}}</p></div>{match file.url {Some(url)=>view!{<a class="text-link" href=url download>"Stáhnout"<Icon/></a>}.into_any(),None=>view!{<span class="attachment-state">{if file.removed {"Nedostupná"}else{"Ukázka"}}</span>}.into_any()}}</div>}).collect_view()}
                 <Show when=move || !no_files && cfg!(feature="demo")><p class="field-note">"V tomto náhledu jsou uvedeny názvy příloh. Skutečné soubory budou dostupné po jejich nahrání."</p></Show>
             </section>
-        </article><aside class="posting-panel" aria-label="Doba zveřejnění"><Icon name="calendar"/><h2>"Doba zveřejnění"</h2><dl><div><dt>"Vyvěšeno"</dt><dd><time datetime=notice.posted_iso>{notice.posted}</time></dd></div><div><dt>{if archived {"Sejmuto"}else{"Datum sejmutí"}}</dt><dd>{notice.ends}</dd></div></dl>
+        </article><aside class="posting-panel" aria-label="Doba zveřejnění"><Icon name="calendar"/><h2>"Doba zveřejnění"</h2><dl><div><dt>"Vyvěšeno"</dt><dd><time datetime=(!notice.posted_iso.is_empty()).then_some(notice.posted_iso.clone())>{notice.posted}</time></dd></div><div><dt>{if archived {"Sejmuto"}else{"Datum sejmutí"}}</dt><dd>{notice.ends}</dd></div></dl>
             {if !archived {notice.remaining.map(|d|view!{<span class="status-badge">{remaining_text(d)}</span>})}else{None}}
             <p>{if notice.retain_files {"Přílohy se po sejmutí ponechávají v archivu."}else{"Po sejmutí zůstane v archivu záznam bez příloh."}}</p>
         </aside></div>

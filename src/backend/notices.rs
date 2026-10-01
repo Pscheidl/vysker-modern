@@ -129,7 +129,7 @@ pub struct NoticeRecord {
     pub reference_number: Option<String>,
     pub category_id: Option<i64>,
     pub issuer: Option<String>,
-    pub published_on: Date,
+    pub published_on: Option<Date>,
     pub withdraw_on: Option<Date>,
     pub withdrawn_at: Option<String>,
     pub retain_attachments: bool,
@@ -197,7 +197,7 @@ pub async fn update(
         ));
     }
     if old.status == "published"
-        && (posted != old.published_on || end.is_some_and(|d| d <= today(now)))
+        && (Some(posted) != old.published_on || end.is_some_and(|d| d <= today(now)))
     {
         return Err(conflict(
             "U vyvěšeného záznamu nelze změnit den vyvěšení ani nastavit uplynulou lhůtu. Použijte sejmutí.",
@@ -228,13 +228,16 @@ pub async fn publish_at(s: &Backend, id: i64, actor: i64, now: OffsetDateTime) -
     if record.status != "draft" {
         return Err(conflict("Zveřejnit lze pouze koncept."));
     }
-    if record.published_on < today(now) {
+    let posted = record
+        .published_on
+        .ok_or_else(|| bad("Datum vyvěšení není uvedeno."))?;
+    if posted < today(now) {
         return Err(bad(
             "Zveřejnění nelze zpětně datovat. Upravte datum konceptu.",
         ));
     }
     let review = record.review()?;
-    review.earliest(record.published_on).map_err(bad)?;
+    review.earliest(posted).map_err(bad)?;
     if record.retain_attachments {
         let until = review
             .archive_until
@@ -265,7 +268,7 @@ pub async fn publish_at(s: &Backend, id: i64, actor: i64, now: OffsetDateTime) -
     if record.withdraw_on.is_some_and(|d| d <= today(now)) {
         return Err(bad("Lhůta dokumentu už uplynula."));
     }
-    let status = if record.published_on > today(now) {
+    let status = if posted > today(now) {
         "scheduled"
     } else {
         "published"
@@ -320,13 +323,12 @@ pub async fn withdraw(
         .await?
         .ok_or_else(missing)?;
     let input = input.map(|v| v.0).unwrap_or_default();
-    if record
-        .review()?
-        .earliest(record.published_on)
-        .map_err(bad)?
-        .is_some_and(|date| today(now) < date)
-        && !input.emergency
-    {
+    let minimum = record
+        .published_on
+        .map(|posted| record.review()?.earliest(posted).map_err(bad))
+        .transpose()?
+        .flatten();
+    if minimum.is_some_and(|date| today(now) < date) && !input.emergency {
         return Err(conflict(
             "Minimální doba zveřejnění dosud neuplynula. Předčasné sejmutí je možné pouze jako odůvodněný incident.",
         ));
@@ -379,7 +381,10 @@ pub async fn maintenance(s: &Backend, now: OffsetDateTime) -> Result<()> {
     let scheduled: Vec<NoticeRecord> = sqlx::query_as("SELECT * FROM notices WHERE status='scheduled' AND published_on<=$1 AND (withdraw_on IS NULL OR withdraw_on>$2) ORDER BY id LIMIT 500")
         .bind(today(now)).bind(today(now)).fetch_all(&mut *tx).await?;
     for record in scheduled {
-        if record.published_on < today(now) {
+        if record
+            .published_on
+            .is_some_and(|posted| posted < today(now))
+        {
             sqlx::query("UPDATE notices SET status='draft',updated_at=$1 WHERE id=$2")
                 .bind(timestamp(now))
                 .bind(record.id)
@@ -451,7 +456,7 @@ pub async fn admin_list(
 ) -> Result<Json<Vec<NoticeRecord>>> {
     let (limit, offset) = p.bounds()?;
     Ok(Json(
-        sqlx::query_as("SELECT * FROM notices ORDER BY id DESC LIMIT $1 OFFSET $2")
+        sqlx::query_as("SELECT * FROM notices ORDER BY published_on DESC NULLS LAST,id DESC LIMIT $1 OFFSET $2")
             .bind(limit)
             .bind(offset)
             .fetch_all(&s.pool)
@@ -475,13 +480,13 @@ pub async fn public_list(
     }
     .bounds()?;
     let now = OffsetDateTime::now_utc();
-    let rows:Vec<NoticeRecord>=sqlx::query_as("SELECT * FROM notices WHERE ($1=FALSE AND status='published' AND published_on<=$2 AND (withdraw_on IS NULL OR withdraw_on>$3)) OR ($4=TRUE AND (status IN ('withdrawn','archived') OR (status='published' AND withdraw_on<=$5))) ORDER BY published_on DESC,id DESC LIMIT $6 OFFSET $7")
+    let rows:Vec<NoticeRecord>=sqlx::query_as("SELECT * FROM notices WHERE ($1=FALSE AND status='published' AND (published_on IS NULL OR published_on<=$2) AND (withdraw_on IS NULL OR withdraw_on>$3)) OR ($4=TRUE AND (status IN ('withdrawn','archived') OR (status='published' AND withdraw_on<=$5))) ORDER BY published_on DESC NULLS LAST,id DESC LIMIT $6 OFFSET $7")
         .bind(q.archived).bind(today(now)).bind(today(now)).bind(q.archived).bind(today(now)).bind(limit).bind(offset).fetch_all(&s.pool).await?;
     Ok(Json(rows.into_iter().map(|r| r.into_public(now)).collect()))
 }
 pub async fn detail(State(s): State<Backend>, Path(id): Path<i64>) -> Result<Json<NoticeDetail>> {
     let record:NoticeRecord = sqlx::query_as(
-        "SELECT * FROM notices WHERE id=$1 AND status IN ('published','withdrawn','archived') AND published_on<=$2",
+        "SELECT * FROM notices WHERE id=$1 AND status IN ('published','withdrawn','archived') AND (status='archived' OR published_on IS NULL OR published_on<=$2)",
     ).bind(id).bind(today(OffsetDateTime::now_utc())).fetch_optional(&s.pool).await?.ok_or_else(missing)?;
     let files =
         super::documents::public_notice_files(&s.pool, id, OffsetDateTime::now_utc()).await?;
@@ -511,7 +516,7 @@ impl NoticeRecord {
     }
     pub fn active(&self, now: OffsetDateTime) -> bool {
         self.status == "published"
-            && self.published_on <= today(now)
+            && self.published_on.is_none_or(|posted| posted <= today(now))
             && self.withdraw_on.is_none_or(|d| d > today(now))
     }
     pub fn files_public(&self, now: OffsetDateTime) -> bool {

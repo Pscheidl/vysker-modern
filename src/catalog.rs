@@ -1,5 +1,5 @@
 //! Sdílené veřejné kontrakty pro katalog a obsahové stránky.
-use crate::content::Attachment;
+use crate::content::{Attachment, ImportOrigin};
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -9,6 +9,8 @@ pub struct Document {
     pub title: String,
     pub description: String,
     pub files: Vec<Attachment>,
+    #[serde(default)]
+    pub import_origin: Option<ImportOrigin>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Page {
@@ -21,17 +23,25 @@ pub struct Page {
 pub async fn load_document(id: i64) -> Result<Option<Document>, ServerFnError> {
     let pool = use_context::<sqlx::PgPool>()
         .ok_or_else(|| ServerFnError::new("Databáze není dostupná."))?;
+    document_from_pool(&pool, id).await
+}
+
+#[cfg(feature = "ssr")]
+pub async fn document_from_pool(
+    pool: &sqlx::PgPool,
+    id: i64,
+) -> Result<Option<Document>, ServerFnError> {
     let row: Option<(String, String)> = sqlx::query_as(
         "SELECT title,description FROM documents WHERE id=$1 AND status='published'",
     )
     .bind(id)
-    .fetch_optional(&pool)
+    .fetch_optional(pool)
     .await
     .map_err(|_| ServerFnError::new("Dokument nelze načíst."))?;
     let Some((title, description)) = row else {
         return Ok(None);
     };
-    let rows:Vec<(i64,String,i64,bool)>=sqlx::query_as("SELECT id,name,size_bytes,data IS NOT NULL AND removed_at IS NULL FROM attachments WHERE document_id=$1 ORDER BY sort_order,id").bind(id).fetch_all(&pool).await.map_err(|_|ServerFnError::new("Přílohy nelze načíst."))?;
+    let rows:Vec<(i64,String,i64,bool)>=sqlx::query_as("SELECT id,name,size_bytes,data IS NOT NULL AND removed_at IS NULL FROM attachments WHERE document_id=$1 ORDER BY sort_order,id").bind(id).fetch_all(pool).await.map_err(|_|ServerFnError::new("Přílohy nelze načíst."))?;
     let files = rows
         .into_iter()
         .map(|(id, name, size, available)| Attachment {
@@ -52,6 +62,9 @@ pub async fn load_document(id: i64) -> Result<Option<Document>, ServerFnError> {
         title,
         description,
         files,
+        import_origin: crate::backend::legacy::import_origin(pool, None, Some(id), true)
+            .await
+            .map_err(|_| ServerFnError::new("Původ dokumentu nelze načíst."))?,
     }))
 }
 #[cfg(feature = "demo")]

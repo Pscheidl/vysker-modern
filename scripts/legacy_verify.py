@@ -48,8 +48,15 @@ def verify(base):
                 else:
                     redirects += 1
         files = conn.execute("""SELECT a.id,a.sha256,a.size_bytes FROM attachments a
-            JOIN documents d ON d.id=a.document_id JOIN legacy_sources s ON s.attachment_id=a.id
-            WHERE d.status='published' AND a.data IS NOT NULL AND a.removed_at IS NULL ORDER BY a.id""").fetchall()
+            LEFT JOIN documents d ON d.id=a.document_id LEFT JOIN notices n ON n.id=a.notice_id
+            JOIN legacy_sources s ON s.attachment_id=a.id
+            WHERE (d.status='published' OR
+                (n.status='published' AND (n.published_on IS NULL OR n.published_on<=CURRENT_DATE)
+                    AND (n.withdraw_on IS NULL OR n.withdraw_on>CURRENT_DATE)) OR
+                (n.status IN ('published','archived','withdrawn') AND n.retain_attachments
+                    AND coalesce(n.review_json::jsonb->>'archive_basis','')<>''
+                    AND (n.review_json::jsonb->>'archive_until')::date>CURRENT_DATE))
+                AND a.data IS NOT NULL AND a.removed_at IS NULL ORDER BY a.id""").fetchall()
         for id, expected, size in files:
             checksum = hashlib.sha256()
             actual = 0

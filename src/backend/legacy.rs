@@ -9,6 +9,37 @@ use axum::{
 };
 use std::collections::BTreeMap;
 
+/// The import marker survives archival, but a source link follows file visibility.
+pub(crate) async fn import_origin(
+    pool: &sqlx::PgPool,
+    notice_id: Option<i64>,
+    document_id: Option<i64>,
+    show_link: bool,
+) -> sqlx::Result<Option<crate::content::ImportOrigin>> {
+    let source: Option<String> = sqlx::query_scalar(
+        "SELECT s.source_url FROM legacy_sources s
+        LEFT JOIN legacy_notice_imports n ON n.source_key=s.source_key
+        WHERE s.notice_id=$1 OR n.notice_id=$1 OR s.document_id=$2
+        ORDER BY (s.attachment_id IS NOT NULL),s.source_key LIMIT 1",
+    )
+    .bind(notice_id)
+    .bind(document_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(source.map(|source| crate::content::ImportOrigin {
+        source_url: show_link.then(|| source_link(&source)).flatten(),
+    }))
+}
+
+fn source_link(source: &str) -> Option<String> {
+    let parsed = url::Url::parse(source).ok()?;
+    (matches!(parsed.scheme(), "http" | "https")
+        && matches!(parsed.host_str(), Some("vysker.cz" | "www.vysker.cz"))
+        && parsed.username().is_empty()
+        && parsed.password().is_none())
+    .then(|| parsed.to_string())
+}
+
 const PATH_SAFE: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
     .remove(b'/')
     .remove(b'=')
@@ -138,10 +169,20 @@ pub async fn redirects(State(state): State<Backend>, request: Request, next: Nex
 }
 
 pub async fn media(State(state): State<Backend>, Path(id): Path<i64>) -> super::Result<Response> {
-    let file: Option<(String, Vec<u8>)> = sqlx::query_as(
-        "SELECT a.content_type,a.data FROM attachments a JOIN documents d ON d.id=a.document_id JOIN legacy_sources s ON s.attachment_id=a.id WHERE a.id=$1 AND d.status='published' AND a.removed_at IS NULL AND a.data IS NOT NULL AND a.content_type IN ('image/png','image/jpeg','image/gif','image/webp')"
+    let file: Option<(String, Vec<u8>, Option<i64>)> = sqlx::query_as(
+        "SELECT a.content_type,a.data,a.notice_id FROM attachments a LEFT JOIN documents d ON d.id=a.document_id JOIN legacy_sources s ON s.attachment_id=a.id WHERE a.id=$1 AND (d.status='published' OR a.notice_id IS NOT NULL) AND a.removed_at IS NULL AND a.data IS NOT NULL AND a.content_type IN ('image/png','image/jpeg','image/gif','image/webp')"
     ).bind(id).fetch_optional(&state.pool).await?;
-    let (mime, bytes) = file.ok_or_else(missing)?;
+    let (mime, bytes, notice_id) = file.ok_or_else(missing)?;
+    if let Some(id) = notice_id {
+        let record: super::notices::NoticeRecord =
+            sqlx::query_as("SELECT * FROM notices WHERE id=$1")
+                .bind(id)
+                .fetch_one(&state.pool)
+                .await?;
+        if !record.files_public(time::OffsetDateTime::now_utc()) {
+            return Err(missing());
+        }
+    }
     let mut headers = HeaderMap::new();
     headers.insert(header::CONTENT_TYPE, mime.parse().map_err(|_| missing())?);
     headers.insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());

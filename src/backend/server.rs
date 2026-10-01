@@ -121,6 +121,15 @@ pub async fn check_launch_content(state: &Backend) -> anyhow::Result<()> {
     if !state.config.production {
         return Ok(());
     }
+    let preview_notices: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM legacy_notice_imports WHERE preview_published=TRUE)",
+    )
+    .fetch_one(&state.pool)
+    .await?;
+    anyhow::ensure!(
+        !preview_notices,
+        "Databáze obsahuje místní náhled převzaté úřední desky. Pro produkci proveďte samostatný import a kontrolu vyvěšení."
+    );
     for slug in REQUIRED_PAGES {
         let content: Option<String> =
             sqlx::query_scalar("SELECT content FROM pages WHERE slug=$1 AND published=TRUE")

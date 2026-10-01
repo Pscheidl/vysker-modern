@@ -79,7 +79,7 @@ pub async fn notices(
 ) -> Result<Json<Vec<notices::NoticeRecord>>> {
     let (limit, offset, pattern) =
         f.values(&["draft", "scheduled", "published", "archived", "withdrawn"])?;
-    Ok(Json(sqlx::query_as("SELECT * FROM notices WHERE ($1='' OR status=$2) AND title LIKE $3 ESCAPE '!' ORDER BY id DESC LIMIT $4 OFFSET $5")
+    Ok(Json(sqlx::query_as("SELECT * FROM notices WHERE ($1='' OR status=$2) AND title LIKE $3 ESCAPE '!' ORDER BY published_on DESC NULLS LAST,id DESC LIMIT $4 OFFSET $5")
         .bind(&f.status).bind(&f.status).bind(pattern).bind(limit).bind(offset).fetch_all(&s.pool).await?))
 }
 pub async fn documents(
@@ -88,7 +88,7 @@ pub async fn documents(
     Query(f): Query<Filter>,
 ) -> Result<Json<Vec<documents::Document>>> {
     let (limit, offset, pattern) = f.values(&["draft", "published", "archived"])?;
-    Ok(Json(sqlx::query_as("SELECT * FROM documents WHERE ($1='' OR status=$2) AND title LIKE $3 ESCAPE '!' ORDER BY id DESC LIMIT $4 OFFSET $5")
+    Ok(Json(sqlx::query_as("SELECT * FROM documents WHERE ($1='' OR status=$2) AND title LIKE $3 ESCAPE '!' ORDER BY coalesce(source_published_on::text,published_at) DESC NULLS LAST,id DESC LIMIT $4 OFFSET $5")
         .bind(&f.status).bind(&f.status).bind(pattern).bind(limit).bind(offset).fetch_all(&s.pool).await?))
 }
 pub async fn pages(

@@ -30,7 +30,7 @@ pub async fn public_notice_files(
     id: i64,
     now: OffsetDateTime,
 ) -> Result<Vec<Attachment>> {
-    let record:super::notices::NoticeRecord=sqlx::query_as("SELECT * FROM notices WHERE id=$1 AND status IN ('published','archived','withdrawn') AND published_on<=$2").bind(id).bind(today(now)).fetch_optional(pool).await?.ok_or_else(missing)?;
+    let record:super::notices::NoticeRecord=sqlx::query_as("SELECT * FROM notices WHERE id=$1 AND status IN ('published','archived','withdrawn') AND (status='archived' OR published_on IS NULL OR published_on<=$2)").bind(id).bind(today(now)).fetch_optional(pool).await?.ok_or_else(missing)?;
     let visible = record.files_public(now);
     let mut files:Vec<Attachment>=sqlx::query_as("SELECT id,name,content_type,size_bytes,removed_at,(data IS NOT NULL AND removed_at IS NULL) AS available FROM attachments WHERE notice_id=$1 ORDER BY sort_order,id").bind(id).fetch_all(pool).await?;
     if !visible {
@@ -49,6 +49,7 @@ pub struct Document {
     pub status: String,
     pub created_at: String,
     pub published_at: Option<String>,
+    pub source_published_on: Option<time::Date>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -180,7 +181,7 @@ pub async fn admin_list(
 ) -> Result<Json<Vec<Document>>> {
     let (limit, offset) = p.bounds()?;
     Ok(Json(
-        sqlx::query_as("SELECT * FROM documents ORDER BY id DESC LIMIT $1 OFFSET $2")
+        sqlx::query_as("SELECT * FROM documents ORDER BY coalesce(source_published_on::text,published_at) DESC NULLS LAST,id DESC LIMIT $1 OFFSET $2")
             .bind(limit)
             .bind(offset)
             .fetch_all(&s.pool)
@@ -194,7 +195,7 @@ pub async fn public_list(
     let (limit, offset) = p.bounds()?;
     Ok(Json(
         sqlx::query_as(
-            "SELECT * FROM documents WHERE status='published' ORDER BY id DESC LIMIT $1 OFFSET $2",
+            "SELECT * FROM documents WHERE status='published' ORDER BY coalesce(source_published_on::text,published_at) DESC NULLS LAST,id DESC LIMIT $1 OFFSET $2",
         )
         .bind(limit)
         .bind(offset)

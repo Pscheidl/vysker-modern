@@ -163,8 +163,12 @@ def czech_date(value):
 
 def dates(text):
     result = {}
-    for label, field in [('Vyvěšeno', 'published_on'), ('Sejmuto', 'withdraw_on'), ('Zveřejněno', 'published_on')]:
-        match = re.search(label + r'\s*:\s*([\d.\s]{6,20})', text, re.I)
+    # Labels may omit a colon. Require a complete date immediately after the label,
+    # so a missing publication year cannot borrow the later deadline's year.
+    for label, field in [(r'Vyvěšeno|Vyvěšno|Úřední deska od', 'published_on'),
+                         ('Sejmuto', 'withdraw_on'), ('Zveřejněno', 'published_on'),
+                         ('Lhůta do', 'deadline_on')]:
+        match = re.search(r'(?:' + label + r')\s*:?\s*(\d{1,2}\.\s*\d{1,2}\.\s*\d{4})(?!\d)', text, re.I)
         if match and (value := czech_date(match[1])):
             result[field] = value
     return result
@@ -239,7 +243,7 @@ def extract(raw, url):
     content = re.sub(r'\n[ \t]+', '\n', markdown(body, url))
     content = re.sub(r'\n{3,}', '\n\n', content).strip()
     kind = 'page'
-    if re.search(r'(Vyvěšeno|Úřední deska od)\s*:', original_text, re.I) and re.search(r'/(d)-\d+', url):
+    if re.search(r'(Vyvěšeno|Úřední deska od)\s*:?', original_text, re.I) and source_key(url).startswith('d:'):
         kind = 'notice'
     warnings = []
     if re.search(r'/a-\d+', url) and not event:

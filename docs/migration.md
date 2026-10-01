@@ -50,11 +50,14 @@ Keep credentials out of command arguments and Git.
 ```sh
 python3 scripts/legacy_import.py plan \
   --bundle data/migration/vysker-snapshot \
+  --classify-navigation \
   --report data/migration/plan.json
 
 python3 scripts/legacy_import.py import \
   --bundle data/migration/vysker-snapshot \
   --page-map config/legacy-vysker-pages.json \
+  --classify-navigation \
+  --notice-map config/legacy-vysker-notices.json \
   --report data/migration/import.json
 ```
 
@@ -107,6 +110,73 @@ Each imported record has immutable provenance in `legacy_sources` and an audit
 entry. Page imports also create the first page revision. The original title,
 capture metadata, source dates and file checksum remain available to operators.
 
+## Navigation ownership and original dates
+
+With `--classify-navigation`, the importer reads the `.cesta` breadcrumb from
+captured HTML. Every attachment belonging to a page whose breadcrumb contains
+`Úřední deska` is imported exclusively as a notice, including Dotace, forms and
+undated files. Other attachments become ordinary documents. A link to the board
+in the common menu does not count. If a file has several source parents and any
+of them belongs to the board, it has one notice owner and one stored attachment.
+`config/legacy-vysker-notices.json` supplies categories only, not ownership.
+
+Original posting and withdrawal dates stay nullable. Labels such as `Vyvěšeno`
+and `Sejmuto` are parsed from the text beside each source attachment. Missing or
+incomplete dates are not derived from the capture timestamp, page modification,
+filename or a default 15-day period. A conflicting withdrawal date is retained in
+source metadata for review, but not used as a known date. Public and admin views
+say `Datum vyvěšení není uvedeno` and `Datum sejmutí není uvedeno` as appropriate.
+Both lists sort newest first, with undated records last in either date direction.
+
+Public document and notice details show a separate import-origin note based on
+the saved provenance, including archived notices. The note contains no link to
+the original source. Existing imports gain this note without another import.
+
+`--preview-notices` makes notices visible for a local manual rehearsal only. It
+requires navigation classification, non-production configuration and loopback
+website/database addresses. A notice missing either its posting or withdrawal
+date goes to the archive, even if its known posting date is in the future.
+The missing fields are recorded in import metadata. Notices with both dates
+known are archived after expiry, published during their posting period, and
+kept as drafts before that period. Source `Lhůta do` stays in source metadata
+and is **never stored as a withdrawal date** or used to establish publication.
+
+Preview attachments remain available for testing. Import creates neither actual
+publication/withdrawal timestamps, publication events nor notification messages.
+Production startup rejects databases containing these preview records. Production
+imports use drafts and require separate editorial review before publication.
+
+The older `legacy_reconcile.py` workflow made copies of already imported files.
+It is retained for older rehearsals, but is not used for the exclusive import.
+An existing library with different ownership is reported as a conflict instead
+of silently changing its records.
+
+## Clean local reimport
+
+Only when intentionally replacing **all** local documents and notice records,
+stop the local application and run:
+
+```sh
+python3 scripts/legacy_reimport.py \
+  --bundle data/migration/vysker-snapshot \
+  --notice-map config/legacy-vysker-notices.json \
+  --output data/migration/clean-rehearsal
+```
+
+The output directory must be new. The command validates all source objects,
+creates and checks a full PostgreSQL dump, then deletes the library and imports
+its replacement in one transaction. `--allow-incomplete` is available after
+reviewing capture errors. A failure rolls the reset and import back together.
+The local-only guard also applies to the reset. Protected deletion triggers are
+restored in the same transaction, and the reset is recorded in the audit log.
+
+Pages, revisions, navigation, calendar, administrator accounts, subscribers and
+audit history are preserved. Existing attachment IDs are reused by source identity
+so links already embedded in pages and calendar entries remain valid. Document
+and notice IDs are not reset or reused. Local edits to documents/notices and
+non-imported library entries are intentionally removed, and recoverable from the
+backup. Start the updated app before testing the replacement library.
+
 ## Historical URLs
 
 The server resolves Vismo entity IDs, friendly URLs, encoded hyphens and supported
@@ -127,7 +197,7 @@ python3 scripts/legacy_verify.py --base-url http://127.0.0.1:3012 \
 
 This read-only check requests every imported historical path, compares the HTTP
 redirect with its current publication state, downloads every public imported
-document attachment and compares its size and SHA-256 with the database. It also
+attachment from either section and compares its size and SHA-256 with the database. It also
 reports record counts and the mail queue size. It exits unsuccessfully on a
 redirect or byte mismatch. It does not send email or edit content.
 

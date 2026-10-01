@@ -52,6 +52,18 @@ pub fn Icon(
 }
 
 #[component]
+pub fn ImportNote() -> impl IntoView {
+    view! {
+        <aside class="info-banner" aria-label="Původ dokumentu">
+            <Icon name="history"/>
+            <div><strong>"Převzato z původního webu"</strong>
+                <p>"Tento dokument byl importován z původního webu obce Vyskeř. Nejsou tedy k dispozici všechna metadata."</p>
+            </div>
+        </aside>
+    }
+}
+
+#[component]
 pub fn Logo() -> impl IntoView {
     view! {
         <svg class="logo-mark" viewBox="0 0 64 48" fill="none" aria-hidden="true">
@@ -173,9 +185,9 @@ pub fn NoticeCard(notice: Notice) -> impl IntoView {
     let href = notice.href();
     view! {
         <article class="notice-card">
-            <div class="notice-meta"><span>{notice.category}</span><time datetime=notice.posted_iso>{notice.posted}</time></div>
+            <div class="notice-meta"><span>{notice.category}</span><time datetime=(!notice.posted_iso.is_empty()).then_some(notice.posted_iso.clone())>{notice.posted}</time></div>
             <h3><A href=site_url(&href)>{notice.title}</A></h3>
-            <div class="notice-card-bottom"><span>{if notice.archived { "Sejmuto " } else { "Sejmutí " }}{notice.ends}</span><Icon/></div>
+            <div class="notice-card-bottom"><span>{if notice.ends_iso.is_none() { "" } else if notice.archived { "Sejmuto " } else { "Sejmutí " }}{notice.ends}</span><Icon/></div>
             {if !notice.archived { notice.remaining.filter(|d| *d <= 6).map(|days| view! {<span class="status-badge warning">{remaining_text(days)}</span>}) } else {None}}
         </article>
     }
@@ -200,7 +212,7 @@ pub fn NoticeRow(notice: Notice) -> impl IntoView {
             <div class="file-icon"><Icon name=if notice.archived {"archive"} else {"paper"}/></div>
             <div class="document-copy"><div class="notice-meta"><span>{notice.category}</span><span>{notice.reference}</span></div>
                 <h2><A href=site_url(&href)>{notice.title.clone()}</A></h2>
-                <p>"Vyvěšeno "<time datetime=notice.posted_iso>{notice.posted}</time>
+                <p>{if notice.posted_iso.is_empty() {""} else {"Vyvěšeno "}}<time datetime=(!notice.posted_iso.is_empty()).then_some(notice.posted_iso.clone())>{notice.posted}</time>
                 {if archived_without_files {view! {<span class="removed-label">"Záznam bez příloh"</span>}.into_any()} else {().into_any()}}</p>
             </div>
             <div class="document-date"><span>{if notice.archived {"Sejmuto"} else {"Sejmutí"}}</span><strong>{notice.ends}</strong>

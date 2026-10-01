@@ -21,16 +21,16 @@ fn folded(expression: &str) -> String {
 }
 fn build(q: &SearchQuery, day: time::Date, selection: &str) -> QueryBuilder<Postgres> {
     let mut b = QueryBuilder::new(
-        "WITH notice_state AS (SELECT n.*, c.name AS category, status='published' AND published_on<=",
+        "WITH notice_state AS (SELECT n.*, c.name AS category, status='published' AND (published_on IS NULL OR published_on<=",
     );
-    b.push_bind(day).push(" AND (withdraw_on IS NULL OR withdraw_on>").push_bind(day).push(") AS active FROM notices n LEFT JOIN categories c ON c.id=n.category_id WHERE status IN ('published','archived','withdrawn') AND published_on<=").push_bind(day).push("), public AS (
+    b.push_bind(day).push(") AND (withdraw_on IS NULL OR withdraw_on>").push_bind(day).push(") AS active FROM notices n LEFT JOIN categories c ON c.id=n.category_id WHERE status IN ('published','archived','withdrawn') AND (status='archived' OR published_on IS NULL OR published_on<=").push_bind(day).push(")), public AS (
         SELECT id, 'notice' AS kind,
         CASE WHEN active THEN title ELSE coalesce(nullif(trim((review_json::jsonb->>'archive_title')),''),'Záznam úřední desky #'||id) END AS title,
         CASE WHEN active THEN coalesce(description,'') ELSE '' END AS description,
         CASE WHEN active THEN coalesce(reference_number,'')||' '||coalesce(issuer,'') ELSE '' END AS extra,
-        '/uredni-deska/'||id AS path, coalesce(category,'Ostatní') AS category, published_on::text AS posted, NOT active AS archived
+        '/uredni-deska/'||id AS path, coalesce(category,'Ostatní') AS category, coalesce(published_on::text,'') AS posted, NOT active AS archived
         FROM notice_state
-        UNION ALL SELECT id,'document',title,coalesce(description,''),'','/dokumenty/'||id,'',coalesce(published_at,''),FALSE FROM documents WHERE status='published'
+        UNION ALL SELECT id,'document',title,coalesce(description,''),'','/dokumenty/'||id,'',coalesce(source_published_on::text,published_at,''),FALSE FROM documents WHERE status='published'
         UNION ALL SELECT id,'page',title,content,'','/stranky/'||slug,'',updated_at,FALSE FROM pages WHERE published=TRUE
         ) SELECT ").push(selection).push(" FROM public WHERE 1=1");
     if !q.kind.is_empty() && q.kind != "all" {
@@ -89,10 +89,10 @@ pub async fn query(pool: &PgPool, q: &SearchQuery) -> Result<SearchPage> {
             b.push(folded("title")).push(" ASC,kind,id");
         }
         "oldest" => {
-            b.push("posted ASC,kind,id ASC");
+            b.push("(posted='') ASC,posted ASC,kind,id ASC");
         }
         _ => {
-            b.push("posted DESC,kind,id DESC");
+            b.push("(posted='') ASC,posted DESC,kind,id DESC");
         }
     }
     b.push(" LIMIT ")

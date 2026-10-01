@@ -1,5 +1,5 @@
 use super::{
-    components::{Icon, Loading},
+    components::{Icon, ImportNote, Loading},
     pages::NotFound,
     site_url,
 };
@@ -28,7 +28,7 @@ pub fn DocumentDetail() -> impl IntoView {
     );
     view! {<div class="page-width interior prose"><A href=site_url("/dokumenty") attr:class="back-link"><Icon name="back"/>"Zpět na dokumenty"</A>
         <Suspense fallback=Loading>{move ||document.get().map(|result|match result {
-            Ok(Some(doc))=>view!{<Title text=format!("{} · Vyskeř",doc.title)/><header class="page-heading"><h1>{doc.title}</h1><p class="page-description">{doc.description}</p></header><section class="attachments"><h2>"Přílohy"</h2>{doc.files.into_iter().map(|file|view!{<div class="attachment"><Icon name="paper"/><div><strong>{file.name}</strong><p>{file.size}</p></div>{file.url.map(|url|view!{<a class="text-link" href=url download>"Stáhnout"<Icon/></a>})}</div>}).collect_view()}</section>}.into_any(),
+            Ok(Some(doc))=>view!{<Title text=format!("{} · Vyskeř",doc.title)/><header class="page-heading"><h1>{doc.title}</h1><p class="page-description">{doc.description}</p></header>{doc.import_origin.map(|_| view!{<ImportNote/>})}<section class="attachments"><h2>"Přílohy"</h2>{doc.files.into_iter().map(|file|view!{<div class="attachment"><Icon name="paper"/><div><strong>{file.name}</strong><p>{file.size}</p></div>{file.url.map(|url|view!{<a class="text-link" href=url download>"Stáhnout"<Icon/></a>})}</div>}).collect_view()}</section>}.into_any(),
             Ok(None)=>view!{<NotFound/>}.into_any(),
             Err(_)=>view!{<p role="alert">"Dokument se nepodařilo načíst."</p>}.into_any()
         })}</Suspense>

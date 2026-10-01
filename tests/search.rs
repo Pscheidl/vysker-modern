@@ -8,6 +8,190 @@ use obecni_web::{
 };
 
 #[tokio::test]
+async fn imported_notices_without_dates_are_visible_in_the_board_archive() {
+    let app = App::new().await;
+    sqlx::raw_sql(
+        "INSERT INTO notices(id,title,published_on,status) VALUES
+        (1,'Dotace bez data',NULL,'archived'),
+        (2,'Datované vyvěšení','2020-01-01','archived'),
+        (3,'Soukromý koncept',NULL,'draft');
+        UPDATE notices SET retain_attachments=TRUE,
+        review_json=jsonb_build_object('archive_title',title,'archive_basis','Místní náhled migrace','archive_until','9999-12-31')::text
+        WHERE status='archived';
+        INSERT INTO attachments(notice_id,name,content_type,size_bytes,data) VALUES
+        (1,'dotace.pdf','application/pdf',4,'data')",
+    )
+    .execute(&app.state.pool)
+    .await
+    .unwrap();
+    let query = SearchQuery {
+        kind: "notice".into(),
+        state: "archive".into(),
+        ..Default::default()
+    };
+    let current = search::query(
+        &app.state.pool,
+        &SearchQuery {
+            state: "current".into(),
+            ..query.clone()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(current.total, 0);
+    for sort in ["newest", "oldest"] {
+        let result = search::query(
+            &app.state.pool,
+            &SearchQuery {
+                sort: sort.into(),
+                ..query.clone()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.total, 2);
+        assert_eq!(result.items[0].id, 2);
+        assert_eq!(result.items[1].id, 1);
+        assert_eq!(result.items[1].posted, "");
+    }
+    let docs = search::query(
+        &app.state.pool,
+        &SearchQuery {
+            kind: "document".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(docs.total, 0);
+    let admin = body_json(
+        app.call(
+            "GET",
+            "/api/v1/admin/notices?status=archived&limit=21&offset=0",
+            None,
+            true,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(admin[0]["id"], 2);
+    assert_eq!(admin[1]["id"], 1);
+    let detail = body_json(app.call("GET", "/api/v1/notices/1", None, false).await).await;
+    assert!(detail["published_on"].is_null());
+    assert!(detail["withdraw_on"].is_null());
+    assert_eq!(detail["status"], "archived");
+    assert_eq!(detail["attachments"][0]["available"], true);
+    assert_eq!(
+        app.call("GET", "/api/v1/attachments/1", None, false)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let presented = obecni_web::content::notice_from_pool(&app.state.pool, 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(presented.posted, "Datum vyvěšení není uvedeno");
+    assert_eq!(presented.ends, "Datum sejmutí není uvedeno");
+    assert!(presented.ends_iso.is_none());
+    assert!(presented.archived);
+    // A known future posting date must not hide an already archived import.
+    sqlx::query("UPDATE notices SET published_on='9998-01-01' WHERE id=2")
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        search::query(&app.state.pool, &query).await.unwrap().total,
+        2
+    );
+    assert_eq!(
+        app.call("GET", "/api/v1/notices/2", None, false)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert!(
+        obecni_web::content::notice_from_pool(&app.state.pool, 2)
+            .await
+            .unwrap()
+            .unwrap()
+            .archived
+    );
+    assert_eq!(app.publish(3).await.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn documents_sort_by_original_dates_with_unknown_dates_last() {
+    let app = App::new().await;
+    sqlx::raw_sql(
+        "INSERT INTO documents(title,status,created_at,source_published_on,published_at) VALUES
+        ('Old source','published','2026-10-01','2019-03-01',NULL),
+        ('Recent source','published','2026-10-01','2026-09-24',NULL),
+        ('Native publication','published','2026-09-25',NULL,'2026-09-25T12:00:00Z'),
+        ('Unknown source date','published','2026-10-01',NULL,NULL)",
+    )
+    .execute(&app.state.pool)
+    .await
+    .unwrap();
+    let q = SearchQuery {
+        kind: "document".into(),
+        ..Default::default()
+    };
+    let newest = search::query(&app.state.pool, &q).await.unwrap();
+    assert_eq!(
+        newest
+            .items
+            .iter()
+            .map(|h| h.title.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "Native publication",
+            "Recent source",
+            "Old source",
+            "Unknown source date"
+        ]
+    );
+    let oldest = search::query(
+        &app.state.pool,
+        &SearchQuery {
+            sort: "oldest".into(),
+            ..q
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        oldest
+            .items
+            .iter()
+            .map(|h| h.title.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "Old source",
+            "Recent source",
+            "Native publication",
+            "Unknown source date"
+        ]
+    );
+    let api = body_json(app.call("GET", "/api/v1/documents", None, false).await).await;
+    assert_eq!(api[0]["title"], "Native publication");
+    assert_eq!(api[1]["source_published_on"], "2026-09-24");
+    assert!(api[1]["published_at"].is_null());
+    let admin = body_json(
+        app.call(
+            "GET",
+            "/api/v1/admin/documents?status=published&limit=21&offset=0",
+            None,
+            true,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(admin[0]["title"], "Native publication");
+    assert_eq!(admin[3]["title"], "Unknown source date");
+}
+
+#[tokio::test]
 async fn pagination_reaches_old_records_and_details_are_independent() {
     let app = App::new().await;
     let today = backend::today(time::OffsetDateTime::now_utc());

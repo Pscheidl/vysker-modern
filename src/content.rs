@@ -12,6 +12,11 @@ pub struct Attachment {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ImportOrigin {
+    pub source_url: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Notice {
     pub id: i64,
     pub title: String,
@@ -27,6 +32,8 @@ pub struct Notice {
     pub retain_files: bool,
     pub remaining: Option<i64>,
     pub attachments: Vec<Attachment>,
+    #[serde(default)]
+    pub import_origin: Option<ImportOrigin>,
 }
 
 impl Notice {
@@ -148,15 +155,22 @@ async fn present_notice(
             .unwrap_or_else(|| "Neuvedeno".into()),
         issuer: record.issuer.unwrap_or_else(|| "Obec Vyskeř".into()),
         description: record.description.unwrap_or_default(),
-        posted: short_date(record.published_on),
-        posted_iso: record.published_on.to_string(),
+        posted: record
+            .published_on
+            .map(short_date)
+            .unwrap_or_else(|| "Datum vyvěšení není uvedeno".into()),
+        posted_iso: record
+            .published_on
+            .map(|d| d.to_string())
+            .unwrap_or_default(),
         ends: end_date
             .map(short_date)
-            .unwrap_or_else(|| "Bez omezení".into()),
+            .unwrap_or_else(|| "Datum sejmutí není uvedeno".into()),
         ends_iso: end_date.map(|d| d.to_string()),
         archived,
         retain_files: record.retain_attachments,
         remaining: record.withdraw_on.map(|d| (d - today).whole_days()),
+        import_origin: None,
         attachments: files
             .into_iter()
             .map(|file| Attachment {
@@ -191,7 +205,18 @@ pub async fn notice_from_pool(
         .await
         .map_err(public_error)?
     {
-        Some(record) => Ok(Some(present_notice(pool, record).await?)),
+        Some(record) => {
+            let mut notice = present_notice(pool, record).await?;
+            notice.import_origin = crate::backend::legacy::import_origin(
+                pool,
+                Some(id),
+                None,
+                !notice.archived || notice.retain_files,
+            )
+            .await
+            .map_err(public_error)?;
+            Ok(Some(notice))
+        }
         None => Ok(None),
     }
 }
@@ -239,6 +264,7 @@ mod tests {
             archived: false,
             retain_files: false,
             remaining: Some(6),
+            import_origin: None,
             attachments: vec![Attachment {
                 name: "Záměr obce".into(),
                 size: "96 kB".into(),

@@ -33,7 +33,7 @@ pub struct Notice {
     pub category_name: Option<String>,
     pub issuer: Option<String>,
     pub description: Option<String>,
-    pub published_on: Date,
+    pub published_on: Option<Date>,
     pub withdraw_on: Option<Date>,
     pub withdrawn_at: Option<OffsetDateTime>,
     pub retain_attachments: bool,
@@ -142,7 +142,7 @@ async fn public_row(
 }
 async fn list(pool: &PgPool, archived: bool, limit: i64) -> sqlx::Result<Vec<Notice>> {
     let day = crate::backend::today(OffsetDateTime::now_utc());
-    let records:Vec<crate::backend::notices::NoticeRecord>=sqlx::query_as("SELECT * FROM notices WHERE ($1=FALSE AND status='published' AND published_on<=$2 AND (withdraw_on IS NULL OR withdraw_on>$3)) OR ($4=TRUE AND (status IN ('withdrawn','archived') OR (status='published' AND withdraw_on<=$5))) ORDER BY published_on DESC,id DESC LIMIT $6")
+    let records:Vec<crate::backend::notices::NoticeRecord>=sqlx::query_as("SELECT * FROM notices WHERE ($1=FALSE AND status='published' AND (published_on IS NULL OR published_on<=$2) AND (withdraw_on IS NULL OR withdraw_on>$3)) OR ($4=TRUE AND (status IN ('withdrawn','archived') OR (status='published' AND withdraw_on<=$5))) ORDER BY published_on DESC NULLS LAST,id DESC LIMIT $6")
         .bind(archived).bind(day).bind(day).bind(archived).bind(day).bind(limit).fetch_all(pool).await?;
     let mut result = Vec::with_capacity(records.len());
     for row in records {
@@ -157,7 +157,7 @@ pub async fn archived(pool: &PgPool, limit: i64) -> sqlx::Result<Vec<Notice>> {
     list(pool, true, limit).await
 }
 pub async fn by_id(pool: &PgPool, id: i64) -> sqlx::Result<Option<Notice>> {
-    let record=sqlx::query_as("SELECT * FROM notices WHERE id=$1 AND status IN ('published','archived','withdrawn') AND published_on<=$2").bind(id).bind(crate::backend::today(OffsetDateTime::now_utc())).fetch_optional(pool).await?;
+    let record=sqlx::query_as("SELECT * FROM notices WHERE id=$1 AND status IN ('published','archived','withdrawn') AND (status='archived' OR published_on IS NULL OR published_on<=$2)").bind(id).bind(crate::backend::today(OffsetDateTime::now_utc())).fetch_optional(pool).await?;
     match record {
         Some(row) => Ok(Some(public_row(pool, row).await?)),
         None => Ok(None),

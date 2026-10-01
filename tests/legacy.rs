@@ -113,3 +113,117 @@ fn missing_event_time_explains_legacy_origin() {
     assert_eq!(event.end_label(), "29. 9. 2026 (původní web čas neuváděl)");
     assert!(!event.end_label().contains("23:59"));
 }
+
+#[tokio::test]
+async fn document_details_identify_imports_without_exposing_hidden_archive_sources() {
+    let app = common::App::new().await;
+    sqlx::raw_sql("INSERT INTO documents(id,title,description,status,created_at) VALUES
+        (1,'Importovaný dokument','Popis','published','now'),
+        (2,'Nový dokument','Převedeno z původního webu.','published','now'),
+        (3,'Soukromý import','Popis','draft','now');
+        INSERT INTO notices(id,title,published_on,status,retain_attachments,review_json) VALUES
+        (1,'Importovaný záznam',NULL,'archived',TRUE,
+        '{\"archive_title\":\"Importovaný záznam\",\"archive_basis\":\"Local preview\",\"archive_until\":\"9999-12-31\"}'),
+        (2,'Nový záznam','2020-01-01','published',FALSE,'{}');
+        INSERT INTO legacy_sources(source_key,source_url,fingerprint,captured_at,imported_at,metadata,document_id,notice_id,destination) VALUES
+        ('doc','https://vysker.cz/assets/File.ashx?id_dokumenty=1','hash','now','now','{}',1,NULL,'/dokumenty/1'),
+        ('draft','https://vysker.cz/assets/File.ashx?id_dokumenty=3','hash','now','now','{}',3,NULL,'/dokumenty/3'),
+        ('notice','https://vysker.cz/assets/File.ashx?id_dokumenty=2','hash','now','now','{}',NULL,1,'/uredni-deska/1')")
+        .execute(&app.state.pool).await.unwrap();
+    let imported = obecni_web::catalog::document_from_pool(&app.state.pool, 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        imported.import_origin.unwrap().source_url.as_deref(),
+        Some("https://vysker.cz/assets/File.ashx?id_dokumenty=1")
+    );
+    let native = obecni_web::catalog::document_from_pool(&app.state.pool, 2)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(native.import_origin.is_none());
+    assert!(
+        obecni_web::catalog::document_from_pool(&app.state.pool, 3)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let imported = obecni_web::content::notice_from_pool(&app.state.pool, 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(imported.archived);
+    assert!(imported.description.is_empty());
+    assert_eq!(
+        imported.import_origin.unwrap().source_url.as_deref(),
+        Some("https://vysker.cz/assets/File.ashx?id_dokumenty=2")
+    );
+    let native = obecni_web::content::notice_from_pool(&app.state.pool, 2)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(native.import_origin.is_none());
+    sqlx::query("UPDATE notices SET review_json='{\"archive_until\":\"2020-01-01\"}' WHERE id=1")
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    let expired = obecni_web::content::notice_from_pool(&app.state.pool, 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!expired.retain_files);
+    assert!(expired.import_origin.unwrap().source_url.is_none());
+}
+
+#[tokio::test]
+async fn local_notice_preview_preserves_attachments_but_cannot_launch_in_production() {
+    let app = common::App::new().await;
+    sqlx::raw_sql("INSERT INTO documents(id,title,status,created_at) VALUES (1,'Source','published','now');
+        INSERT INTO legacy_sources(source_key,source_url,fingerprint,captured_at,imported_at,metadata,document_id,destination)
+        VALUES ('test-file','https://vysker.cz/assets/File.ashx','hash','now','now','{}',1,'/dokumenty/1');
+        INSERT INTO notices(id,title,published_on,withdraw_on,status,retain_attachments,review_json)
+        VALUES (1,'Original title','2020-01-01','2020-02-01','archived',TRUE,
+        '{\"archive_title\":\"Original title\",\"archive_basis\":\"Local preview\",\"archive_until\":\"9999-12-31\"}');
+        INSERT INTO attachments(notice_id,name,content_type,size_bytes,data) VALUES (1,'file.pdf','application/pdf',4,'data');
+        INSERT INTO legacy_notice_imports(source_key,notice_id,imported_at,preview_published,metadata)
+        VALUES ('test-file',1,'now',TRUE,'{}')")
+        .execute(&app.state.pool).await.unwrap();
+    obecni_web::backend::notices::maintenance(&app.state, time::OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    let files = obecni_web::backend::documents::public_notice_files(
+        &app.state.pool,
+        1,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+    .unwrap();
+    assert!(files[0].available);
+    let imported = obecni_web::content::notice_from_pool(&app.state.pool, 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        imported.import_origin.unwrap().source_url.as_deref(),
+        Some("https://vysker.cz/assets/File.ashx")
+    );
+    assert_eq!(
+        app.call(
+            "GET",
+            &format!("/api/v1/attachments/{}", files[0].id),
+            None,
+            false
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let mut config = (*app.state.config).clone();
+    config.production = true;
+    let prod = obecni_web::backend::Backend::new(app.state.pool.clone(), config);
+    let error = obecni_web::backend::server::check_launch_content(&prod)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("místní náhled"));
+}
