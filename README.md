@@ -28,6 +28,7 @@ Current illustration and identity: [Saint Anne's Chapel and the treeless Hůra h
   pages, attachments, a read-only audit log and outgoing mail history.
 - Published content pages listed under `/stranky`, linked from the footer.
 - Markdown page editor with preview, immutable revisions and edit conflict protection.
+- Page image uploads with descriptions, draft previews and publication-aware access.
 - Editable navigation and categories, subscriber evidence export, withdrawal and erasure.
 - Email password recovery and configurable password minimum, default 24 characters.
 

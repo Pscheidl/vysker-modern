@@ -50,12 +50,36 @@ Use Markdown for headings, emphasis, lists, links, quotes and code. For example:
 - [External information](https://example.cz)
 ```
 
+The formatting buttons insert Markdown at the cursor or wrap selected text.
+**Nápověda k Markdownu** includes examples, including tables and strikethrough.
 **Náhled textu** uses exactly the same renderer as public pages. Raw HTML is shown
 as text. Remote embedded images are disabled, so page content cannot load tracking
 pixels. Verified migrated images from `/api/v1/legacy-media/{id}` are allowed.
+Uploaded page images from `/api/v1/page-images/{id}` are also allowed.
 Links allow HTTP, HTTPS, mailto, tel, local absolute paths and fragments.
 Other schemes and protocol-relative addresses are neutralized. A body-level H1
 is rendered as H2 because the page title already supplies H1.
+
+### Uploading page images
+
+Save a new page as a draft first. In **Obrázky stránky**, enter a meaningful
+**Popis obrázku**, choose a PNG, JPEG, WebP or GIF, then choose **Nahrát a vložit
+obrázek**. The editor inserts the image at the cursor and preserves unsaved text.
+Save the page to store the inserted Markdown. Use **Dříve nahrané obrázky** to
+insert an existing image again with a new description. Remove its Markdown from
+the body to remove an image from the page.
+
+Each file may be at most 10 MiB, 8192 × 8192 pixels and 128 MiB when decoded.
+The server validates decoded image contents, determines the MIME type itself,
+and rejects active formats such as SVG. A page can store up to 100 images.
+Upload requests require an administrator session and CSRF protection.
+
+Images remain private until their owning page is published and its saved body
+contains the image. Hiding the page or removing the image from its saved body
+revokes anonymous access. Administrators can preview drafts. Responses are not
+cached. Image bytes and metadata live in PostgreSQL and are included in database
+backups. Files are retained for restoring older revisions, even when removed
+from the current text. Page image URLs should be reused within their owning page.
 
 Save with **Zveřejnit na webu** checked to publish, or unchecked to keep a draft.
 Every save stores an immutable revision with author, timestamp and version.

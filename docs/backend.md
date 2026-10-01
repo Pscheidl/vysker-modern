@@ -166,6 +166,7 @@ than a partial patch.
 | `GET /documents`, `GET /documents/{id}` | Published general documents |
 | `GET /attachments/{id}` | Download an available attachment |
 | `GET /pages/{slug}` | Published content page |
+| `GET /page-images/{id}` | Image referenced by its published page, or an authenticated draft preview |
 | `GET /privacy` | Current subscription information and fingerprint |
 | `POST /subscriptions` | Opt-in with `email` and `consent.fingerprint`, see [privacy.md](privacy.md) |
 | `GET /admin/subscribers/{id}/consents` | Read-only opt-in and opt-out evidence |
@@ -194,6 +195,8 @@ than a partial patch.
 | `POST /admin/documents/{id}/attachments` | Upload a document attachment |
 | `GET /admin/pages`, `POST /admin/pages` | List or create content pages |
 | `PUT /admin/pages/{id}` | Edit a page and its publication state |
+| `GET /admin/pages/{id}/images` | List images uploaded to the page |
+| `POST /admin/pages/{id}/images` | Upload one multipart image `file`, returning id, name, size and dimensions |
 
 Administration lists for notices, documents and pages also accept `q` for title
 search and `status` for filtering. Search wildcards are treated literally.
@@ -234,10 +237,17 @@ Public document URLs are `/dokumenty/{id}`.
 
 A page accepts `slug`, `title`, `content` and `published`. Updates also require
 `expected_version`. Its generic public URL is `/stranky/{slug}`. Content uses
-restricted Markdown with escaped raw HTML and disabled embedded images. The
+restricted Markdown with escaped raw HTML, tables and local uploaded images. The
 editor shares the public renderer, preserves revisions and detects concurrent
 changes. Published pages appear under `/stranky`, linked from the footer.
 Navigation is configurable in `/admin/navigace`. See [editorial.md](editorial.md).
+
+Page images support decoded PNG, JPEG, WebP and GIF, up to 10 MiB per file,
+8192 × 8192 pixels and 128 MiB decoded. Uploads require an existing page, an
+administrator session and a CSRF token. Each page can store up to 100 images.
+Embed returned IDs as `![Description](/api/v1/page-images/123)`. Anonymous access
+requires that the owning page is published and currently references the image.
+Images remain stored for revision restoration and are included in database backups.
 
 The slugs `kontakt`, `obec`, `kalendar`, `pristupnost` and `povinne-informace`
 also populate their dedicated public routes. Production requires these pages to

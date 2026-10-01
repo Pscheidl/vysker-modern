@@ -8,6 +8,7 @@ pub mod mail;
 pub mod management;
 pub mod navigation;
 pub mod notices;
+pub mod page_images;
 pub mod pages;
 pub mod privacy;
 pub mod recovery;
@@ -166,6 +167,13 @@ pub fn router(state: Backend) -> Router {
     let config = state.config.clone();
     Router::new()
         .route("/api/v1/legacy-media/{id}", get(legacy::media))
+        .route("/api/v1/page-images/{id}", get(page_images::media))
+        .route(
+            "/api/v1/admin/pages/{id}/images",
+            get(page_images::list)
+                .post(page_images::upload)
+                .layer(DefaultBodyLimit::max(MAX_FILE_BYTES + 64 * 1024)),
+        )
         .route("/api/v1/health", get(health))
         .route(
             "/api/v1/admin/events",

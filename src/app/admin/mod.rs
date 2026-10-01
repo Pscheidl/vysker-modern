@@ -9,6 +9,8 @@ mod events;
 #[cfg(not(feature = "demo"))]
 mod lists;
 #[cfg(not(feature = "demo"))]
+mod markdown_editor;
+#[cfg(not(feature = "demo"))]
 mod navigation;
 #[cfg(not(feature = "demo"))]
 mod recovery;

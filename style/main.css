@@ -60,3 +60,22 @@
 .admin-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.admin-panel+.admin-table-wrap{margin-top:24px}
 .desktop-nav{min-width:0;flex-wrap:wrap;gap:0 24px;align-content:center;height:auto;max-height:180px;overflow:auto}.desktop-nav a{min-height:38px;white-space:normal;overflow-wrap:anywhere;max-width:220px}.header-inner{height:auto;min-height:76px;padding-block:8px}.brand,.header-actions{flex-shrink:0}.mobile-nav a{overflow-wrap:anywhere}
 .markdown-content img { max-width: 100%; height: auto; }
+.admin-page-preview>.markdown-content{white-space:normal}
+.markdown-content table{display:block;max-width:100%;overflow-x:auto;border-collapse:collapse}
+.markdown-content th,.markdown-content td{border:1px solid var(--border);padding:8px 12px;text-align:left}
+.markdown-content th{background:var(--soft);font-weight:600}
+.markdown-toolbar{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+.markdown-toolbar .button{padding:7px 12px;font-size:12px;min-height:40px}
+.markdown-help{margin-bottom:20px;font-size:13px;line-height:1.7}
+.markdown-help summary,.page-image-library summary{cursor:pointer;color:var(--accent);padding-block:10px}
+.markdown-help pre{overflow-x:auto;padding:16px;background:var(--soft);border-radius:8px;margin-block:12px;font-size:12px}
+.page-image-upload{border-top:1px solid var(--line);padding-block:22px}
+.page-image-upload h3{font-size:16px;margin-bottom:16px}
+.page-image-upload .admin-upload{margin-top:12px}
+.page-image-library{margin-top:18px;font-size:13px}
+.page-image-list{list-style:none;padding:0}
+.page-image-list li{display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:14px 0;border-bottom:1px solid var(--line)}
+.page-image-list img{width:64px;height:64px;object-fit:contain;background:var(--soft);border-radius:6px}
+.page-image-list li>div{flex:1;min-width:120px;overflow-wrap:anywhere}
+.page-image-list small{display:block;color:var(--muted);margin-top:4px}
+.page-image-list .button{font-size:12px;padding:8px 12px}

@@ -85,6 +85,9 @@ cover authorization, search, evidence export, withdrawal, erasure and SMTP lease
 
 Browser scenarios exercise recovery, Markdown preview, conflicts between tabs,
 restoring revisions, menu changes, calendar publication and subscriber workflows.
+Page image tests cover decoded file formats and limits, upload authorization,
+draft privacy, publication and withdrawal of images, preserved revisions, Unicode
+toolbar selection, failed upload recovery, unsaved edits and mobile layout.
 Run Rust tests before building the full web for browser tests. `cargo test --bins`
 can replace the SSR binary with a build lacking cargo-leptos's compile-time asset
 settings. Rebuild with `cargo leptos build` before testing hydration. Do not run

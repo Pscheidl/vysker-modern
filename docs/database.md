@@ -20,6 +20,7 @@ internal `_sqlx_migrations` table are exceptions. Municipal content stays Czech.
 | `documents` | General documents |
 | `attachments` | Metadata, SHA-256 and binary contents |
 | `pages` | Content pages with optimistic versions |
+| `page_images` | Page-owned image bytes, decoded dimensions, MIME type, SHA-256 and uploader |
 | `page_revisions` | Immutable authored versions and author references |
 | `navigation_items` | Ordered visible links to local pages |
 | `events` | Structured calendar, publication and cancellation |

@@ -125,7 +125,6 @@ fn EditorForm(
     let slug = RwSignal::new(entry.slug.clone());
     let content = RwSignal::new(entry.content.clone());
     let published = RwSignal::new(entry.published.unwrap_or(false));
-    let preview = RwSignal::new(false);
     let file_busy = RwSignal::new(false);
     let error = RwSignal::new(None);
     let navigate = use_navigate();
@@ -226,10 +225,7 @@ fn EditorForm(
                         {if kind==Kind::Page{view!{
                             <Field id="page-slug" label="Adresa stránky" value=slug required=true maxlength="80" help="Například spolky. Malá písmena bez diakritiky, číslice a pomlčky."/>
                             <p class="admin-url">{move||format!("/stranky/{}",slug.get())}</p>
-                            <TextArea id="page-content" label="Obsah stránky" value=content required=true maxlength="100000" rows="16"/>
-                            <p class="admin-caption">"Formátování: ## nadpis, **tučně**, - položka, [odkaz](/kontakt). HTML a obrázky jsou vypnuté."</p>
-                            <button class="button secondary" type="button" on:click=move |_|preview.update(|v|*v=!*v)>{move||if preview.get(){"Zavřít náhled"}else{"Náhled textu"}}</button>
-                            <Show when=move||preview.get()><section class="admin-page-preview" aria-label="Náhled textu stránky"><h2>{move||name.get()}</h2><div class="markdown-content" inner_html=move||crate::markdown::render(&content.get())></div></section></Show>
+                            <super::markdown_editor::MarkdownEditor id title=name content busy working=file_busy/>
                         }.into_any()}else{view!{
                             <TextArea id="entry-description" label="Popis" value=description/>
                             {(kind==Kind::Notice).then(move ||view!{
