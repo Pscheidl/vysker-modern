@@ -167,6 +167,7 @@ pub fn router(state: Backend) -> Router {
     let config = state.config.clone();
     Router::new()
         .route("/api/v1/legacy-media/{id}", get(legacy::media))
+        .route("/api/v1/admin/legacy-media/{id}", get(legacy::admin_media))
         .route("/api/v1/page-images/{id}", get(page_images::media))
         .route(
             "/api/v1/admin/pages/{id}/images",

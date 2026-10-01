@@ -9,7 +9,7 @@ use axum::{
 };
 use image::{ImageFormat, ImageReader, Limits};
 use serde::Serialize;
-use std::io::Cursor;
+use std::{collections::BTreeSet, io::Cursor};
 use time::OffsetDateTime;
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -17,8 +17,10 @@ pub struct PageImage {
     id: i64,
     name: String,
     size_bytes: i64,
-    width: i32,
-    height: i32,
+    width: Option<i32>,
+    height: Option<i32>,
+    url: String,
+    preview_url: String,
 }
 
 pub async fn list(
@@ -26,8 +28,47 @@ pub async fn list(
     _: Admin,
     Path(page): Path<i64>,
 ) -> Result<Json<Vec<PageImage>>> {
-    Ok(Json(sqlx::query_as("SELECT id,name,size_bytes,width,height FROM page_images WHERE page_id=$1 ORDER BY id DESC")
-        .bind(page).fetch_all(&s.pool).await?))
+    let content: String = sqlx::query_scalar("SELECT content FROM pages WHERE id=$1")
+        .bind(page)
+        .fetch_optional(&s.pool)
+        .await?
+        .ok_or_else(missing)?;
+    let mut imported = BTreeSet::new();
+    collect_imported(&content, &mut imported);
+    // Read bounded batches so old photographs remain available after removal
+    // from the current body, without loading the entire revision history at once.
+    let mut before = i64::MAX;
+    loop {
+        let revisions: Vec<(i64, String)> = sqlx::query_as("SELECT version,content FROM page_revisions WHERE page_id=$1 AND version<$2 ORDER BY version DESC LIMIT 20")
+            .bind(page).bind(before).fetch_all(&s.pool).await?;
+        for (version, content) in &revisions {
+            collect_imported(content, &mut imported);
+            before = *version;
+        }
+        if revisions.len() < 20 {
+            break;
+        }
+    }
+    let mut images: Vec<PageImage> = sqlx::query_as("SELECT id,name,size_bytes,width,height,'/api/v1/page-images/' || id AS url,'/api/v1/page-images/' || id AS preview_url FROM page_images WHERE page_id=$1 ORDER BY id DESC")
+        .bind(page).fetch_all(&s.pool).await?;
+    if !imported.is_empty() {
+        let ids: Vec<i64> = imported.into_iter().collect();
+        let legacy: Vec<PageImage> = sqlx::query_as("SELECT a.id,a.name,a.size_bytes,NULL::integer AS width,NULL::integer AS height,'/api/v1/legacy-media/' || a.id AS url,'/api/v1/admin/legacy-media/' || a.id AS preview_url FROM attachments a WHERE a.id=ANY($1) AND a.removed_at IS NULL AND a.data IS NOT NULL AND a.content_type IN ('image/png','image/jpeg','image/webp','image/gif') AND EXISTS(SELECT 1 FROM legacy_sources s WHERE s.attachment_id=a.id) ORDER BY a.id")
+            .bind(ids).fetch_all(&s.pool).await?;
+        images.extend(legacy);
+    }
+    Ok(Json(images))
+}
+
+fn collect_imported(content: &str, ids: &mut BTreeSet<i64>) {
+    for url in crate::markdown::image_urls(content) {
+        if let Some(id) = url
+            .strip_prefix("/api/v1/legacy-media/")
+            .and_then(|id| id.parse().ok())
+        {
+            ids.insert(id);
+        }
+    }
 }
 
 pub async fn upload(
@@ -89,7 +130,7 @@ pub async fn upload(
     if count >= 100 {
         return Err(bad("Stránka může mít nejvýše 100 nahraných obrázků."));
     }
-    let image: PageImage = sqlx::query_as("INSERT INTO page_images(page_id,name,content_type,size_bytes,width,height,data,sha256,created_at,actor_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id,name,size_bytes,width,height")
+    let image: PageImage = sqlx::query_as("INSERT INTO page_images(page_id,name,content_type,size_bytes,width,height,data,sha256,created_at,actor_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id,name,size_bytes,width,height,'/api/v1/page-images/' || id AS url,'/api/v1/page-images/' || id AS preview_url")
         .bind(page).bind(name).bind(mime).bind(bytes.len() as i64).bind(width as i32).bind(height as i32)
         .bind(bytes.as_ref()).bind(super::auth::hash(&bytes)).bind(timestamp(now)).bind(admin.id)
         .fetch_one(&mut *tx).await?;

@@ -3,15 +3,16 @@ use leptos::prelude::*;
 
 #[derive(Clone, serde::Deserialize)]
 struct PageImage {
-    id: i64,
     name: String,
     size_bytes: i64,
-    width: i32,
-    height: i32,
+    width: Option<i32>,
+    height: Option<i32>,
+    url: String,
+    preview_url: String,
 }
 
 // Escape Markdown syntax so an image description stays literal text.
-fn image_markdown(alt: &str, id: i64) -> String {
+fn image_markdown(alt: &str, url: &str) -> String {
     let escaped: String = alt
         .trim()
         .chars()
@@ -23,7 +24,7 @@ fn image_markdown(alt: &str, id: i64) -> String {
             }
         })
         .collect();
-    format!("\n\n![{escaped}](/api/v1/page-images/{id})\n\n")
+    format!("\n\n![{escaped}]({url})\n\n")
 }
 
 #[component]
@@ -97,7 +98,7 @@ pub fn MarkdownEditor(
                             let _ = el.set_selection_range(end, end);
                         }
                         insert.run((
-                            image_markdown(&description, image.id),
+                            image_markdown(&description, &image.url),
                             String::new(),
                             String::new(),
                         ));
@@ -176,16 +177,17 @@ pub fn MarkdownEditor(
                             }>{move||if upload.pending().get(){"Nahrávám…"}else{"Nahrát a vložit obrázek"}}</button>
                     </div>
                     <details class="page-image-library"><summary>"Dříve nahrané obrázky"</summary>
-                        <p class="admin-caption">"Vyplňte popis a vložte vybraný obrázek do textu. Soubory se uchovávají i pro historii stránky. Veřejně jsou dostupné jen obrázky použité v uloženém, zveřejněném textu."</p>
+                        <p class="admin-caption">"Vyplňte popis a vložte vybraný obrázek do textu. Najdete zde i obrázky převzaté z původního webu a ze starších verzí stránky. Náhled může zobrazit i neveřejný obrázek. Zveřejnění převzatých souborů se řídí původním dokumentem."</p>
                         <Suspense fallback=Pending>{move||images.get().map(|result|match result {
                             Err(error)=>view!{<FailureView error/><button class="button secondary" type="button" on:click=move |_|images.refetch()>"Načíst znovu"</button>}.into_any(),
+                            Ok(items) if items.is_empty()=>view!{<p class="admin-caption">"Tato stránka zatím nemá žádné nahrané ani převzaté obrázky."</p>}.into_any(),
                             Ok(items)=>view!{<ul class="page-image-list">{items.into_iter().map(move |image|view!{
-                                <li><img src=format!("/api/v1/page-images/{}",image.id) alt="" loading="lazy"/>
-                                    <div><strong>{image.name}</strong><small>{format!("{} × {} · {} kB",image.width,image.height,(image.size_bytes+1023)/1024)}</small></div>
+                                <li><img src=image.preview_url alt="" loading="lazy"/>
+                                    <div><strong>{image.name}</strong><small>{match (image.width,image.height) { (Some(w),Some(h))=>format!("{w} × {h} · {} kB",(image.size_bytes+1023)/1024), _=>format!("Převzato z původního webu · {} kB",(image.size_bytes+1023)/1024) }}</small></div>
                                     <button class="button secondary" type="button" disabled=move||busy.get()||alt.get().trim().is_empty()
                                         on:click=move |_|{
                                             if let Some(el)=textarea.get(){let end=el.selection_end().ok().flatten().unwrap_or(0);let _=el.set_selection_range(end,end);}
-                                            insert.run((image_markdown(&alt.get_untracked(),image.id),String::new(),String::new()));
+                                            insert.run((image_markdown(&alt.get_untracked(),&image.url),String::new(),String::new()));
                                         }>"Vložit do textu"</button>
                                 </li>
                             }).collect_view()}</ul>}.into_any(),
@@ -194,7 +196,7 @@ pub fn MarkdownEditor(
                 }.into_any()}}
             </section>
             <button class="button secondary" type="button" aria-expanded=move||preview.get().to_string() on:click=move |_|preview.update(|v|*v=!*v)>{move||if preview.get(){"Zavřít náhled"}else{"Náhled textu"}}</button>
-            <Show when=move||preview.get()><section class="admin-page-preview" aria-label="Náhled textu stránky"><h2>{move||title.get()}</h2><div class="markdown-content" inner_html=move||crate::markdown::render(&content.get())></div></section></Show>
+            <Show when=move||preview.get()><section class="admin-page-preview" aria-label="Náhled textu stránky"><h2>{move||title.get()}</h2><div class="markdown-content" inner_html=move||crate::markdown::render_preview(&content.get())></div></section></Show>
         </div>
     }
 }

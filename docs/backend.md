@@ -195,7 +195,8 @@ than a partial patch.
 | `POST /admin/documents/{id}/attachments` | Upload a document attachment |
 | `GET /admin/pages`, `POST /admin/pages` | List or create content pages |
 | `PUT /admin/pages/{id}` | Edit a page and its publication state |
-| `GET /admin/pages/{id}/images` | List images uploaded to the page |
+| `GET /admin/pages/{id}/images` | List uploaded images and imported images from the page and its revisions, with public and preview URLs |
+| `GET /admin/legacy-media/{id}` | Authenticated inline preview of an available imported image |
 | `POST /admin/pages/{id}/images` | Upload one multipart image `file`, returning id, name, size and dimensions |
 
 Administration lists for notices, documents and pages also accept `q` for title

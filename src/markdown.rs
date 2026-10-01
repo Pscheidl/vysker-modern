@@ -23,6 +23,15 @@ pub fn contains_image(source: &str, url: &str) -> bool {
         .any(|event| matches!(event, Event::Start(Tag::Image { dest_url, .. }) if dest_url.as_ref() == url))
 }
 
+pub fn image_urls(source: &str) -> impl Iterator<Item = String> + '_ {
+    parser(source).filter_map(|event| match event {
+        Event::Start(Tag::Image { dest_url, .. }) if safe_image(&dest_url) => {
+            Some(dest_url.to_string())
+        }
+        _ => None,
+    })
+}
+
 fn safe_link(value: &str) -> bool {
     let lower = value.to_ascii_lowercase();
     !value.chars().any(|c| c.is_control() || c == '\\')
@@ -33,14 +42,29 @@ fn safe_link(value: &str) -> bool {
                 .any(|p| lower.starts_with(p)))
 }
 pub fn render(source: &str) -> String {
+    render_content(source, false)
+}
+
+pub fn render_preview(source: &str) -> String {
+    render_content(source, true)
+}
+
+fn render_content(source: &str, preview: bool) -> String {
     let mut local_images = Vec::new();
     let events = parser(source).filter_map(|event| match event {
         Event::Html(value) | Event::InlineHtml(value) => Some(Event::Text(value)),
         Event::Start(Tag::HtmlBlock) | Event::End(TagEnd::HtmlBlock) => None,
         // Embed only application-owned images with publication-aware endpoints.
-        Event::Start(tag @ Tag::Image { .. }) => {
+        Event::Start(mut tag @ Tag::Image { .. }) => {
             let local_image = matches!(&tag, Tag::Image { dest_url, .. } if safe_image(dest_url));
             local_images.push(local_image);
+            if preview && local_image {
+                if let Tag::Image { dest_url, .. } = &mut tag {
+                    if let Some(id) = dest_url.strip_prefix("/api/v1/legacy-media/") {
+                        *dest_url = format!("/api/v1/admin/legacy-media/{id}").into();
+                    }
+                }
+            }
             local_image.then_some(Event::Start(tag))
         }
         Event::End(TagEnd::Image) => {
@@ -86,6 +110,22 @@ pub fn render(source: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn editor_previews_imports_privately_without_changing_public_urls() {
+        let source = "![Old](/api/v1/legacy-media/7) ![New](/api/v1/page-images/7) ![Remote](https://tracker.test/a.png)";
+        let preview = render_preview(source);
+        assert!(preview.contains("src=\"/api/v1/admin/legacy-media/7\""));
+        assert!(preview.contains("src=\"/api/v1/page-images/7\""));
+        assert_eq!(preview.matches("<img").count(), 2);
+        let public = render(source);
+        assert!(public.contains("src=\"/api/v1/legacy-media/7\""));
+        assert!(!public.contains("/admin/"));
+        assert_eq!(
+            image_urls(source).collect::<Vec<_>>(),
+            ["/api/v1/legacy-media/7", "/api/v1/page-images/7"]
+        );
+        assert!(!render_preview("![Forged](/api/v1/admin/legacy-media/7)").contains("<img"));
+    }
     #[test]
     fn tables_strikethrough_and_local_images_are_rendered_safely() {
         let html = render(

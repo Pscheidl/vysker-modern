@@ -225,3 +225,107 @@ async fn uploads_require_session_csrf_and_same_origin() {
         .unwrap();
     assert_eq!(count, 0);
 }
+
+#[tokio::test]
+async fn imported_images_appear_once_in_their_page_library_and_have_private_previews() {
+    let app = App::new().await;
+    let page = page(&app).await;
+    let document: i64 = sqlx::query_scalar("INSERT INTO documents(title,status,created_at) VALUES ('Imported photos','draft','now') RETURNING id")
+        .fetch_one(&app.state.pool).await.unwrap();
+    let bytes = picture(ImageFormat::Png, 2);
+    let mut imported = Vec::new();
+    for name in [
+        "used.png",
+        "code-example.png",
+        "plain-link.png",
+        "unverified.png",
+    ] {
+        let id: i64 = sqlx::query_scalar("INSERT INTO attachments(document_id,name,content_type,size_bytes,data) VALUES ($1,$2,'image/png',$3,$4) RETURNING id")
+            .bind(document).bind(name).bind(bytes.len() as i64).bind(&bytes).fetch_one(&app.state.pool).await.unwrap();
+        if name != "unverified.png" {
+            sqlx::query("INSERT INTO legacy_sources(source_key,source_url,fingerprint,captured_at,imported_at,metadata,document_id,attachment_id,destination) VALUES ($1,'https://vysker.cz/assets/Image.ashx','hash','now','now','{}',$2,$3,$4)")
+                .bind(name).bind(document).bind(id).bind(format!("/api/v1/attachments/{id}"))
+                .execute(&app.state.pool).await.unwrap();
+        }
+        imported.push(id);
+    }
+    let public = format!("/api/v1/legacy-media/{}", imported[0]);
+    let preview = format!("/api/v1/admin/legacy-media/{}", imported[0]);
+    save(&app, page, 1, false, &format!("![Photo]({public})\n\n![Again][photo]\n\n[photo]: {public}\n\n`![Code](/api/v1/legacy-media/{})`\n\n[Download](/api/v1/legacy-media/{})\n\n![Unverified](/api/v1/legacy-media/{})", imported[1], imported[2], imported[3])).await;
+    let path = format!("/api/v1/admin/pages/{page}/images");
+    let images = body_json(app.call("GET", &path, None, true).await).await;
+    assert_eq!(images.as_array().unwrap().len(), 1);
+    assert_eq!(images[0]["url"], public);
+    assert_eq!(images[0]["preview_url"], preview);
+    assert!(images[0]["width"].is_null());
+    assert_eq!(
+        app.call("GET", &preview, None, false).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        app.call("GET", &public, None, false).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    let response = app.call("GET", &preview, None, true).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "image/png");
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    assert_eq!(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .as_ref(),
+        bytes
+    );
+    assert_eq!(
+        app.call(
+            "GET",
+            &format!("/api/v1/admin/legacy-media/{}", imported[3]),
+            None,
+            true
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    // An uploaded image and a legacy attachment can share a numeric id.
+    let uploaded = app.upload(&path, "new.png", &bytes).await;
+    assert_eq!(uploaded.status(), StatusCode::CREATED);
+    let uploaded = body_json(uploaded).await;
+    assert_ne!(uploaded["url"], images[0]["url"]);
+    for version in 2..=22 {
+        save(
+            &app,
+            page,
+            version,
+            false,
+            "Photograph removed from current text",
+        )
+        .await;
+    }
+    let images = body_json(app.call("GET", &path, None, true).await).await;
+    assert_eq!(images.as_array().unwrap().len(), 2);
+    assert!(
+        images
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["url"] == public)
+    );
+    sqlx::query("UPDATE attachments SET data=NULL,removed_at='now' WHERE id=$1")
+        .bind(imported[0])
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        app.call("GET", &preview, None, true).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    let images = body_json(app.call("GET", &path, None, true).await).await;
+    assert_eq!(images.as_array().unwrap().len(), 1);
+    assert_eq!(images[0]["url"], uploaded["url"]);
+}

@@ -52,7 +52,7 @@ Use Markdown for headings, emphasis, lists, links, quotes and code. For example:
 
 The formatting buttons insert Markdown at the cursor or wrap selected text.
 **Nápověda k Markdownu** includes examples, including tables and strikethrough.
-**Náhled textu** uses exactly the same renderer as public pages. Raw HTML is shown
+**Náhled textu** shares Markdown formatting and sanitization with public pages. Raw HTML is shown
 as text. Remote embedded images are disabled, so page content cannot load tracking
 pixels. Verified migrated images from `/api/v1/legacy-media/{id}` are allowed.
 Uploaded page images from `/api/v1/page-images/{id}` are also allowed.
@@ -69,12 +69,21 @@ Save the page to store the inserted Markdown. Use **Dříve nahrané obrázky** 
 insert an existing image again with a new description. Remove its Markdown from
 the body to remove an image from the page.
 
+The library also includes verified images imported from the original website
+that appear in the page or its saved revisions. Repeated references show one
+library entry. Imported images use an authenticated preview in the library and
+editor, including when their owning document is a draft. Inserting them preserves
+their existing public URL and does not duplicate the file or change publication.
+Their public availability continues to follow the imported document or notice.
+Removed attachment data is not offered for reuse. Imported image dimensions may
+be unknown, so the library displays the source and file size instead.
+
 Each file may be at most 10 MiB, 8192 × 8192 pixels and 128 MiB when decoded.
 The server validates decoded image contents, determines the MIME type itself,
 and rejects active formats such as SVG. A page can store up to 100 images.
 Upload requests require an administrator session and CSRF protection.
 
-Images remain private until their owning page is published and its saved body
+Newly uploaded images remain private until their owning page is published and its saved body
 contains the image. Hiding the page or removing the image from its saved body
 revokes anonymous access. Administrators can preview drafts. Responses are not
 cached. Image bytes and metadata live in PostgreSQL and are included in database

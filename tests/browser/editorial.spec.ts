@@ -16,6 +16,47 @@ async function login(page: Page) {
   await expect(page.getByRole('navigation', { name: 'Administrace' })).toBeVisible()
 }
 
+test('imported photographs belong in the page image library and preview privately', async ({ page, request }) => {
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGPoSFsFRAwQCgAsJgZhzvQyqAAAAABJRU5ErkJggg=='
+  const doc = fixture("INSERT INTO documents(title,status,created_at) VALUES ('Imported image fixture','draft','now') RETURNING id")[0][0]
+  const image = fixture("INSERT INTO attachments(document_id,name,content_type,size_bytes,data) VALUES (%s,'puvodni-kaple.png','image/png',octet_length(decode(%s,'base64')),decode(%s,'base64')) RETURNING id", [doc, png, png])[0][0]
+  const url = `/api/v1/legacy-media/${image}`
+  fixture("INSERT INTO legacy_sources(source_key,source_url,fingerprint,captured_at,imported_at,metadata,document_id,attachment_id,destination) VALUES ('browser-image','https://vysker.cz/assets/Image.ashx','hash','now','now','{}',%s,%s,%s)", [doc, image, `/api/v1/attachments/${image}`])
+  const id = fixture("INSERT INTO pages(slug,title,content,published,updated_at) VALUES ('browser-imported-images','Převzaté fotografie',%s,FALSE,'now') RETURNING id", [`![Původní popis](${url})`])[0][0]
+  fixture("INSERT INTO page_revisions(page_id,version,title,content,slug,published,saved_at) SELECT id,version,title,content,slug,published,updated_at FROM pages WHERE id=%s", [id])
+  await login(page)
+  await page.goto(`/admin/stranky/${id}`)
+  await page.getByText('Dříve nahrané obrázky', { exact: true }).click()
+  const library = page.locator('.page-image-list')
+  await expect(library).toContainText('puvodni-kaple.png')
+  await expect(library).toContainText('Převzato z původního webu')
+  await expect(library.locator('img')).toHaveAttribute('src', `/api/v1/admin/legacy-media/${image}`)
+  await expect.poll(() => library.locator('img').evaluate((el: HTMLImageElement) => el.naturalWidth)).toBe(2)
+  expect((await request.get(`/api/v1/admin/legacy-media/${image}`)).status()).toBe(401)
+  expect((await request.get(url)).status()).toBe(404)
+  await page.getByRole('button', { name: 'Náhled textu', exact: true }).click()
+  const preview = page.getByRole('region', { name: 'Náhled textu stránky' })
+  await expect.poll(() => preview.getByRole('img', { name: 'Původní popis' }).evaluate((el: HTMLImageElement) => el.naturalWidth)).toBe(2)
+  await page.getByLabel('Popis obrázku', { exact: false }).fill('Nový popis')
+  const content = page.getByLabel('Obsah stránky', { exact: false })
+  await content.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(el.value.length, el.value.length))
+  await library.getByRole('button', { name: 'Vložit do textu', exact: true }).click()
+  await expect(content).toHaveValue(new RegExp(`!\\[Nový popis\\]\\(${url}\\)`))
+  expect((await content.inputValue()).match(/\/api\/v1\/legacy-media\//g)).toHaveLength(2)
+  await page.getByRole('button', { name: 'Uložit změny', exact: true }).click()
+  await expect(page.getByText('Verze 2', { exact: false })).toBeVisible()
+  await content.fill('Text bez fotografie')
+  await page.getByRole('button', { name: 'Uložit změny', exact: true }).click()
+  await expect(page.getByText('Verze 3', { exact: false })).toBeVisible()
+  await page.getByText('Dříve nahrané obrázky', { exact: true }).click()
+  await expect(library).toContainText('puvodni-kaple.png')
+  expect(fixture('SELECT count(*) FROM page_images WHERE page_id=%s', [id])[0][0]).toBe(0)
+  expect((await request.get(url)).status()).toBe(404)
+  expect(errors).toEqual([])
+})
+
 test('page images preserve edits, preview drafts and follow publication on mobile', async ({ page, request }) => {
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))

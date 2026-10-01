@@ -168,6 +168,18 @@ pub async fn redirects(State(state): State<Backend>, request: Request, next: Nex
     next.run(request).await
 }
 
+pub async fn admin_media(
+    State(state): State<Backend>,
+    _: super::auth::Admin,
+    Path(id): Path<i64>,
+) -> super::Result<Response> {
+    let file: Option<(String, Vec<u8>)> = sqlx::query_as(
+        "SELECT a.content_type,a.data FROM attachments a WHERE a.id=$1 AND a.removed_at IS NULL AND a.data IS NOT NULL AND a.content_type IN ('image/png','image/jpeg','image/gif','image/webp') AND EXISTS(SELECT 1 FROM legacy_sources s WHERE s.attachment_id=a.id)"
+    ).bind(id).fetch_optional(&state.pool).await?;
+    let (mime, bytes) = file.ok_or_else(missing)?;
+    image_response(mime, bytes)
+}
+
 pub async fn media(State(state): State<Backend>, Path(id): Path<i64>) -> super::Result<Response> {
     let file: Option<(String, Vec<u8>, Option<i64>)> = sqlx::query_as(
         "SELECT a.content_type,a.data,a.notice_id FROM attachments a LEFT JOIN documents d ON d.id=a.document_id JOIN legacy_sources s ON s.attachment_id=a.id WHERE a.id=$1 AND (d.status='published' OR a.notice_id IS NOT NULL) AND a.removed_at IS NULL AND a.data IS NOT NULL AND a.content_type IN ('image/png','image/jpeg','image/gif','image/webp')"
@@ -183,6 +195,10 @@ pub async fn media(State(state): State<Backend>, Path(id): Path<i64>) -> super::
             return Err(missing());
         }
     }
+    image_response(mime, bytes)
+}
+
+fn image_response(mime: String, bytes: Vec<u8>) -> super::Result<Response> {
     let mut headers = HeaderMap::new();
     headers.insert(header::CONTENT_TYPE, mime.parse().map_err(|_| missing())?);
     headers.insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());

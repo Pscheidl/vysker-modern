@@ -88,6 +88,9 @@ restoring revisions, menu changes, calendar publication and subscriber workflows
 Page image tests cover decoded file formats and limits, upload authorization,
 draft privacy, publication and withdrawal of images, preserved revisions, Unicode
 toolbar selection, failed upload recovery, unsaved edits and mobile layout.
+Imported image regressions cover page-specific libraries, reference deduplication,
+images preserved in older revisions, private draft previews, reuse of public URLs
+and exclusion of removed files or Markdown code examples.
 Run Rust tests before building the full web for browser tests. `cargo test --bins`
 can replace the SSR binary with a build lacking cargo-leptos's compile-time asset
 settings. Rebuild with `cargo leptos build` before testing hydration. Do not run
