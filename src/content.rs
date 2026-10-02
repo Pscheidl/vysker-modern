@@ -236,7 +236,7 @@ pub async fn load_notice(id: i64) -> Result<Option<Notice>, ServerFnError> {
 #[cfg(feature = "demo")]
 pub async fn load_board() -> Result<Board, ServerFnError> {
     serde_json::from_str(include_str!("../demo/documents.json"))
-        .map_err(|_| ServerFnError::new("Ukázkové dokumenty se nepodařilo načíst."))
+        .map_err(|_| ServerFnError::new("Dokumenty se nepodařilo načíst."))
 }
 
 #[cfg(feature = "ssr")]

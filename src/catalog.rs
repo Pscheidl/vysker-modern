@@ -119,7 +119,7 @@ pub async fn subscribe_email(email: String, fingerprint: String) -> Result<(), S
 #[cfg(feature = "demo")]
 pub async fn subscribe_email(_email: String, _fingerprint: String) -> Result<(), ServerFnError> {
     Err(ServerFnError::new(
-        "Toto je ukázkový náhled. E-mailová adresa se neukládá a zprávy se neposílají.",
+        "Odběr novinek zatím není aktivní. E-mailová adresa se neukládá a zprávy se neposílají.",
     ))
 }
 

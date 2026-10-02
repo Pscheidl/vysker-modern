@@ -225,7 +225,7 @@ pub fn Newsletter() -> impl IntoView {
         <Suspense fallback=||view!{<p role="status">"Načítám informace o odběru…"</p>}>
             {move || privacy.get().map(|result|match result {
                 Ok(Some(notice))=>view!{<NewsletterForm notice/>}.into_any(),
-                Ok(None)=>view!{<p class="newsletter-message">{if cfg!(feature="demo"){"Toto je ukázkový náhled. Adresy neukládáme a zprávy neposíláme."}else{"Odběr novinek zatím není aktivní."}}</p>}.into_any(),
+                Ok(None)=>view!{<p class="newsletter-message">"Odběr novinek zatím není aktivní."</p>}.into_any(),
                 Err(_)=>view!{<p class="newsletter-message" role="alert">"Informace o odběru se nepodařilo načíst. Zkuste to později."</p>}.into_any(),
             })}
         </Suspense>
@@ -249,7 +249,6 @@ fn NewsletterForm(notice: crate::privacy::PrivacyNotice) -> impl IntoView {
         <button class="button primary" type="submit" disabled=move ||!ready.get() ||request.pending().get()>{move ||if request.pending().get(){"Odesílám…"}else{"Přihlásit k odběru"}}</button>
         <p class="newsletter-consent">{notice.consent_text}" "<A href=site_url("/ochrana-udaju")>"Ochrana údajů"</A></p>
         {move ||request.value().get().map(|result|view!{<p role="status" class="newsletter-message">{match result{Ok(())=>"Pokud je potřeba odběr potvrdit, pošleme vám ověřovací e-mail. Zkontrolujte svou schránku.".to_owned(),Err(error)=>error.to_string()}}</p>})}
-        {notice.policy.approved_on.is_none().then(||view!{<p class="field-note">"Vývojová ukázka. Podmínky odběru dosud nebyly schváleny obcí."</p>})}
         <noscript><p>"Pro odeslání formuláře zapněte JavaScript."</p></noscript>
     </form>}
 }
@@ -260,7 +259,7 @@ pub fn Footer() -> impl IntoView {
         <footer class="site-footer page-width">
             <span>"Obec Vyskeř"</span>
             <nav aria-label="Patička"><A href=site_url("/povinne-informace")>"Povinné informace"</A><A href=site_url("/stranky")>"Informace obce"</A><A href=site_url("/pristupnost")>"Přístupnost"</A><A href=site_url("/ochrana-udaju")>"Ochrana údajů"</A><A href=site_url("/kontakt")>"Kontakt"</A>{(!cfg!(feature="demo")).then(||view!{<A href="/admin">"Správa webu"</A>})}</nav>
-            <PreviewOnly><span class="preview-label"><span class="preview-dot"></span>"Vývojový náhled · ukázkový obsah"</span></PreviewOnly>
+            <p class="site-footer-note">"Neoficiální web obce Vyskeř. Informace o obci přehledněji."</p>
         </footer>
     }
 }
@@ -324,6 +323,7 @@ pub fn SkipLink() -> impl IntoView {
     }>"Přeskočit na obsah"</a>}
 }
 
+#[cfg(feature = "demo")]
 #[component]
 pub fn PreviewOnly(children: ChildrenFn) -> impl IntoView {
     let info = expect_context::<super::SiteResource>();

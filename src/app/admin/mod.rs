@@ -27,7 +27,7 @@ use leptos::prelude::*;
 #[cfg(feature = "demo")]
 #[component]
 pub fn Administration() -> impl IntoView {
-    view! { <div class="page-width interior"><super::components::PageHeading title="Administrace" description="Administrace je dostupná v serverové verzi webu. Tento náhled používá ukázková data."/><a class="button secondary" href=super::site_url("/")>"Zpět na web"</a></div> }
+    view! { <div class="page-width interior"><super::components::PageHeading title="Administrace" description="Administrace je dostupná v serverové verzi webu."/><a class="button secondary" href=super::site_url("/")>"Zpět na web"</a></div> }
 }
 
 #[cfg(not(feature = "demo"))]

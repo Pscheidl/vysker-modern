@@ -177,8 +177,8 @@ fn DetailContent(notice: Notice) -> impl IntoView {
         <div class="detail-layout"><article class="detail-content"><h2>"Informace o dokumentu"</h2><p class="document-description">{notice.description}</p><dl class="document-facts"><div><dt>"Číslo jednací"</dt><dd>{notice.reference}</dd></div><div><dt>"Zveřejnil"</dt><dd>{notice.issuer}</dd></div></dl>
             <section class="attachments" aria-labelledby="attachments-title"><h2 id="attachments-title">"Přílohy dokumentu"</h2>
                 <Show when=move || archived && no_files><div class="info-banner"><Icon name="archive"/><div><strong>"Přílohy už nejsou k dispozici."</strong><p>"Po sejmutí byly odstraněny. Záznam o zveřejnění zůstává v archivu."</p></div></div></Show>
-                {notice.attachments.into_iter().map(|file|view!{<div class="attachment"><Icon name="paper"/><div><strong>{file.name}</strong><p>{if file.removed {"Příloha odstraněna".to_string()}else{file.size.clone()}}</p></div>{match file.url {Some(url)=>view!{<a class="text-link" href=url download>"Stáhnout"<Icon/></a>}.into_any(),None=>view!{<span class="attachment-state">{if file.removed {"Nedostupná"}else{"Ukázka"}}</span>}.into_any()}}</div>}).collect_view()}
-                <Show when=move || !no_files && cfg!(feature="demo")><p class="field-note">"V tomto náhledu jsou uvedeny názvy příloh. Skutečné soubory budou dostupné po jejich nahrání."</p></Show>
+                {notice.attachments.into_iter().map(|file|view!{<div class="attachment"><Icon name="paper"/><div><strong>{file.name}</strong><p>{if file.removed {"Příloha odstraněna".to_string()}else{file.size.clone()}}</p></div>{match file.url {Some(url)=>view!{<a class="text-link" href=url download>"Stáhnout"<Icon/></a>}.into_any(),None=>view!{<span class="attachment-state">{if file.removed {"Nedostupná"}else{"Není k dispozici"}}</span>}.into_any()}}</div>}).collect_view()}
+                <Show when=move || !no_files && cfg!(feature="demo")><p class="field-note">"U příloh jsou zatím uvedeny pouze názvy. Soubory ke stažení nejsou k dispozici."</p></Show>
             </section>
         </article><aside class="posting-panel" aria-label="Doba zveřejnění"><Icon name="calendar"/><h2>"Doba zveřejnění"</h2><dl><div><dt>"Vyvěšeno"</dt><dd><time datetime=(!notice.posted_iso.is_empty()).then_some(notice.posted_iso.clone())>{notice.posted}</time></dd></div><div><dt>{if archived {"Sejmuto"}else{"Datum sejmutí"}}</dt><dd>{notice.ends}</dd></div></dl>
             {if !archived {notice.remaining.map(|d|view!{<span class="status-badge">{remaining_text(d)}</span>})}else{None}}
@@ -216,7 +216,7 @@ fn ContactPreview() -> impl IntoView {
 
 #[component]
 pub fn Subscribe() -> impl IntoView {
-    view! {<Title text="Odběr novinek · Vyskeř"/><div class="page-width interior"><PageHeading title="Důležité zprávy vám neutečou." description="Nové dokumenty a oznámení z úřední desky přímo do vaší schránky." eyebrow="ODBĚR NOVINEK"/><Newsletter/><div class="steps-grid"><article><span>"01"</span><h2>"Zadáte e-mail"</h2><p>"Stačí adresa, na kterou chcete dostávat nové dokumenty."</p></article><article><span>"02"</span><h2>"Potvrdíte odběr"</h2><p>"Ve zprávě otevřete ověřovací odkaz a potvrďte přihlášení."</p></article><article><span>"03"</span><h2>"Budete v obraze"</h2><p>{if cfg!(feature="demo"){"Toto je ukázkový náhled, rozesílání zde není aktivní."}else{"Z každé zprávy se snadno odhlásíte."}}</p></article></div><p class="field-note">"Ochrana soukromí: "<A href=super::site_url("/ochrana-udaju")>"jak nakládáme s údaji"</A>"."</p></div>}
+    view! {<Title text="Odběr novinek · Vyskeř"/><div class="page-width interior"><PageHeading title="Důležité zprávy vám neutečou." description="Nové dokumenty a oznámení z úřední desky přímo do vaší schránky." eyebrow="ODBĚR NOVINEK"/><Newsletter/><div class="steps-grid"><article><span>"01"</span><h2>"Zadáte e-mail"</h2><p>"Stačí adresa, na kterou chcete dostávat nové dokumenty."</p></article><article><span>"02"</span><h2>"Potvrdíte odběr"</h2><p>"Ve zprávě otevřete ověřovací odkaz a potvrďte přihlášení."</p></article><article><span>"03"</span><h2>"Budete v obraze"</h2><p>{if cfg!(feature="demo"){"Rozesílání novinek zde není aktivní."}else{"Z každé zprávy se snadno odhlásíte."}}</p></article></div><p class="field-note">"Ochrana soukromí: "<A href=super::site_url("/ochrana-udaju")>"jak nakládáme s údaji"</A>"."</p></div>}
 }
 
 #[cfg(feature = "demo")]
@@ -224,13 +224,13 @@ pub fn Subscribe() -> impl IntoView {
 fn CalendarPreview() -> impl IntoView {
     view! {<Title text="Kalendář akcí · Vyskeř"/><div class="page-width interior"><PageHeading title="Dění na Vyskři." description="Setkání, události a praktické termíny na jednom místě." eyebrow="KALENDÁŘ AKCÍ"/>
     <div class="calendar-list"><details id="setkani"><summary><span class="date-tile"><strong>"10"</strong><span>"ŘÍJEN"</span></span><span><span class="eyebrow">"SPOLEČNĚ V OBCI"</span><strong>"Podzimní setkání sousedů"</strong><span>"Sobota 10. října 2026"</span></span><Icon/></summary><div class="event-description"><p>"Příležitost potkat se se sousedy a strávit společně podzimní odpoledne. Podrobnosti o místě a programu zveřejní obec před akcí."</p><A href=super::site_url("/kontakt") attr:class="text-link">"Kontakt na pořadatele"<Icon/></A></div></details>
-    <details id="svoz"><summary><span class="date-tile"><strong>"12"</strong><span>"ŘÍJEN"</span></span><span><span class="eyebrow">"PRAKTICKÉ INFORMACE"</span><strong>"Svoz bioodpadu"</strong><span>"Pondělí 12. října 2026"</span></span><Icon/></summary><div class="event-description"><p>"Informace ke svozu bioodpadu a přistavení nádob poskytne obecní úřad."</p><A href=super::site_url("/kontakt") attr:class="text-link">"Zeptat se na svoz"<Icon/></A></div></details></div><p class="field-note">"Události a termíny jsou ukázkovým obsahem vývojového náhledu."</p>
+    <details id="svoz"><summary><span class="date-tile"><strong>"12"</strong><span>"ŘÍJEN"</span></span><span><span class="eyebrow">"PRAKTICKÉ INFORMACE"</span><strong>"Svoz bioodpadu"</strong><span>"Pondělí 12. října 2026"</span></span><Icon/></summary><div class="event-description"><p>"Informace ke svozu bioodpadu a přistavení nádob poskytne obecní úřad."</p><A href=super::site_url("/kontakt") attr:class="text-link">"Zeptat se na svoz"<Icon/></A></div></details></div><p class="field-note">"Události a termíny jsou pouze ilustrační. Nejde o potvrzené akce obce."</p>
     </div>}
 }
 
 #[component]
 fn AccessibilityPreview() -> impl IntoView {
-    view! {<Title text="Přístupnost · Vyskeř"/><div class="page-width interior prose"><PageHeading title="Web pro každého." description="Přístupnost a ovládání webu." eyebrow="PŘÍSTUPNOST"/><h2>"Ovládání klávesnicí"</h2><p>"Mezi odkazy a ovládacími prvky se pohybujete klávesou Tab. První odkaz umožňuje přeskočit rovnou na obsah stránky. Vyhledávání otevřete pomocí Ctrl K nebo ⌘ K na stránkách s vyhledávacím polem."</p><h2>"Čitelnost a motiv"</h2><p>"Světlý a tmavý motiv přepnete v záhlaví. Web respektuje nastavení omezeného pohybu a obsah se přizpůsobuje velikosti obrazovky."</p><h2>"Stav tohoto náhledu"</h2><p>"Web je ve vývoji. Úplné prohlášení o přístupnosti bude doplněno po ověření finálního webu a jeho dokumentů."</p><h2>"Narazili jste na problém?"</h2><p>"Dejte nám vědět na "<a href="mailto:vysker@cmail.cz">"vysker@cmail.cz"</a>"."</p></div>}
+    view! {<Title text="Přístupnost · Vyskeř"/><div class="page-width interior prose"><PageHeading title="Web pro každého." description="Přístupnost a ovládání webu." eyebrow="PŘÍSTUPNOST"/><h2>"Ovládání klávesnicí"</h2><p>"Mezi odkazy a ovládacími prvky se pohybujete klávesou Tab. První odkaz umožňuje přeskočit rovnou na obsah stránky. Vyhledávání otevřete pomocí Ctrl K nebo ⌘ K na stránkách s vyhledávacím polem."</p><h2>"Čitelnost a motiv"</h2><p>"Světlý a tmavý motiv přepnete v záhlaví. Web respektuje nastavení omezeného pohybu a obsah se přizpůsobuje velikosti obrazovky."</p><h2>"Stav přístupnosti"</h2><p>"Úplné prohlášení o přístupnosti bude doplněno po ověření přístupnosti webu a jeho dokumentů."</p><h2>"Narazili jste na problém?"</h2><p>"Dejte nám vědět na "<a href="mailto:vysker@cmail.cz">"vysker@cmail.cz"</a>"."</p></div>}
 }
 
 #[component]
@@ -241,7 +241,7 @@ pub fn Privacy() -> impl IntoView {
         <Suspense fallback=||view!{<p role="status">"Načítám informace…"</p>}>
         {move ||privacy.get().map(|result|match result{
             Ok(Some(notice))=>view!{<PrivacyDetails policy=notice.policy/>}.into_any(),
-            Ok(None)=>view!{<p>"Tento web je vývojový náhled. Odběr novinek není aktivní. Provozní údaje a kontakty pro ochranu soukromí budou zveřejněny před spuštěním."</p>}.into_any(),
+            Ok(None)=>view!{<p>"Informace o zpracování osobních údajů nejsou dostupné. Odběr novinek není aktivní."</p>}.into_any(),
             Err(_)=>view!{<p role="alert">"Informace se nepodařilo načíst. Zkuste to později."</p>}.into_any(),
         })}</Suspense>
         <h2>"Cookies a paměť prohlížeče"</h2><p>"Používáme pouze nezbytné technické prostředky. Přihlášení správců používá cookie obec_session s platností nejvýše 8 hodin. Cookie chrání přístup do administrace a při odhlášení se odstraní."</p>
@@ -254,7 +254,6 @@ pub fn Privacy() -> impl IntoView {
 fn PrivacyDetails(policy: crate::privacy::PrivacyPolicy) -> impl IntoView {
     let r = policy.retention;
     view! {
-        {policy.approved_on.is_none().then(||view!{<p class="field-note">"Vývojová ukázka. Níže uvedené údaje a lhůty jsou návrhem ke schválení obcí."</p>})}
         <p>"Verze informací: "{policy.version}</p>
         <h2>"Správce a pověřenec"</h2><p>{policy.controller_name}", "{policy.controller_address}</p>
         <p>"Kontakt správce: "<a href=format!("mailto:{}",policy.controller_email)>{policy.controller_email.clone()}</a></p>
@@ -307,7 +306,7 @@ pub fn Municipality() -> impl IntoView {
 
 #[component]
 pub fn RequiredInformation() -> impl IntoView {
-    view! {<ManagedPage slug="povinne-informace"><div class="page-width interior prose"><PageHeading title="Povinné informace" description="Informace podle zákona č. 106/1999 Sb."/><p>"Schválené informace doplní obec před spuštěním webu."</p></div></ManagedPage>}
+    view! {<ManagedPage slug="povinne-informace"><div class="page-width interior prose"><PageHeading title="Povinné informace" description="Informace podle zákona č. 106/1999 Sb."/><p>"Povinné informace zde zatím nejsou zveřejněny."</p></div></ManagedPage>}
 }
 #[component]
 fn ManagedPage(slug: &'static str, children: ChildrenFn) -> impl IntoView {
@@ -336,7 +335,7 @@ pub fn SearchResults() -> impl IntoView {
 #[component]
 fn HomeEvents() -> impl IntoView {
     #[cfg(feature = "demo")]
-    return view! {<PreviewOnly><section class="events-strip" aria-label="Nejbližší události"><h2>"Dění v obci"</h2><A href=super::site_url("/kalendar#setkani")><span>"10. října"</span>"Podzimní setkání sousedů"</A><A href=super::site_url("/kalendar#svoz")><span>"12. října"</span>"Svoz bioodpadu"</A><A href=super::site_url("/kalendar") attr:class="text-link">"Kalendář akcí"<Icon name="external"/></A></section></PreviewOnly>};
+    return view! {<PreviewOnly><section class="events-strip" aria-label="Ilustrační události"><h2>"Ilustrační události"</h2><A href=super::site_url("/kalendar#setkani")><span>"10. října"</span>"Podzimní setkání sousedů"</A><A href=super::site_url("/kalendar#svoz")><span>"12. října"</span>"Svoz bioodpadu"</A><A href=super::site_url("/kalendar") attr:class="text-link">"Kalendář akcí"<Icon name="external"/></A></section></PreviewOnly>};
     #[cfg(not(feature = "demo"))]
     view! {<super::events::UpcomingEvents/>}
 }
