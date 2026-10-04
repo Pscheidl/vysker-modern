@@ -64,6 +64,7 @@ Documentation:
 - [Outgoing mail setup and provider handover](docs/mail.md)
 - [Deployment requirements and hosting considerations](docs/deployment.md)
 - [Production operations, backups and recovery](docs/operations.md)
+- [Ubuntu VPS staging deployment and SSH hardening plan](docs/vps-test-deployment.md)
 - [Remaining implementation work](docs/roadmap.md)
 - [Original website migration and later host transfer](docs/migration.md)
 
