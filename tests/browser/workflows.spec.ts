@@ -39,7 +39,7 @@ test('keyboard navigation, diacritic-insensitive search and pagination', async (
   expect(errors).toEqual([])
 })
 
-test('publish a notice with an attachment and download it publicly', async ({ page, browser }) => {
+test('publish a notice with multiple attachments and download each publicly', async ({ page, browser }) => {
   await login(page)
   await page.getByRole('link', { name: 'Úřední deska', exact: true }).click()
   await page.getByRole('link', { name: 'Nové vyvěšení' }).click()
@@ -48,21 +48,43 @@ test('publish a notice with an attachment and download it publicly', async ({ pa
   await page.getByRole('button', { name: 'Uložit koncept', exact: true }).click()
   await expect(page).toHaveURL(/\/admin\/uredni-deska\/\d+$/)
   const id = page.url().split('/').pop()
-  await page.locator('#upload-file').setInputFiles({ name: 'oznameni.txt', mimeType: 'text/plain', buffer: Buffer.from('Testovací příloha obecního webu.\n') })
-  await page.getByRole('button', { name: 'Nahrát soubor', exact: true }).click()
-  await expect(page.locator('.admin-files')).toContainText('oznameni.txt')
+  const files = [
+    { name: 'oznameni.txt', mimeType: 'text/plain', buffer: Buffer.from('Testovací příloha obecního webu.\n') },
+    { name: 'priloha.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\nDruhá testovací příloha.\n%%EOF\n') },
+  ]
+  for (const [index, file] of files.entries()) {
+    await page.locator('#upload-file').setInputFiles(file)
+    await page.getByRole('button', { name: 'Nahrát soubor', exact: true }).click()
+    await expect(page.locator('.admin-files li')).toHaveCount(index + 1)
+    await expect(page.locator('.admin-files')).toContainText(file.name)
+  }
+  await page.reload()
+  await expect(page.locator('.admin-files li')).toHaveCount(files.length)
+  for (const file of files) {
+    await expect(page.locator('.admin-files')).toContainText(file.name)
+  }
+  const publicContext = await browser.newContext()
+  const publicPage = await publicContext.newPage()
+  const adminLinks = await page.locator('.admin-files a').evaluateAll(links => links.map(link => link.getAttribute('href')!))
+  expect(adminLinks).toHaveLength(files.length)
+  for (const link of adminLinks) {
+    const response = await publicContext.request.get(`http://127.0.0.1:3107${link.replace('/admin', '')}`)
+    expect(response.status()).toBe(404)
+  }
   await page.getByRole('button', { name: 'Zveřejnit', exact: true }).click()
   await page.getByRole('dialog').getByRole('button', { name: 'Zveřejnit', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Sejmout do archivu', exact: true })).toBeVisible()
-  const publicContext = await browser.newContext()
-  const publicPage = await publicContext.newPage()
   await publicPage.goto(`http://127.0.0.1:3107/uredni-deska/${id}`)
   await expect(publicPage.getByRole('heading', { name: 'Oznámení z browser testu', exact: true })).toBeVisible()
-  const downloadPromise = publicPage.waitForEvent('download')
-  await publicPage.getByRole('link', { name: 'Stáhnout', exact: true }).click()
-  const download = await downloadPromise
-  expect(download.suggestedFilename()).toBe('oznameni.txt')
-  expect(readFileSync((await download.path())!, 'utf8')).toBe('Testovací příloha obecního webu.\n')
+  await expect(publicPage.locator('.attachment')).toHaveCount(files.length)
+  for (const file of files) {
+    const attachment = publicPage.locator('.attachment').filter({ has: publicPage.getByText(file.name, { exact: true }) })
+    const downloadPromise = publicPage.waitForEvent('download')
+    await attachment.getByRole('link', { name: 'Stáhnout', exact: true }).click()
+    const download = await downloadPromise
+    expect(download.suggestedFilename()).toBe(file.name)
+    expect(readFileSync((await download.path())!)).toEqual(file.buffer)
+  }
   await publicContext.close()
 })
 

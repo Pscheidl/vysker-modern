@@ -6,6 +6,17 @@ All administrators currently have equal privileges. Production administration,
 including password recovery, remains restricted to the configured office or VPN
 networks by the reverse proxy.
 
+## Notice and document attachments
+
+One notice-board record or general document can contain multiple attachments.
+Save the draft first, then use **Přílohy → Přidat přílohu → Nahrát soubor** for
+each file. Uploading another file keeps the earlier attachments. Files are
+selected and uploaded one at a time, with a limit of 10 MiB per file.
+
+All available attachments appear on the public detail after publication, each
+with its own download link. Attachments can be added or removed only while the
+record is a draft. Published, scheduled and archived records have locked attachments.
+
 ## Password recovery
 
 Choose **Zapomenuté heslo** on the login screen. Enter the administrator email,

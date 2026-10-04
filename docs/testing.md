@@ -44,7 +44,8 @@ shutdown. Do not point the test suite at a deployed website.
 Covered workflows:
 
 - Keyboard skip link, pagination and Czech search without diacritics
-- Creating a notice, uploading a file, publishing and anonymous download
+- Creating a notice, adding multiple attachments, preserving them after reload,
+  draft privacy, publishing and anonymous download of every attachment
 - Subscription request, confirmation, notification and unsubscribe
 - Account settings and viewport overflow on mobile
 
