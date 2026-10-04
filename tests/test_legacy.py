@@ -18,6 +18,14 @@ from legacy_reimport import reset_import, reset_library
 from legacy_scope import notice_values
 from postgres import connect, temporary_database
 
+# Preview validation uses application configuration, while each integration test
+# connects explicitly to its disposable database (which may use a Docker hostname).
+LOCAL_PREVIEW_ENV = {
+    'OBEC_PRODUCTION': 'false',
+    'OBEC_VEREJNA_URL': 'http://127.0.0.1:3000',
+    'OBEC_DATABAZE': 'postgresql://user@127.0.0.1/test',
+}
+
 URL = 'https://vysker.cz/dokumenty/ms-1053'
 FILE = 'https://vysker.cz/assets/File.ashx?id_dokumenty=123&id_org=18774'
 HTML = f'''<title>Dokumenty: obec Vyskeř</title><div id="menu"><a href="/obec/ds-50/p1=42">Obec</a></div>
@@ -112,12 +120,11 @@ class ExtractionTests(unittest.TestCase):
         self.assertEqual(dates('Vyvěšeno: 31. 2. 2026'), {})
 
     def test_notice_preview_refuses_production_or_remote_targets(self):
-        values=dict(OBEC_PRODUCTION='false',OBEC_VEREJNA_URL='http://127.0.0.1:3000',
-                    OBEC_DATABAZE='postgresql://user@127.0.0.1/test')
-        with patch.dict(os.environ,values):
+        with patch.dict(os.environ, LOCAL_PREVIEW_ENV):
             require_local_preview()
             for key,value in [('OBEC_PRODUCTION','true'),('OBEC_VEREJNA_URL','https://vysker.cz'),
-                              ('OBEC_DATABAZE','postgresql://user@db.example.test/test')]:
+                              ('OBEC_DATABAZE','postgresql://user@db.example.test/test'),
+                              ('OBEC_DATABAZE','postgresql://user@postgres/test')]:
                 with patch.dict(os.environ,{key:value}), self.assertRaisesRegex(ValueError,'local'):
                     require_local_preview()
 
@@ -186,7 +193,7 @@ class ImportTests(unittest.TestCase):
 
     def test_navigation_classification_is_exclusive_even_without_dates(self):
         data = navigation_bundle(self.root)
-        with patch.dict(os.environ, {'OBEC_PRODUCTION':'false', 'OBEC_VEREJNA_URL':'http://127.0.0.1:3000', 'OBEC_DATABAZE':self.url}):
+        with patch.dict(os.environ, LOCAL_PREVIEW_ENV):
             with connect(self.url) as conn:
                 result = import_bundle(conn, self.root, publish_content=True, classify_navigation=True, preview_notices=True)
                 self.assertEqual(result['classification'], {'notice':1, 'document':1})
@@ -205,7 +212,7 @@ class ImportTests(unittest.TestCase):
 
     def test_local_reset_preserves_pages_and_file_links_and_restores_protection(self):
         navigation_bundle(self.root)
-        with patch.dict(os.environ, {'OBEC_PRODUCTION':'false', 'OBEC_VEREJNA_URL':'http://127.0.0.1:3000', 'OBEC_DATABAZE':self.url}):
+        with patch.dict(os.environ, LOCAL_PREVIEW_ENV):
             with connect(self.url) as conn:
                 import_bundle(conn, self.root, publish_content=True)
                 attachment_id = conn.execute('SELECT id FROM attachments ORDER BY id LIMIT 1').fetchone()[0]
@@ -240,7 +247,7 @@ class ImportTests(unittest.TestCase):
         (Path(self.root) / 'manifest.json').write_text(json.dumps(data))
         tables = ('pages', 'page_revisions', 'page_images', 'events', 'documents', 'notices',
                   'attachments', 'notice_events', 'legacy_sources', 'legacy_notice_imports', 'legacy_sync_reviews')
-        with patch.dict(os.environ, {'OBEC_PRODUCTION':'false', 'OBEC_VEREJNA_URL':'http://127.0.0.1:3000', 'OBEC_DATABAZE':self.url}):
+        with patch.dict(os.environ, LOCAL_PREVIEW_ENV):
             with connect(self.url) as conn:
                 import_bundle(conn, self.root, classify_navigation=True)
                 local_page = conn.execute("INSERT INTO pages(slug,title,content,updated_at) VALUES ('local','Local','Edited','2026-10-01') RETURNING id").fetchone()[0]
@@ -499,7 +506,7 @@ class ImportTests(unittest.TestCase):
         (Path(self.root)/'manifest.json').write_text(json.dumps(data))
         with connect(self.url) as conn:
             import_bundle(conn,self.root,publish_content=True)
-        with patch.dict(os.environ,{'OBEC_PRODUCTION':'false','OBEC_VEREJNA_URL':'http://127.0.0.1:3000','OBEC_DATABAZE':self.url}):
+        with patch.dict(os.environ,LOCAL_PREVIEW_ENV):
             with connect(self.url) as conn:
                 reconcile(conn,self.root,{data['pages'][0]['key']:'Zastupitelstvo'},apply=True,preview=True,as_of=date(2026,10,1))
                 self.assertEqual(conn.execute('SELECT status,published_on,withdraw_on,published_at,withdrawn_at FROM notices').fetchone(),

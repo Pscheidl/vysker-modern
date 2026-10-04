@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect, type Page } from './fixtures'
 
 const PASSWORD = 'Disposable-browser-test-password!'
 const environment = {

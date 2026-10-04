@@ -39,7 +39,11 @@ an existing server. It creates its own temporary PostgreSQL database, synthetic
 administrator, privacy configuration and 25 notice records. It does not read
 `.env`, reuse the developer database, or send real email. Test links are read from
 the fixture's local mail queue. The server and temporary database are removed on
-shutdown. Do not point the test suite at a deployed website.
+shutdown. Shared fixtures reset rate-limit counters in that disposable database
+before each test, so repeated administrator logins in unrelated scenarios do not
+exhaust one another's limits. Throttling remains active within each test.
+Import `test` from `tests/browser/fixtures.ts` in every browser spec.
+Do not point the test suite at a deployed website.
 
 Covered workflows:
 
