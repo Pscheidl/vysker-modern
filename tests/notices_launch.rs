@@ -266,6 +266,192 @@ async fn missed_start_returns_to_draft_without_claiming_past_publication() {
     assert_eq!(event, "schedule_missed");
 }
 
+async fn assert_unpublished_draft(app: &App, id: i64, file: i64, operation: &str) {
+    let row: (String, Option<String>, Option<String>) =
+        sqlx::query_as("SELECT status,published_at,withdrawn_at FROM notices WHERE id=$1")
+            .bind(id)
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap();
+    assert_eq!(row, ("draft".into(), None, None));
+    for path in [
+        format!("/api/v1/notices/{id}"),
+        format!("/api/v1/attachments/{file}"),
+    ] {
+        assert_eq!(
+            app.call("GET", &path, None, false).await.status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+    let archived = body_json(
+        app.call("GET", "/api/v1/notices?archived=true", None, false)
+            .await,
+    )
+    .await;
+    assert!(archived.as_array().unwrap().is_empty());
+    assert!(
+        model::notices::by_id(&app.state.pool, id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let data: Option<Vec<u8>> = sqlx::query_scalar("SELECT data FROM attachments WHERE id=$1")
+        .bind(file)
+        .fetch_one(&app.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(data.as_deref(), Some(PDF));
+    let events: Vec<String> =
+        sqlx::query_scalar("SELECT kind FROM notice_events WHERE notice_id=$1 ORDER BY id")
+            .bind(id)
+            .fetch_all(&app.state.pool)
+            .await
+            .unwrap();
+    assert_eq!(events, [operation]);
+}
+
+#[tokio::test]
+async fn cancelling_a_schedule_preserves_private_attachments_without_a_public_archive() {
+    let app = App::new().await;
+    let now = OffsetDateTime::now_utc();
+    let posted = backend::today(now) + Duration::days(1);
+    for retain in [false, true] {
+        let id = app
+            .notice(json!({
+                "published_on":posted,
+                "retain_attachments":retain,
+                "review":{
+                    "rule":"public_notice",
+                    "archive_title":"Dosud nezveřejněný záznam",
+                    "archive_basis":"Obecný dokument",
+                    "archive_until":posted + Duration::days(60)
+                }
+            }))
+            .await;
+        let file = body_json(
+            app.upload(
+                &format!("/api/v1/admin/notices/{id}/attachments"),
+                "soukromy-koncept.pdf",
+                PDF,
+            )
+            .await,
+        )
+        .await["id"]
+            .as_i64()
+            .unwrap();
+        notices::publish_at(&app.state, id, app.admin_id, now)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.call(
+                "POST",
+                &format!("/api/v1/admin/notices/{id}/withdraw"),
+                Some(json!({"expected_status":"scheduled"})),
+                true
+            )
+            .await
+            .status(),
+            StatusCode::NO_CONTENT
+        );
+        notices::maintenance(&app.state, now).await.unwrap();
+        assert_unpublished_draft(&app, id, file, "schedule_cancelled").await;
+    }
+}
+
+#[tokio::test]
+async fn stale_schedule_cancellation_cannot_withdraw_a_published_notice() {
+    let app = App::new().await;
+    let now = OffsetDateTime::now_utc();
+    let id = app.notice(json!({})).await;
+    let file = body_json(
+        app.upload(
+            &format!("/api/v1/admin/notices/{id}/attachments"),
+            "zverejneny-dokument.pdf",
+            PDF,
+        )
+        .await,
+    )
+    .await["id"]
+        .as_i64()
+        .unwrap();
+    notices::publish_at(&app.state, id, app.admin_id, now - Duration::days(1))
+        .await
+        .unwrap();
+    let scheduled = body_json(
+        app.call("GET", &format!("/api/v1/admin/notices/{id}"), None, true)
+            .await,
+    )
+    .await;
+    assert_eq!(scheduled["status"], "scheduled");
+    notices::maintenance(&app.state, now).await.unwrap();
+    let proof_path = format!("/api/v1/admin/notices/{id}/evidence");
+    let before = body_json(app.call("GET", &proof_path, None, true).await).await;
+    assert_eq!(before["notice"]["status"], "published");
+    assert_eq!(
+        app.call(
+            "POST",
+            &format!("/api/v1/admin/notices/{id}/withdraw"),
+            Some(json!({"expected_status":scheduled["status"]})),
+            true
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    let after = body_json(app.call("GET", &proof_path, None, true).await).await;
+    assert_eq!(after, before);
+    assert_eq!(
+        app.call("GET", &format!("/api/v1/attachments/{file}"), None, false)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let data: Option<Vec<u8>> = sqlx::query_scalar("SELECT data FROM attachments WHERE id=$1")
+        .bind(file)
+        .fetch_one(&app.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(data.as_deref(), Some(PDF));
+}
+
+#[tokio::test]
+async fn missing_the_entire_scheduled_period_keeps_the_notice_and_its_files_private() {
+    let app = App::new().await;
+    let now = OffsetDateTime::now_utc();
+    let today = backend::today(now);
+    for retain in [false, true] {
+        let id = app
+            .notice(json!({
+                "published_on":today - Duration::days(2),
+                "withdraw_on":today - Duration::days(1),
+                "retain_attachments":retain,
+                "review":{
+                    "archive_title":"Dosud nezveřejněný záznam",
+                    "archive_basis":"Obecný dokument",
+                    "archive_until":today + Duration::days(30)
+                }
+            }))
+            .await;
+        let file = body_json(
+            app.upload(
+                &format!("/api/v1/admin/notices/{id}/attachments"),
+                "soukromy-koncept.pdf",
+                PDF,
+            )
+            .await,
+        )
+        .await["id"]
+            .as_i64()
+            .unwrap();
+        notices::publish_at(&app.state, id, app.admin_id, now - Duration::days(3))
+            .await
+            .unwrap();
+        notices::maintenance(&app.state, now).await.unwrap();
+        notices::maintenance(&app.state, now).await.unwrap();
+        assert_unpublished_draft(&app, id, file, "schedule_missed").await;
+    }
+}
+
 #[tokio::test]
 async fn production_requires_review_and_reference_to_original() {
     let app = App::new().await;

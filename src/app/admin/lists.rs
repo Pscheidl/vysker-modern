@@ -126,6 +126,7 @@ fn operation(value: &str) -> String {
         "subscription_requested" | "zadost_o_odber" => "Žádost o odběr",
         "verification" | "overeni" => "Ověření odběru",
         "schedule_missed" => "Zmeškané plánované zveřejnění",
+        "schedule_cancelled" => "Zrušení plánovaného zveřejnění",
         "availability_incident" => "Výpadek dostupnosti",
         "password_changed" => "Změna hesla",
         "password_reset_by_operator" => "Obnova hesla provozovatelem",

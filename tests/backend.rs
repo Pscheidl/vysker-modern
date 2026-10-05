@@ -313,7 +313,7 @@ async fn scheduled_publication_and_expiry_are_idempotent_in_prague_time() {
 }
 
 #[tokio::test]
-async fn missed_schedule_is_archived_without_announcing_expired_document() {
+async fn missed_schedule_returns_to_draft_without_announcing_expired_document() {
     let app = App::new().await;
     let id = app
         .notice(json!({"published_on":"2026-10-01","withdraw_on":"2026-10-03"}))
@@ -329,12 +329,19 @@ async fn missed_schedule_is_archived_without_announcing_expired_document() {
     notices::maintenance(&app.state, datetime!(2026-10-10 12:00 UTC))
         .await
         .unwrap();
-    let state: String = sqlx::query_scalar("SELECT status FROM notices WHERE id=$1")
-        .bind(id)
-        .fetch_one(&app.state.pool)
-        .await
-        .unwrap();
-    assert_eq!(state, "archived");
+    let state: (String, Option<String>, Option<String>) =
+        sqlx::query_as("SELECT status,published_at,withdrawn_at FROM notices WHERE id=$1")
+            .bind(id)
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap();
+    assert_eq!(state, ("draft".into(), None, None));
+    assert_eq!(
+        app.call("GET", &format!("/api/v1/notices/{id}"), None, false)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
     let sent: i64 = sqlx::query_scalar("SELECT count(*) FROM mail_queue WHERE purpose='document'")
         .fetch_one(&app.state.pool)
         .await

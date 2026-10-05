@@ -323,6 +323,31 @@ pub async fn withdraw(
         .await?
         .ok_or_else(missing)?;
     let input = input.map(|v| v.0).unwrap_or_default();
+    if input
+        .expected_status
+        .as_deref()
+        .is_some_and(|expected| expected != record.status)
+    {
+        return Err(conflict(
+            "Stav dokumentu se mezitím změnil. Načtěte jej znovu a ověřte požadovanou změnu.",
+        ));
+    }
+    if record.status == "scheduled" {
+        if input.emergency || s.config.production {
+            text(&input.reason, 2000)?;
+        }
+        return_to_draft(
+            &mut tx,
+            id,
+            Some(admin.id),
+            "schedule_cancelled",
+            serde_json::json!({"reason":input.reason}),
+            now,
+        )
+        .await?;
+        tx.commit().await?;
+        return Ok(StatusCode::NO_CONTENT);
+    }
     let minimum = record
         .published_on
         .map(|posted| record.review()?.earliest(posted).map_err(bad))
@@ -353,13 +378,33 @@ pub async fn withdraw(
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+async fn return_to_draft(
+    conn: &mut PgConnection,
+    id: i64,
+    actor: Option<i64>,
+    operation: &str,
+    details: serde_json::Value,
+    now: OffsetDateTime,
+) -> Result<()> {
+    // A cancelled or missed schedule never made the record public. Keep its
+    // attachments available to editors and do not create a public archive entry.
+    sqlx::query("UPDATE notices SET status='draft',updated_at=$1 WHERE id=$2")
+        .bind(timestamp(now))
+        .bind(id)
+        .execute(&mut *conn)
+        .await?;
+    evidence(conn, id, actor, operation, details, now).await?;
+    audit(conn, actor, operation, "notice", id, now).await
+}
+
 async fn archive_record(
     conn: &mut PgConnection,
     id: i64,
     actor: Option<i64>,
     now: OffsetDateTime,
 ) -> Result<()> {
-    let changed = sqlx::query("UPDATE notices SET status='archived',withdrawn_at=COALESCE(withdrawn_at,$1),updated_at=$2 WHERE id=$3 AND status IN ('published','scheduled','withdrawn')")
+    let changed = sqlx::query("UPDATE notices SET status='archived',withdrawn_at=COALESCE(withdrawn_at,$1),updated_at=$2 WHERE id=$3 AND status IN ('published','withdrawn')")
         .bind(timestamp(now)).bind(timestamp(now)).bind(id).execute(&mut *conn).await?.rows_affected();
     if changed == 0 {
         return Err(conflict("Záznam nelze sejmout v tomto stavu."));
@@ -373,24 +418,23 @@ async fn archive_record(
 /// Dohání i termíny z doby, kdy server neběžel. Opakovaný běh je idempotentní.
 pub async fn maintenance(s: &Backend, now: OffsetDateTime) -> Result<()> {
     let mut tx = crate::db::begin_write(&s.pool).await?;
-    let expired: Vec<i64> = sqlx::query_scalar("SELECT id FROM notices WHERE status='withdrawn' OR (status IN ('published','scheduled') AND withdraw_on IS NOT NULL AND withdraw_on<=$1) ORDER BY id LIMIT 500")
+    let expired: Vec<i64> = sqlx::query_scalar("SELECT id FROM notices WHERE status='withdrawn' OR (status='published' AND withdraw_on IS NOT NULL AND withdraw_on<=$1) ORDER BY id LIMIT 500")
         .bind(today(now)).fetch_all(&mut *tx).await?;
     for id in expired {
         archive_record(&mut tx, id, None, now).await?;
     }
-    let scheduled: Vec<NoticeRecord> = sqlx::query_as("SELECT * FROM notices WHERE status='scheduled' AND published_on<=$1 AND (withdraw_on IS NULL OR withdraw_on>$2) ORDER BY id LIMIT 500")
-        .bind(today(now)).bind(today(now)).fetch_all(&mut *tx).await?;
+    let scheduled: Vec<NoticeRecord> = sqlx::query_as(
+        "SELECT * FROM notices WHERE status='scheduled' AND published_on<=$1 ORDER BY id LIMIT 500",
+    )
+    .bind(today(now))
+    .fetch_all(&mut *tx)
+    .await?;
     for record in scheduled {
         if record
             .published_on
             .is_some_and(|posted| posted < today(now))
         {
-            sqlx::query("UPDATE notices SET status='draft',updated_at=$1 WHERE id=$2")
-                .bind(timestamp(now))
-                .bind(record.id)
-                .execute(&mut *tx)
-                .await?;
-            evidence(
+            return_to_draft(
                 &mut tx,
                 record.id,
                 None,
@@ -399,7 +443,6 @@ pub async fn maintenance(s: &Backend, now: OffsetDateTime) -> Result<()> {
                 now,
             )
             .await?;
-            audit(&mut tx, None, "schedule_missed", "notice", record.id, now).await?;
             continue;
         }
         sqlx::query(
@@ -550,6 +593,7 @@ impl NoticeRecord {
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WithdrawalInput {
+    pub expected_status: Option<String>,
     #[serde(default)]
     pub reason: String,
     #[serde(default)]

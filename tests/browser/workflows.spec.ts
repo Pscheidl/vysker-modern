@@ -7,7 +7,12 @@ import { execFileSync } from 'node:child_process'
 function fixtureQuery(sql: string, parameters: unknown[] = []) {
   const { database } = JSON.parse(readFileSync('target/e2e-fixture.json', 'utf8'))
   return JSON.parse(execFileSync('python3', ['-c',
-    'import json,psycopg,sys; c=psycopg.connect(sys.argv[1]); print(json.dumps(c.execute(sys.argv[2],json.loads(sys.argv[3])).fetchall()))',
+    [
+      'import json, psycopg, sys',
+      'with psycopg.connect(sys.argv[1]) as connection:',
+      '    rows = connection.execute(sys.argv[2], json.loads(sys.argv[3])).fetchall()',
+      'print(json.dumps(rows))',
+    ].join('\n'),
     database, sql, JSON.stringify(parameters)], { encoding: 'utf8' }))
 }
 async function login(page: Page) {
@@ -131,4 +136,61 @@ test('account management loads and mobile pages fit the viewport', async ({ page
   await page.goto('/hledat?q=zkusebni')
   await expect(page.getByRole('heading', { name: 'Co hledáte?', exact: true })).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+})
+
+test('cancelling a scheduled notice preserves private files and rejects a stale editor', async ({ page, browser }) => {
+  await login(page)
+  await page.getByRole('link', { name: 'Úřední deska', exact: true }).click()
+  await page.getByRole('link', { name: 'Nové vyvěšení' }).click()
+  await page.getByLabel('Název', { exact: false }).first().fill('Zrušené plánované oznámení')
+  const tomorrow = fixtureQuery("SELECT to_char((CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Prague')::date + 1, 'YYYY-MM-DD')")[0][0]
+  await page.getByLabel('Datum vyvěšení', { exact: false }).fill(tomorrow)
+  await page.getByRole('button', { name: 'Uložit koncept', exact: true }).click()
+  await expect(page).toHaveURL(/\/admin\/uredni-deska\/\d+$/)
+  const id = page.url().split('/').pop()
+  const contents = Buffer.from('Soukromá příloha plánovaného oznámení.\n')
+  await page.locator('#upload-file').setInputFiles({
+    name: 'soukroma-priloha.txt', mimeType: 'text/plain', buffer: contents,
+  })
+  await page.getByRole('button', { name: 'Nahrát soubor', exact: true }).click()
+  await expect(page.locator('.admin-files li')).toHaveCount(1)
+  const attachment = await page.locator('.admin-files a').getAttribute('href')
+  expect(attachment).toBeTruthy()
+  await page.getByRole('button', { name: 'Zveřejnit', exact: true }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Zveřejnit', exact: true }).click()
+  const cancel = page.getByRole('button', { name: 'Zrušit plánované zveřejnění', exact: true })
+  await expect(cancel).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Sejmout do archivu', exact: true })).toHaveCount(0)
+  await page.getByLabel('Důvod zrušení plánovaného zveřejnění', { exact: true }).fill('Termín vyžaduje další kontrolu.')
+  await cancel.click()
+  await expect(page.getByRole('dialog')).toContainText('Přílohy zůstanou zachované')
+  await page.getByRole('dialog').getByRole('button', { name: 'Zrušit plánované zveřejnění', exact: true }).click()
+  await expect(page.locator('.admin-flash')).toContainText('Dokument i přílohy zůstávají v soukromém konceptu.')
+  await page.reload()
+  await expect(page.getByRole('button', { name: 'Zveřejnit', exact: true })).toBeVisible()
+  await expect(page.locator('.admin-files li')).toHaveCount(1)
+  const privateFile = await page.request.get(attachment!)
+  expect(privateFile.status()).toBe(200)
+  expect(await privateFile.body()).toEqual(contents)
+  const publicContext = await browser.newContext()
+  try {
+    for (const path of [`/api/v1/notices/${id}`, attachment!.replace('/admin', '')]) {
+      expect((await publicContext.request.get(`http://127.0.0.1:3107${path}`)).status()).toBe(404)
+    }
+  } finally {
+    await publicContext.close()
+  }
+  await page.getByRole('button', { name: 'Zveřejnit', exact: true }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Zveřejnit', exact: true }).click()
+  await expect(cancel).toBeVisible()
+  // Simulate publication by the maintenance worker while the scheduled editor is open.
+  expect(fixtureQuery("UPDATE notices SET status='published', published_on=(CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Prague')::date, published_at=updated_at WHERE id=%s RETURNING id", [Number(id)])).toEqual([[Number(id)]])
+  expect(fixtureQuery('SELECT status FROM notices WHERE id=%s', [Number(id)])[0][0]).toBe('published')
+  await cancel.click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Zrušit plánované zveřejnění', exact: true }).click()
+  await expect(page.getByRole('alert')).toContainText('Stav dokumentu se mezitím změnil')
+  expect(fixtureQuery('SELECT status FROM notices WHERE id=%s', [Number(id)])[0][0]).toBe('published')
+  const preservedFile = await page.request.get(attachment!)
+  expect(preservedFile.status()).toBe(200)
+  expect(await preservedFile.body()).toEqual(contents)
 })

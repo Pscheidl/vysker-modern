@@ -39,11 +39,15 @@ def now():
 
 
 def canonical(value, base=ORIGIN + '/'):
-    value = urljoin(base, value)
-    parts = urlsplit(value)
+    try:
+        value = urljoin(base, value)
+        parts = urlsplit(value)
+        port = parts.port
+    except ValueError:
+        return None
     if parts.scheme not in ('http', 'https') or parts.hostname not in HOSTS:
         return None
-    if parts.username or parts.password or parts.port not in (None, 80, 443):
+    if parts.username or parts.password or port not in (None, 80, 443):
         return None
     path = unquote(parts.path)
     if any(ord(c) < 32 for c in path) or '\\' in path:
@@ -114,24 +118,31 @@ def markdown(node, base):
         return ''
     content = ''.join(markdown(child, base) for child in node.children)
     if tag == 'img':
-        if urlsplit(urljoin(base, node.get('src', ''))).path.startswith(('/html/', '/aspinclude/')):
-            return escape(node.get('alt', ''))
         url = canonical(node.get('src', ''), base)
+        if url and urlsplit(url).path.startswith(('/html/', '/aspinclude/')):
+            return escape(node.get('alt', ''))
         return f'![{escape(node.get("alt", "Obrázek"))}](<{url}>)' if url else escape(node.get('alt', ''))
     if tag == 'a' and node.get('href'):
-        href = urljoin(base, node['href'])
-        url = canonical(href) or href
-        if urlsplit(url).scheme not in ('http', 'https', 'mailto', 'tel'):
+        try:
+            href = urljoin(base, node['href'])
+            parts = urlsplit(href)
+            parts.port  # Invalid ports must not discard the rest of the page.
+        except ValueError:
+            return content
+        normalized = canonical(href)
+        url = normalized or href
+        if parts.scheme not in ('http', 'https', 'mailto', 'tel'):
             return content
         if image := node.find('img'):
-            if urlsplit(urljoin(base, image.get('src', ''))).path.startswith(('/html/', '/aspinclude/')):
+            image_url = canonical(image.get('src', ''), base)
+            if image_url and urlsplit(image_url).path.startswith(('/html/', '/aspinclude/')):
                 return f'[{escape(image.get("alt", "Podrobnosti"))}](<{url}>)'
             if canonical(url) and is_asset(url):
                 return f'![{escape(image.get("alt", "Obrázek"))}](<{url}>)'
             return content + f' [{escape(node.get("title", "Podrobnosti"))}](<{url}>)'
         # Fragments are retained for later link review, never sent to the crawler.
-        if urlsplit(href).fragment:
-            url += '#' + quote(unquote(urlsplit(href).fragment), safe='-_')
+        if normalized and parts.fragment:
+            url += '#' + quote(unquote(parts.fragment), safe='-_')
         return f'[{content.strip() or escape(url)}](<{url}>)'
     if tag in ('strong', 'b') and content.strip():
         return f'**{content.strip()}**'

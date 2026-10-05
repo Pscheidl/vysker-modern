@@ -52,6 +52,7 @@ fn EditorForm(
     let version = entry.version;
     let status = entry.status().to_string();
     let draft = id == 0 || status == "draft";
+    let scheduled = status == "scheduled";
     let archived = matches!(status.as_str(), "archived" | "withdrawn");
     let locked = kind != Kind::Page && !draft;
     let name = RwSignal::new(entry.title.clone());
@@ -167,14 +168,16 @@ fn EditorForm(
             }
         }
     });
+    let loaded_status = status.clone();
     let transition = Action::new_local(move |operation: &String| {
         let operation = operation.clone();
+        let expected_status = loaded_status.clone();
         async move {
             error.set(None);
             match api::save(
                 "POST",
                 &format!("/api/v1/admin/{}/{id}/{operation}", kind.api()),
-                if operation=="withdraw" {Some(json!({"reason":withdrawal_reason.get_untracked(),"emergency":emergency.get_untracked()}))}else{None},
+                if operation=="withdraw" {Some(json!({"reason":withdrawal_reason.get_untracked(),"emergency":emergency.get_untracked(),"expected_status":expected_status}))}else{None},
             )
             .await
             {
@@ -183,6 +186,8 @@ fn EditorForm(
                     if let Some(site)=site {site.refetch();}
                     ctx.changed(if operation == "publish" {
                         "Zveřejnění je uložené. Oznámení dostanou ověření odběratelé při vyvěšení."
+                    } else if operation == "withdraw" && scheduled {
+                        "Plánované zveřejnění je zrušené. Dokument i přílohy zůstávají v soukromém konceptu."
                     } else {
                         "Dokument je v archivu."
                     });
@@ -262,13 +267,17 @@ fn EditorForm(
             {(kind!=Kind::Page).then(move||view!{<Files kind id files=entry.attachments editable=draft busy working=file_busy reload/>})}
         </div>
         <aside class="admin-editor-sidebar"><section class="admin-panel admin-save-panel"><h2>"Uložení a zveřejnění"</h2>
-            {if locked{view!{<div class="admin-note"><Icon name="lock"/><p>{if archived{"Archivovaný záznam je pouze ke čtení."}else{"Zveřejněný dokument je pouze ke čtení."}}</p></div>}.into_any()}else{view!{
+            {if locked{view!{<div class="admin-note"><Icon name="lock"/><p>{if archived{"Archivovaný záznam je pouze ke čtení."}else if scheduled{"Dokument čeká na plánované zveřejnění. Pro další úpravy nejprve zrušte plánované zveřejnění."}else{"Zveřejněný dokument je pouze ke čtení."}}</p></div>}.into_any()}else{view!{
                 <p>{if id==0&&kind!=Kind::Page{"Nejdříve uložte koncept. Potom přidejte přílohy a dokument zveřejněte."}else{"Uložte změny před dalšími kroky."}}</p>
                 <button class="button primary" type="submit" form="content-editor" disabled=move||busy.get()>{move||if save.pending().get(){"Ukládám…"}else if id==0&&kind!=Kind::Page{"Uložit koncept"}else{"Uložit změny"}}</button>
                 <span class="admin-save-state" role="status">{move||if ctx.dirty.get(){"Máte neuložené změny"}else if id==0{"Nový koncept"}else{"Všechny změny jsou uložené"}}</span>
             }.into_any()}}
             {(id>0&&kind!=Kind::Page&&draft).then(move||view!{<hr/><ConfirmButton label="Zveřejnit" title="Zveřejnit dokument?" description=if kind==Kind::Notice{"Dokument se zveřejní podle data vyvěšení. Budoucí datum znamená naplánované zveřejnění. Ověření odběratelé dostanou oznámení při zveřejnění."}else{"Dokument i jeho přílohy budou dostupné na webu. Ověření odběratelé dostanou oznámení."} disabled=action_disabled on_confirm=Callback::new(move|()|{transition.dispatch("publish".into());})/>})}
-            {(id>0&&kind==Kind::Notice&&!draft&&!archived).then(move||view!{<hr/><label class="admin-field" for="withdrawal-reason"><span>"Důvod ručního sejmutí"</span><input id="withdrawal-reason" maxlength="2000" prop:value=move||withdrawal_reason.get() on:input=move|ev|withdrawal_reason.set(event_target_value(&ev))/></label><label class="admin-check"><input type="checkbox" prop:checked=move||emergency.get() on:change=move|ev|emergency.set(event_target_checked(&ev))/><span>"Mimořádné předčasné sejmutí kvůli incidentu"</span></label><ConfirmButton label="Sejmout do archivu" title="Sejmout dokument z úřední desky?" description=if notice_retention{"Záznam se přesune do archivu. Přílohy zůstanou veřejně dostupné."}else{"Záznam zůstane v archivu. Obsah příloh se nenávratně odstraní podle uloženého nastavení."} danger=true disabled=action_disabled on_confirm=Callback::new(move|()|{transition.dispatch("withdraw".into());})/>})}
+            {(id>0&&kind==Kind::Notice&&!draft&&!archived).then(move||view!{<hr/>
+                <label class="admin-field" for="withdrawal-reason"><span>{if scheduled{"Důvod zrušení plánovaného zveřejnění"}else{"Důvod ručního sejmutí"}}</span><input id="withdrawal-reason" maxlength="2000" prop:value=move||withdrawal_reason.get() on:input=move|ev|withdrawal_reason.set(event_target_value(&ev))/></label>
+                {(!scheduled).then(move||view!{<label class="admin-check"><input type="checkbox" prop:checked=move||emergency.get() on:change=move|ev|emergency.set(event_target_checked(&ev))/><span>"Mimořádné předčasné sejmutí kvůli incidentu"</span></label>})}
+                <ConfirmButton label=if scheduled{"Zrušit plánované zveřejnění"}else{"Sejmout do archivu"} title=if scheduled{"Zrušit plánované zveřejnění?"}else{"Sejmout dokument z úřední desky?"} description=if scheduled{"Dokument se vrátí do soukromého konceptu. Přílohy zůstanou zachované pro další úpravy a nebudou veřejně dostupné."}else if notice_retention{"Záznam se přesune do archivu. Přílohy zůstanou veřejně dostupné."}else{"Záznam zůstane v archivu. Obsah příloh se nenávratně odstraní podle uloženého nastavení."} danger=true disabled=action_disabled on_confirm=Callback::new(move|()|{transition.dispatch("withdraw".into());})/>
+            })}
             {(id>0&&kind==Kind::Document&&!draft&&!archived).then(move||view!{<hr/><ConfirmButton label="Archivovat dokument" title="Archivovat dokument?" description="Dokument a jeho přílohy přestanou být veřejně dostupné." danger=true disabled=action_disabled on_confirm=Callback::new(move|()|{transition.dispatch("archive".into());})/>})}
             {public_visible.then(move||view!{<a href=public_url target="_blank" rel="noopener" class="admin-public-link">"Otevřít na webu"<Icon name="external"/></a>})}
             {(id>0&&kind==Kind::Notice).then(move||view!{<a class="admin-public-link" href=format!("/api/v1/admin/notices/{id}/evidence") download="doklad-vyveseni.json">"Stáhnout doklad vyvěšení"<Icon name="paper"/></a>})}

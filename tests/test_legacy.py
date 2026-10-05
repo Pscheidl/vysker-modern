@@ -175,6 +175,32 @@ class ExtractionTests(unittest.TestCase):
         self.assertTrue(value.startswith('![Kaple](<https://vysker.cz/assets/Image.ashx'))
         self.assertNotIn('[![', value)
 
+    def test_external_and_internal_link_fragments_are_preserved_once(self):
+        for target, expected in [
+            ('https://example.org/page#section', 'https://example.org/page#section'),
+            ('https://example.org/page#%C4%8D%C3%A1st', 'https://example.org/page#%C4%8D%C3%A1st'),
+            ('/historie/ms-7777#část', 'https://vysker.cz/historie/ms-7777#%C4%8D%C3%A1st'),
+        ]:
+            with self.subTest(target=target):
+                html = f'<a href="{target}">Podrobnosti</a>'
+                value = markdown(BeautifulSoup(html, 'html.parser'), URL)
+                self.assertEqual(value, f'[Podrobnosti](<{expected}>)')
+
+    def test_malformed_links_do_not_discard_captured_page_content(self):
+        for target in ['https://vysker.cz:bad/page', 'https://vysker.cz:70000/page',
+                       'https://[invalid/page', 'https://example.org:bad/page']:
+            with self.subTest(target=target):
+                self.assertIsNone(canonical(target))
+                page = extract(f'''<div id="stred"><h1>Historie</h1>
+                    <p>Zachovaný text.</p><a href="{target}">Popis odkazu</a>
+                    <a href="/historie/ms-7777"><img src="{target}" alt="Popis obrázku"></a>
+                    <a href="{FILE}">Platná příloha</a></div>'''.encode(), URL)
+                self.assertIn('Zachovaný text.', page['content'])
+                self.assertIn('Popis odkazu', page['content'])
+                self.assertIn('Popis obrázku', page['content'])
+                self.assertNotIn(target, page['content'])
+                self.assertEqual([asset['url'] for asset in page['assets']], [FILE])
+
 
 @unittest.skipUnless(os.environ.get('TEST_DATABASE_URL'), 'Set TEST_DATABASE_URL or run scripts/test.sh')
 class ImportTests(unittest.TestCase):
