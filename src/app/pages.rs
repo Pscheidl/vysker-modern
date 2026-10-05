@@ -191,7 +191,7 @@ fn DetailContent(notice: Notice) -> impl IntoView {
 fn MunicipalityPreview() -> impl IntoView {
     view! {
         <Title text="Obec a úřad · Vyskeř"/>
-        <div class="page-width interior"><PageHeading title="Doma na Vyskři." description="Obec v Českém ráji. Informace pro každodenní život i návštěvu úřadu."/>
+        <div class="page-width interior"><PageHeading title="Obecní úřad" description="Obec v Českém ráji. Informace pro každodenní život i návštěvu úřadu."/>
             <div class="municipality-intro"><div><h2>"Obec, ve které žijeme"</h2><p>"Na Vyskři se potkává krajina Českého ráje s každodenním životem obce. Tady najdete důležité dokumenty, praktické informace i to, co se u nás právě chystá."</p><A href=super::site_url("/kontakt") attr:class="button primary">"Kontakty na obecní úřad"<Icon/></A></div><div class="mini-terrain" aria-hidden="true"><img class="terrain-light" src=super::site_url("/images/relief-vysker-light.png") alt="" loading="lazy"/><img class="terrain-dark" src=super::site_url("/images/relief-vysker-dark.png") alt="" loading="lazy"/></div></div>
             <section id="sluzby" class="services-section"><h2>"Co potřebujete vyřídit?"</h2><div class="service-grid">
                 <article><Icon name="board"/><h3>"Zastupitelstvo"</h3><p>"Pozvánky na veřejná zasedání a zveřejněné dokumenty."</p><A href=super::site_url("/uredni-deska?kategorie=Zastupitelstvo") attr:class="text-link">"Dokumenty zastupitelstva"<Icon/></A></article>
