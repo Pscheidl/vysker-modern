@@ -234,6 +234,8 @@ pub fn Newsletter() -> impl IntoView {
 #[component]
 fn NewsletterForm(notice: crate::privacy::PrivacyNotice) -> impl IntoView {
     let email = RwSignal::new(String::new());
+    let input = NodeRef::<leptos::html::Input>::new();
+    let confirmed = RwSignal::new(false);
     let fingerprint = StoredValue::new(notice.fingerprint);
     let request = Action::new(|input: &(String, String)| {
         let (email, fingerprint) = input.clone();
@@ -241,13 +243,34 @@ fn NewsletterForm(notice: crate::privacy::PrivacyNotice) -> impl IntoView {
     });
     let ready = RwSignal::new(false);
     Effect::new(move |_| ready.set(true));
+    Effect::new(move |_| {
+        if matches!(request.value().get(), Some(Ok(()))) {
+            email.set(String::new());
+            confirmed.set(true);
+            if let Ok(timeout) = set_timeout_with_handle(
+                move || confirmed.set(false),
+                std::time::Duration::from_secs(5),
+            ) {
+                on_cleanup(move || timeout.clear());
+            }
+        }
+    });
     view! {<form action=site_url("/odber") class="newsletter-form" on:submit=move |ev| {
-        ev.prevent_default(); request.dispatch((email.get(),fingerprint.get_value()));
+        ev.prevent_default();
+        if !ready.get_untracked() || request.pending().get_untracked() || confirmed.get_untracked() {
+            return;
+        }
+        if let Some(input) = input.get_untracked() {
+            if input.report_validity() {
+                request.value().set(None);
+                request.dispatch((input.value().trim().to_owned(),fingerprint.get_value()));
+            }
+        }
     }>
-        <div class="email-field"><label for="newsletter-email">"E-mailová adresa"</label><input id="newsletter-email" type="email" autocomplete="email" placeholder="vas@email.cz" required maxlength="254" on:input=move |ev|{email.set(event_target_value(&ev));request.value().set(None);}/></div>
-        <button class="button primary" type="submit" disabled=move ||!ready.get() ||request.pending().get()>{move ||if request.pending().get(){"Odesílám…"}else{"Přihlásit k odběru"}}</button>
+        <div class="email-field"><label for="newsletter-email">"E-mailová adresa"</label><input node_ref=input id="newsletter-email" name="email" type="email" autocomplete="email" placeholder="vas@email.cz" required maxlength="254" pattern=r"[^\s@]+@[^\s@]+\.[^\s@]+" title="Zadejte e-mailovou adresu ve tvaru jmeno@domena.cz." prop:value=move ||email.get() disabled=move ||request.pending().get() on:input=move |ev|{email.set(event_target_value(&ev));confirmed.set(false);request.value().set(None);}/></div>
+        <button class="button primary" class:newsletter-confirmed=move ||confirmed.get() type="submit" disabled=move ||!ready.get() ||request.pending().get() ||confirmed.get()>{move ||if request.pending().get(){"Odesílám…"}else if confirmed.get(){"Zkontrolujte e-mail"}else{"Přihlásit k odběru"}}</button>
         <p class="newsletter-consent">{notice.consent_text}" "<A href=site_url("/ochrana-udaju")>"Ochrana údajů"</A></p>
-        {move ||request.value().get().map(|result|view!{<p role="status" class="newsletter-message">{match result{Ok(())=>"Pokud je potřeba odběr potvrdit, pošleme vám ověřovací e-mail. Zkontrolujte svou schránku.".to_owned(),Err(error)=>error.to_string()}}</p>})}
+        {move ||request.value().get().map(|result|view!{<p role=if result.is_ok(){"status"}else{"alert"} class="newsletter-message">{match &result{Ok(())=>"Pokud je potřeba odběr potvrdit, pošleme vám ověřovací e-mail. Zkontrolujte svou schránku.".to_owned(),Err(error)=>error.to_string()}}</p>})}
         <noscript><p>"Pro odeslání formuláře zapněte JavaScript."</p></noscript>
     </form>}
 }
