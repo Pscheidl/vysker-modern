@@ -1,0 +1,11 @@
+# Enable subscriptions with the actual operator's published privacy information.
+# Add after the staging HTTPS and SMTP overlays when sending real email.
+services:
+  web:
+    environment:
+      OBEC_PRIVACY_CONFIG: /run/secrets/privacy
+    secrets: [privacy]
+
+secrets:
+  privacy:
+    file: ./deploy/secrets/privacy.json

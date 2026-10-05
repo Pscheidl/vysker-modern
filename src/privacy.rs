@@ -21,8 +21,10 @@ pub struct PrivacyPolicy {
     pub version: String,
     pub approved_on: Option<String>,
     pub controller_name: String,
+    #[serde(default)]
     pub controller_address: String,
     pub controller_email: String,
+    #[serde(default)]
     pub dpo_email: String,
     pub processors: String,
     pub international_transfers: String,
@@ -68,7 +70,6 @@ impl PrivacyPolicy {
         for value in [
             &self.version,
             &self.controller_name,
-            &self.controller_address,
             &self.processors,
             &self.international_transfers,
             &self.public_records_legal_basis,
@@ -80,7 +81,13 @@ impl PrivacyPolicy {
                 "Neúplné informace o soukromí"
             );
         }
-        for email in [&self.controller_email, &self.dpo_email] {
+        anyhow::ensure!(
+            self.controller_address.len() <= 10_000,
+            "Adresa správce je příliš dlouhá"
+        );
+        for email in std::iter::once(&self.controller_email)
+            .chain((!self.dpo_email.trim().is_empty()).then_some(&self.dpo_email))
+        {
             anyhow::ensure!(
                 crate::backend::auth::email(email).is_ok(),
                 "Neplatný kontakt správce nebo pověřence"
@@ -107,13 +114,16 @@ impl PrivacyPolicy {
             r.audit_days,
             r.notice_internal_days,
             r.operational_log_days,
-            r.backup_days,
         ] {
             anyhow::ensure!(
                 days >= 1 && days <= 3650,
                 "Lhůty uchování musí být 1 až 3650 dní"
             );
         }
+        anyhow::ensure!(
+            r.backup_days <= 3650,
+            "Lhůta záloh musí být 0 až 3650 dní, 0 znamená vypnuté zálohování"
+        );
         Ok(())
     }
 }

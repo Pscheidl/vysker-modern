@@ -68,9 +68,9 @@ pub async fn enqueue_publication(
     path: &str,
     now: OffsetDateTime,
 ) -> Result<()> {
-    if s.config.privacy.is_none() {
+    let Some(policy) = &s.config.privacy else {
         return Ok(());
-    }
+    };
     let recipients: Vec<(i64, i64)> = sqlx::query_as(
         "SELECT s.id,c.id FROM subscribers s JOIN subscription_consents c ON c.subscriber_id=s.id WHERE s.verified_at IS NOT NULL AND s.unsubscribed_at IS NULL AND c.confirmed_at IS NOT NULL AND c.withdrawn_at IS NULL AND c.superseded_at IS NULL",
     )
@@ -99,8 +99,8 @@ pub async fn enqueue_publication(
         .execute(&mut *conn)
         .await?;
         let body = format!(
-            "Dobrý den,\n\nobec Vyskeř zveřejnila nový dokument:\n{title}\n\n{}{path}\n\nOdběr lze odhlásit zde:\n{}/odber/odhlasit?token={secret}\n\nObec Vyskeř",
-            s.config.public_url, s.config.public_url
+            "Dobrý den,\n\nna webu Vyskeř byl zveřejněn nový dokument:\n{title}\n\n{}{path}\n\nOdběr lze odhlásit zde:\n{}/odber/odhlasit?token={secret}\n\n{}",
+            s.config.public_url, s.config.public_url, policy.controller_name
         );
         sqlx::query("INSERT INTO mail_queue(subscriber_id,purpose,deduplication_key,subject,body,next_attempt_at,created_at,consent_id) VALUES ($1,'document',$2,$3,$4,$5,$6,$7)")
             .bind(recipient).bind(key).bind(format!("Vyskeř: {}",title.replace(['\r','\n']," "))).bind(body).bind(now.unix_timestamp()).bind(now.unix_timestamp()).bind(consent_id).execute(&mut *conn).await?;

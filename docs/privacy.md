@@ -38,9 +38,13 @@ does not invent prior consent or send automatic requests for it.
 
 `OBEC_PRIVACY_CONFIG` points to JSON matching `config/privacy.example.json`.
 The example contains explicit placeholders and development retention periods.
-The municipality and its data protection officer must supply controller details,
-contacts, processors, international transfers, legal bases and justified retention
-periods before setting `approved_on`.
+The operator must supply controller details, contacts, processors, international
+transfers, legal bases and justified retention periods before setting `approved_on`.
+Controller name and a valid contact email are required. A postal contact address
+can be supplied as `controller_address`, or omitted or left empty. If the operator
+has no appointed data protection officer, omit `dpo_email` or leave it empty. Otherwise
+provide the officer's valid contact email. The public notice and confirmation page
+show that contact only when supplied.
 
 Without a policy, subscriptions are disabled. `OBEC_PRODUCTION=true` requires
 an approved configuration without placeholder values, HTTPS, SMTP TLS and disabled
@@ -57,10 +61,17 @@ The exception is controlled, transactional deletion of entries older than the
 approved retention period. Cleanup summaries contain no erased addresses.
 
 `notice_internal_days` controls removal of internal notice text and evidence
-after withdrawal. The minimal public record always remains. The production
-backup service uses `backup_days` to rotate local snapshots. The operator must
-configure time-based diagnostic log rotation (`operational_log_days`) and encrypted
-offsite backup retention.
+after a recorded withdrawal. Historical archive entries without a withdrawal
+timestamp are not automatically purged by this rule. The minimal public record
+always remains. The production
+backup service uses a positive `backup_days` value to rotate local snapshots.
+Use `backup_days: 0` to declare that the operator does not create backups of the
+subscriber database, and keep the
+backup service disabled in that deployment. This value changes the published
+privacy information, it does not stop an already running backup service or delete
+existing backups. If backups are enabled, configure a positive retention period
+and encrypted offsite backup retention. The operator must also configure time-based
+diagnostic log rotation (`operational_log_days`).
 
 After restoring an older backup, mail must remain stopped until subsequent
 withdrawals and erasure requests have been accounted for. The provided recovery

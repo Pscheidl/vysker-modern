@@ -2,6 +2,7 @@
 mod common;
 use axum::http::StatusCode;
 use common::{App, body_json};
+use http_body_util::BodyExt;
 use obecni_web::backend::{Backend, privacy, subscriptions};
 use serde_json::json;
 use time::{Duration, OffsetDateTime};
@@ -201,6 +202,99 @@ fn privacy_configuration_validates_dates_and_retention() {
     assert!(policy.validate().is_err());
 }
 
+#[test]
+fn privacy_configuration_accepts_optional_contacts_and_disabled_backups() {
+    for omit in [false, true] {
+        let mut json: serde_json::Value =
+            serde_json::from_str(include_str!("../config/privacy.example.json")).unwrap();
+        for field in ["controller_address", "dpo_email"] {
+            if omit {
+                json.as_object_mut().unwrap().remove(field);
+            } else {
+                json[field] = json!("");
+            }
+        }
+        json["retention"]["backup_days"] = json!(0);
+        let policy: obecni_web::privacy::PrivacyPolicy = serde_json::from_value(json).unwrap();
+        policy.validate().unwrap();
+        assert!(policy.controller_address.is_empty());
+        assert!(policy.dpo_email.is_empty());
+        let mut invalid = policy.clone();
+        invalid.controller_name.clear();
+        assert!(invalid.validate().is_err());
+        for email in ["", "invalid-contact"] {
+            let mut invalid = policy.clone();
+            invalid.controller_email = email.into();
+            assert!(invalid.validate().is_err());
+        }
+        let mut invalid = policy.clone();
+        invalid.dpo_email = "invalid-contact".into();
+        assert!(invalid.validate().is_err());
+        let mut invalid = policy.clone();
+        invalid.controller_address = "a".repeat(10_001);
+        assert!(invalid.validate().is_err());
+        let mut invalid = policy;
+        invalid.retention.backup_days = 3651;
+        assert!(invalid.validate().is_err());
+    }
+}
+
+#[tokio::test]
+async fn private_operator_subscription_uses_actual_controller_and_no_fictitious_contacts() {
+    let mut app = App::new().await;
+    let mut config = (*app.state.config).clone();
+    let policy = config.privacy.as_mut().unwrap();
+    policy.controller_name = "Soukromý provozovatel".into();
+    policy.controller_email = "operator@example.test".into();
+    policy.controller_address.clear();
+    policy.dpo_email.clear();
+    policy.retention.backup_days = 0;
+    policy.validate().unwrap();
+    app.state = Backend::new(app.state.pool.clone(), config);
+    app.router = obecni_web::backend::router(app.state.clone());
+    common::request_subscription(&app.state, "person@example.test", OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    let (subject, email): (String, String) =
+        sqlx::query_as("SELECT subject,body FROM mail_queue WHERE purpose='verification'")
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap();
+    assert_eq!(subject, "Potvrzení odběru novinek z webu Vyskeř");
+    assert!(email.ends_with("\n\nSoukromý provozovatel"));
+    assert!(!email.contains("Obec Vyskeř"));
+    let token = app.confirmation_token("person@example.test").await;
+    let response = app
+        .call(
+            "GET",
+            &format!("/odber/potvrdit?token={token}"),
+            None,
+            false,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(html.contains("Správce: Soukromý provozovatel. Kontakt: operator@example.test."));
+    assert!(html.contains("Vlastní zálohy databáze odběratelů nyní nevytváříme."));
+    assert!(!html.contains("Pověřenec"));
+    assert!(!html.contains("Zálohy: 0 dní"));
+    assert!(html.contains("<p>Web Vyskeř</p>"));
+    let pending: Option<i64> = sqlx::query_scalar("SELECT confirmed_at FROM subscription_consents")
+        .fetch_one(&app.state.pool)
+        .await
+        .unwrap();
+    assert!(pending.is_none());
+}
+
 #[tokio::test]
 async fn internal_notice_data_expires_without_erasing_the_public_record() {
     let app = App::new().await;
@@ -247,7 +341,7 @@ async fn internal_notice_data_expires_without_erasing_the_public_record() {
 
 #[tokio::test]
 async fn confirmation_can_render_a_policy_snapshot_from_before_a_config_extension() {
-    let app = App::new().await;
+    let mut app = App::new().await;
     let now = OffsetDateTime::now_utc().unix_timestamp();
     let mut old = serde_json::to_value(app.state.config.privacy.as_ref().unwrap()).unwrap();
     old["retention"]
@@ -264,15 +358,78 @@ async fn confirmation_can_render_a_policy_snapshot_from_before_a_config_extensio
     let consent=sqlx::query_scalar::<_, i64>("INSERT INTO subscription_consents(subscriber_id,notice_fingerprint,requested_at) VALUES ($1,'old-snapshot',$2) RETURNING id").bind(subscriber).bind(now).fetch_one(&app.state.pool).await.unwrap();
     let token = obecni_web::backend::auth::token();
     sqlx::query("INSERT INTO subscription_tokens(hash,subscriber_id,consent_id,purpose,expires_at) VALUES ($1,$2,$3,'verification',$4)").bind(obecni_web::backend::auth::hash(&token)).bind(subscriber).bind(consent).bind(now+86400).execute(&app.state.pool).await.unwrap();
-    assert_eq!(
-        app.call(
+    let mut config = (*app.state.config).clone();
+    let policy = config.privacy.as_mut().unwrap();
+    policy.controller_address.clear();
+    policy.dpo_email.clear();
+    policy.retention.backup_days = 0;
+    app.state = Backend::new(app.state.pool.clone(), config);
+    app.router = obecni_web::backend::router(app.state.clone());
+    let response = app
+        .call(
             "GET",
             &format!("/odber/potvrdit?token={token}"),
             None,
-            false
+            false,
         )
-        .await
-        .status(),
-        StatusCode::OK
-    );
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(html.contains("Pověřenec: dpo@example.test."));
+    assert!(html.contains("Zálohy: 30 dní."));
+    assert!(html.contains(old["controller_address"].as_str().unwrap()));
+}
+
+#[tokio::test]
+async fn confirmation_accepts_snapshot_without_optional_contacts() {
+    let app = App::new().await;
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+    let mut snapshot = serde_json::to_value(app.state.config.privacy.as_ref().unwrap()).unwrap();
+    snapshot
+        .as_object_mut()
+        .unwrap()
+        .remove("controller_address");
+    snapshot.as_object_mut().unwrap().remove("dpo_email");
+    snapshot["controller_name"] = json!("Provozovatel <webu>");
+    snapshot["retention"]["backup_days"] = json!(0);
+    let subscriber = sqlx::query_scalar::<_, i64>("INSERT INTO subscribers(email,retention_started_at) VALUES ('optional-snapshot@vysker.test',$1) RETURNING id")
+        .bind(now).fetch_one(&app.state.pool).await.unwrap();
+    sqlx::query("INSERT INTO consent_notices(fingerprint,version,consent_text,privacy_json) VALUES ('optional-snapshot','private-version','Přihlašuji se k odběru.',$1)")
+        .bind(snapshot.to_string()).execute(&app.state.pool).await.unwrap();
+    let consent = sqlx::query_scalar::<_, i64>("INSERT INTO subscription_consents(subscriber_id,notice_fingerprint,requested_at) VALUES ($1,'optional-snapshot',$2) RETURNING id")
+        .bind(subscriber).bind(now).fetch_one(&app.state.pool).await.unwrap();
+    let token = obecni_web::backend::auth::token();
+    sqlx::query("INSERT INTO subscription_tokens(hash,subscriber_id,consent_id,purpose,expires_at) VALUES ($1,$2,$3,'verification',$4)")
+        .bind(obecni_web::backend::auth::hash(&token)).bind(subscriber).bind(consent).bind(now+86400).execute(&app.state.pool).await.unwrap();
+    let response = app
+        .call(
+            "GET",
+            &format!("/odber/potvrdit?token={token}"),
+            None,
+            false,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(html.contains("Správce: Provozovatel &lt;webu&gt;. Kontakt:"));
+    assert!(!html.contains("Pověřenec:"));
+    assert!(html.contains("Vlastní zálohy databáze odběratelů nyní nevytváříme."));
 }

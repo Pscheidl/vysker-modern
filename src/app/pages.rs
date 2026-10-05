@@ -254,21 +254,27 @@ pub fn Privacy() -> impl IntoView {
 #[component]
 fn PrivacyDetails(policy: crate::privacy::PrivacyPolicy) -> impl IntoView {
     let r = policy.retention;
+    let has_dpo = !policy.dpo_email.trim().is_empty();
+    let controller_address = if policy.controller_address.trim().is_empty() {
+        String::new()
+    } else {
+        format!(", {}", policy.controller_address)
+    };
     view! {
         <p>"Verze informací: "{policy.version}</p>
-        <h2>"Správce a pověřenec"</h2><p>{policy.controller_name}", "{policy.controller_address}</p>
+        <h2>{if has_dpo { "Správce a pověřenec" } else { "Správce" }}</h2><p>{policy.controller_name}{controller_address}</p>
         <p>"Kontakt správce: "<a href=format!("mailto:{}",policy.controller_email)>{policy.controller_email.clone()}</a></p>
-        <p>"Pověřenec pro ochranu osobních údajů: "<a href=format!("mailto:{}",policy.dpo_email)>{policy.dpo_email.clone()}</a></p>
+        {has_dpo.then(|| view! {<p>"Pověřenec pro ochranu osobních údajů: "<a href=format!("mailto:{}",policy.dpo_email)>{policy.dpo_email.clone()}</a></p>})}
         <h2>"Odběr novinek"</h2><p>"Na základě dobrovolného souhlasu podle čl. 6 odst. 1 písm. a) GDPR používáme e-mailovou adresu k zasílání nových dokumentů včetně úřední desky. Evidujeme přesné znění souhlasu a čas žádosti, potvrzení a případného odvolání. Bez poskytnutí adresy nelze odběr zajistit, používání ostatních částí webu tím není omezeno."</p>
         <p>"Souhlas kdykoli odvoláte odkazem v každé novince bez přihlášení. Odvolání nemá vliv na zákonnost předchozího zpracování."</p>
-        <p>{format!("Nepotvrzené žádosti uchováváme nejvýše {} dní. Aktivní odběr trvá do odvolání souhlasu. Po odhlášení se adresa a doklad souhlasu odstraní nejpozději za {} dní. Záznamy poštovní fronty uchováváme nejvýše {} dní od vytvoření.",r.pending_days,r.withdrawn_days,r.mail_days)}</p>
+        <p>{format!("Nepotvrzené žádosti uchováváme nejvýše {} dní. Aktivní odběr trvá do odvolání souhlasu. Po odhlášení se adresa a doklad souhlasu odstraní z databáze tohoto webu nejpozději za {} dní. Záznamy poštovní fronty uchováváme nejvýše {} dní od vytvoření.",r.pending_days,r.withdrawn_days,r.mail_days)}</p>
         <p>"Důvod uchování dokladu o souhlasu: "{policy.consent_evidence_legal_basis}</p>
-        <h2>"Zveřejněné dokumenty"</h2><p>{policy.public_records_legal_basis}</p><p>{format!("Rozsah údajů a dobu zveřejnění určuje typ dokumentu. Interní texty a doklady vyvěšení uchováváme {} dní po sejmutí. Potom zůstane jen minimální evidenční záznam. Úřední originály a spisovou službu spravuje obec odděleně.",r.notice_internal_days)}</p>
+        <h2>"Zveřejněné dokumenty"</h2><p>{policy.public_records_legal_basis}</p><p>{format!("Rozsah údajů a dobu zveřejnění určuje typ dokumentu. U položek s evidovaným datem sejmutí uchováváme interní texty a doklady vyvěšení {} dní po sejmutí. Potom zůstane jen minimální evidenční záznam. Na historické položky bez evidovaného data sejmutí se tento automatický výmaz nevztahuje. Úřední originály a spisovou službu spravuje obec odděleně.",r.notice_internal_days)}</p>
         <h2>"Provoz a bezpečnost"</h2><p>{policy.security_legal_basis}</p>
-        <p>{format!("Audit obsahuje identifikátor správce, provedenou operaci, dotčený záznam a čas. Uchovává se {} dní. Provozní logy mají lhůtu {} dní. Ochrana proti zneužití uchovává otisky technických identifikátorů nejvýše 24 hodin. Aplikace do HTTP logů nezapisuje těla požadavků, e-mailové adresy ani parametry s ověřovacími tokeny.",r.audit_days,r.operational_log_days)}</p>
+        <p>{format!("Audit obsahuje identifikátor správce, provedenou operaci, dotčený záznam a čas. Uchovává se {} dní. Provozní logy se průběžně obměňují podle nastavení serveru. Ochrana proti zneužití uchovává otisky technických identifikátorů nejvýše 24 hodin. Aplikace do HTTP logů nezapisuje těla požadavků, e-mailové adresy ani parametry s ověřovacími tokeny.",r.audit_days)}</p>
         <h2>"Příjemci a předávání údajů"</h2><p>{policy.processors}</p><p>{policy.international_transfers}</p>
-        <p>{format!("Záložní kopie mohou údaje obsahovat nejvýše {} dní. Po obnově se znovu uplatní lhůty uchování. Vyřizování žádostí o výmaz a odvolání souhlasu zahrnuje také postup obnovy ze záloh.",r.backup_days)}</p>
-        <h2>"Vaše práva"</h2><p>"U správce nebo pověřence můžete požádat o přístup k údajům, jejich opravu, výmaz či omezení zpracování. Podle právního důvodu zpracování máte také právo na přenositelnost nebo vznést námitku. Souhlas s odběrem lze odvolat kdykoli."</p>
+        <p>{if r.backup_days == 0 { "Vlastní zálohy databáze odběratelů nyní nevytváříme.".into() } else { format!("Záložní kopie mohou údaje obsahovat nejvýše {} dní. Po obnově se znovu uplatní lhůty uchování. Vyřizování žádostí o výmaz a odvolání souhlasu zahrnuje také postup obnovy ze záloh.",r.backup_days) }}</p>
+        <h2>"Vaše práva"</h2><p>{if has_dpo { "U správce nebo pověřence" } else { "U správce" }}" můžete požádat o přístup k údajům, jejich opravu, výmaz či omezení zpracování. Podle právního důvodu zpracování máte také právo na přenositelnost nebo vznést námitku. Souhlas s odběrem lze odvolat kdykoli."</p>
         <p>"Stížnost můžete podat u "<a href="https://uoou.gov.cz/">"Úřadu pro ochranu osobních údajů"</a>"."</p>
     }
 }

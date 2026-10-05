@@ -21,7 +21,7 @@ popisuje [provoz testovacího nasazení](staging-deployment.md).
 | Zálohování | Pro tento test se nezřizuje |
 | První přístup k webu | Přes SSH tunel, bez veřejného aplikačního portu |
 | První import | Ihned na výslovný pokyn, po ověření připraveného testovacího webu |
-| Další synchronizace | Denně každou celou hodinu od 07:00 do 22:00 včetně, Europe/Prague |
+| Další synchronizace | Denně každé dvě hodiny od 08:00 do 20:00 včetně, Europe/Prague |
 
 2 GB RAM jsou výchozí odhad pro několik testerů. Po importu a při práci
 s obrázky změříme skutečnou spotřebu a případné zásahy OOM killeru.
@@ -271,7 +271,7 @@ Viz [instalace Dockeru](https://docs.docker.com/engine/install/ubuntu/),
 [Docker a firewall](https://docs.docker.com/engine/network/packet-filtering-firewalls/)
 a [oprávnění skupiny docker](https://docs.docker.com/engine/install/linux-postinstall/).
 
-## 7 První import a hodinová synchronizace
+## 7 První import a pravidelná synchronizace
 
 Po prvním funkčním spuštění nabídnout provozovateli okamžitý import obsahu
 z původního webu. Po potvrzení ho spustit hned, i mimo pravidelné časové okno.
@@ -330,15 +330,15 @@ Zkontrolovat návratový stav a `/app/migration/last-run.json`,
 přílohy a fotografie v testovacím webu. Stav `skipped` není důkaz dokončeného
 prvního importu, při souběhu počkat na skutečný úspěšný běh.
 
-Po úspěchu aktivovat hodinový rozvrh. Budoucí soubor
+Po úspěchu aktivovat rozvrh po dvou hodinách. Budoucí soubor
 `/etc/systemd/system/obecni-web-legacy-sync.timer`:
 
 ```ini
 [Unit]
-Description=Hodinova synchronizace obsahu od 07 do 22 hodin
+Description=Synchronizace obsahu kazde dve hodiny od 08 do 20 hodin
 
 [Timer]
-OnCalendar=*-*-* 07..22:00:00 Europe/Prague
+OnCalendar=*-*-* 08,10,12,14,16,18,20:00:00 Europe/Prague
 AccuracySec=1s
 RandomizedDelaySec=0
 Persistent=false
@@ -348,11 +348,11 @@ Unit=obecni-web-legacy-sync.service
 WantedBy=timers.target
 ```
 
-Rozvrh znamená **16 plánovaných startů denně: 07:00, 08:00, …, 22:00**.
+Rozvrh znamená **7 plánovaných startů denně: 08:00, 10:00, 12:00, 14:00, 16:00, 18:00, 20:00**.
 Časová zóna je uvedená přímo v časovači, takže odpovídá českému letnímu
 i zimnímu času i na serveru s hodinami nastavenými na UTC. Přesnost skutečného
 startu závisí také na zatížení serveru. Rozvrh omezuje začátky, běh zahájený
-ve 22:00 může doběhnout později.
+ve 20:00 může doběhnout později.
 
 `Persistent=false` zajistí, že se po zapnutí serveru nedohání zmeškané běhy
 mimo rozvrh. Nepřidávat `OnBootSec` ani automatický restart neúspěšného importu.
@@ -360,7 +360,7 @@ Souběžně neinstalovat původní `deploy/legacy-sync.cron.example`, který pl�
 spouštění po celých 24 hodin.
 
 ```bash
-systemd-analyze calendar --iterations=18 '*-*-* 07..22:00:00 Europe/Prague'
+systemd-analyze calendar --iterations=18 '*-*-* 08,10,12,14,16,18,20:00:00 Europe/Prague'
 sudo systemctl enable --now obecni-web-legacy-sync.timer
 systemctl list-timers obecni-web-legacy-sync.timer
 ```
@@ -465,7 +465,7 @@ poskytovatele. Pokud klíč přestane být dostupný, touto cestou opravit
   směrovanou IPv6, pokud ji VPS má.
 - Testovací web a databáze přežijí restart, běží bez služby zálohování.
 - První import proběhl na pokyn a jeho výsledek byl ověřen.
-- Časovač spouští synchronizaci v 07:00 až 22:00 Europe/Prague včetně,
+- Časovač spouští synchronizaci každé dvě hodiny od 08:00 do 20:00 Europe/Prague včetně,
   bez souběhu a bez nočního dohánění zmeškaných běhů.
 - Monitor nehlásí chybějící zálohy a nadále kontroluje dostupnost a disk.
 - Pošta odpovídá zvolenému režimu. Skutečné SMTP je zapnuté pouze na výslovný

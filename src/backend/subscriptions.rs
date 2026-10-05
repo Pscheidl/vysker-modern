@@ -104,14 +104,15 @@ pub async fn request_subscription(
         .execute(&mut *tx)
         .await?;
     let body = format!(
-        "Dobrý den,\n\npotvrďte odběr nových dokumentů obce Vyskeř na tomto odkazu:\n{}/odber/potvrdit?token={}\n\nOdkaz platí 24 hodin. Do potvrzení vám novinky chodit nebudou. Pokud jste o odběr nepožádali, zprávu ignorujte.\n\nZnění souhlasu ({}):\n{}\n\nInformace o soukromí: {}/ochrana-udaju\n\nObec Vyskeř",
+        "Dobrý den,\n\npotvrďte odběr nových dokumentů z webu Vyskeř na tomto odkazu:\n{}/odber/potvrdit?token={}\n\nOdkaz platí 24 hodin. Do potvrzení vám novinky chodit nebudou. Pokud jste o odběr nepožádali, zprávu ignorujte.\n\nZnění souhlasu ({}):\n{}\n\nInformace o soukromí: {}/ochrana-udaju\n\n{}",
         s.config.public_url,
         secret,
         notice.consent_version,
         notice.consent_text,
-        s.config.public_url
+        s.config.public_url,
+        notice.policy.controller_name
     );
-    sqlx::query("INSERT INTO mail_queue(subscriber_id,purpose,subject,body,next_attempt_at,created_at,consent_id) VALUES ($1,'verification','Potvrzení odběru novinek obce Vyskeř',$2,$3,$4,$5)")
+    sqlx::query("INSERT INTO mail_queue(subscriber_id,purpose,subject,body,next_attempt_at,created_at,consent_id) VALUES ($1,'verification','Potvrzení odběru novinek z webu Vyskeř',$2,$3,$4,$5)")
         .bind(id).bind(body).bind(now.unix_timestamp()).bind(now.unix_timestamp()).bind(consent_id).execute(&mut *tx).await?;
     audit(
         &mut tx,
@@ -212,8 +213,10 @@ pub async fn unsubscribe(
 struct SubscriptionPolicySnapshot {
     version: String,
     controller_name: String,
+    #[serde(default)]
     controller_address: String,
     controller_email: String,
+    #[serde(default)]
     dpo_email: String,
     consent_evidence_legal_basis: String,
     processors: String,
@@ -243,19 +246,31 @@ async fn landing(s: &Backend, secret: &str, confirm: bool) -> Result<Html<String
             row.ok_or_else(|| bad("Odkaz není platný nebo vypršel. Požádejte o nový odběr."))?;
         let policy: SubscriptionPolicySnapshot = serde_json::from_str(&json)
             .map_err(|_| bad("Informace o souhlasu nejsou dostupné."))?;
+        let controller_address = if policy.controller_address.trim().is_empty() {
+            String::new()
+        } else {
+            format!(", {}", escape(&policy.controller_address))
+        };
+        let dpo = if policy.dpo_email.trim().is_empty() {
+            String::new()
+        } else {
+            format!(" Pověřenec: {}.", escape(&policy.dpo_email))
+        };
+        let backups = if policy.retention.backup_days == 0 {
+            "Vlastní zálohy databáze odběratelů nyní nevytváříme.".into()
+        } else {
+            format!("Zálohy: {} dní.", policy.retention.backup_days)
+        };
         format!(
-            "<p>{}</p><p>Verze souhlasu: {}. Informace o soukromí: {}.</p><details><summary>Informace platné při žádosti</summary><p>Správce: {}, {}. Kontakt: {}. Pověřenec: {}.</p><p>Účel: odběr nových dokumentů. Právní důvod: dobrovolný souhlas podle čl. 6 odst. 1 písm. a) GDPR. Souhlas lze kdykoli odvolat odkazem v každé zprávě.</p><p>Nepotvrzené žádosti: {} dní. Údaje po odhlášení: {} dní. Poštovní fronta: {} dní. Zálohy: {} dní.</p><p>Důvod uchování dokladu: {}</p><p>Příjemci: {}</p><p>Předávání: {}</p><p>Práva: přístup, oprava, výmaz, omezení, podle právního důvodu přenositelnost a námitka. Stížnost lze podat u ÚOOÚ.</p></details>",
+            "<p>{}</p><p>Verze souhlasu: {}. Informace o soukromí: {}.</p><details><summary>Informace platné při žádosti</summary><p>Správce: {}{controller_address}. Kontakt: {}.{dpo}</p><p>Účel: odběr nových dokumentů. Právní důvod: dobrovolný souhlas podle čl. 6 odst. 1 písm. a) GDPR. Souhlas lze kdykoli odvolat odkazem v každé zprávě.</p><p>Nepotvrzené žádosti: {} dní. Údaje po odhlášení: {} dní. Poštovní fronta: {} dní. {backups}</p><p>Důvod uchování dokladu: {}</p><p>Příjemci: {}</p><p>Předávání: {}</p><p>Práva: přístup, oprava, výmaz, omezení, podle právního důvodu přenositelnost a námitka. Stížnost lze podat u ÚOOÚ.</p></details>",
             escape(&wording),
             escape(&version),
             escape(&policy.version),
             escape(&policy.controller_name),
-            escape(&policy.controller_address),
             escape(&policy.controller_email),
-            escape(&policy.dpo_email),
             policy.retention.pending_days,
             policy.retention.withdrawn_days,
             policy.retention.mail_days,
-            policy.retention.backup_days,
             escape(&policy.consent_evidence_legal_basis),
             escape(&policy.processors),
             escape(&policy.international_transfers)
@@ -264,7 +279,7 @@ async fn landing(s: &Backend, secret: &str, confirm: bool) -> Result<Html<String
         "<p>Odhlášením odvoláte souhlas s dalším zasíláním novinek. Přihlášení k účtu není potřeba.</p>".into()
     };
     Ok(Html(format!(
-        "<!doctype html><html lang=\"cs\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"robots\" content=\"noindex\"><title>{heading} · Vyskeř</title><body><main><h1>{heading}</h1><p>Obec Vyskeř</p>{details}<form method=\"post\" action=\"{action}\"><input type=\"hidden\" name=\"token\" value=\"{secret}\"><button type=\"submit\">{heading}</button></form></main></body></html>"
+        "<!doctype html><html lang=\"cs\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"robots\" content=\"noindex\"><title>{heading} · Vyskeř</title><body><main><h1>{heading}</h1><p>Web Vyskeř</p>{details}<form method=\"post\" action=\"{action}\"><input type=\"hidden\" name=\"token\" value=\"{secret}\"><button type=\"submit\">{heading}</button></form></main></body></html>"
     )))
 }
 pub async fn confirmation_page(
@@ -294,7 +309,7 @@ pub async fn confirmation_form(
 ) -> Result<Html<&'static str>> {
     use_token(&s, &input.token, true, OffsetDateTime::now_utc()).await?;
     Ok(Html(
-        "<!doctype html><html lang=cs><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Odběr potvrzen · Vyskeř</title><h1>Odběr je potvrzený.</h1><p>Nové dokumenty vám nyní přijdou e-mailem.</p><a href=/>Zpět na web obce</a></html>",
+        "<!doctype html><html lang=cs><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Odběr potvrzen · Vyskeř</title><h1>Odběr je potvrzený.</h1><p>Nové dokumenty vám nyní přijdou e-mailem.</p><a href=/>Zpět na web Vyskeř</a></html>",
     ))
 }
 pub async fn unsubscribe_form(
@@ -303,6 +318,6 @@ pub async fn unsubscribe_form(
 ) -> Result<Html<&'static str>> {
     use_token(&s, &input.token, false, OffsetDateTime::now_utc()).await?;
     Ok(Html(
-        "<!doctype html><html lang=cs><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Odběr odhlášen · Vyskeř</title><h1>Odběr je odhlášený.</h1><p>Další novinky vám posílat nebudeme.</p><a href=/>Zpět na web obce</a></html>",
+        "<!doctype html><html lang=cs><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Odběr odhlášen · Vyskeř</title><h1>Odběr je odhlášený.</h1><p>Další novinky vám posílat nebudeme.</p><a href=/>Zpět na web Vyskeř</a></html>",
     ))
 }

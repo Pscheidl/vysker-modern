@@ -53,6 +53,7 @@ root s právy `0700`. Compose připojuje jednotlivé soubory do kontejnerů.
 | `database-password.txt` | Heslo nové aplikační role `vysker` | účet `postgres` při prvním vytvoření databáze |
 | `database-url.txt` | `postgresql://vysker:HESLO@postgres:5432/vysker` | UID 10001, aplikace a monitor |
 | `smtp-password.txt` | Heslo SMTP, pouze při výslovném zapnutí skutečné pošty | UID 10001 |
+| `privacy.json` | Skutečné zveřejněné informace o provozovateli a odběru | UID 10001 |
 
 Soubory mají práva `0400` a odpovídajícího vlastníka. UID databázového účtu
 ověřit v použitém obrazu, například `docker run --rm --entrypoint id
@@ -100,6 +101,21 @@ Tato varianta vypne zachytávání v aplikaci. Uložené nastavení Google z
 administrace pak může přepsat SMTP prostředí, účinné nastavení proto ověřit
 v administraci. Pracovat s novou testovací databází, nekopírovat reálné odběratele.
 Pro návrat k Mailpitu vynechat SMTP overlay a znovu vytvořit webový kontejner.
+
+Pro aktivaci odběru doplnit skutečné údaje provozovatele a provozní nastavení
+podle [konfigurace soukromí](privacy.md#configuration) do `deploy/secrets/privacy.json`.
+Soubor zpřístupnit UID 10001 s právy `0400` a přidat:
+
+```bash
+compose_files+=(-f compose.staging-privacy.yaml)
+```
+
+Obsah tohoto JSON se zveřejní na stránce ochrany údajů, nepatří do něj hesla.
+Zkontrolovat formulář odběru, totožnost provozovatele, potvrzení e-mailové adresy
+a odhlášení. SMTP nastavení samo odběr nezapíná. Pro deaktivaci nových žádostí
+vynechat privacy overlay a znovu vytvořit webový kontejner. Tím se pozastaví i
+odesílání zpráv odběratelům, odhlášení zůstává dostupné. Při již běžícím importu
+s restartem počkat na jeho dokončení.
 
 Pro zvolenou kombinaci používat ve stejné bash relaci:
 
@@ -159,7 +175,7 @@ Mailpit v síti bez vnějšího připojení. Na publikování portu kontejneru
 připojeného pouze k `internal` síti nelze spoléhat. Docker ale výslovně
 umožňuje [přímý přístup hostitele k interním IP kontejnerů](https://docs.docker.com/reference/cli/docker/network/create/#network-internal-mode---internal).
 
-## Import a hodinový rozvrh
+## Import a rozvrh po dvou hodinách
 
 Upravit cestu pracovní složky a Dockeru v jednotce, pokud se liší. Instalace
 jednotek sama nezapíná import ani časovač:
@@ -196,7 +212,8 @@ sudo systemctl enable --now obecni-web-legacy-sync.timer
 systemctl list-timers obecni-web-legacy-sync.timer
 ```
 
-Spouští se 16krát denně, v 07:00 až 22:00 včetně v časové zóně Europe/Prague.
+Spouští se sedmkrát denně, v 08:00, 10:00, 12:00, 14:00, 16:00, 18:00 a 20:00
+v časové zóně Europe/Prague.
 Zmeškané běhy se nedohánějí a souběžné importy se nespouštějí. Jednotka používá
 základní Compose pouze k `exec` do běžícího webu, takže zachová skutečné HTTPS
 i SMTP prostředí kontejneru. Před změnou domény původního webu časovač vypnout
