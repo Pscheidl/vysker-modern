@@ -169,7 +169,6 @@ pub fn Shortcuts() -> impl IntoView {
             <A href=site_url("/uredni-deska")><Icon name="board"/><span>"Úřední deska"</span><Icon class="shortcut-arrow"/></A>
             <A href=site_url("/dokumenty")><Icon name="paper"/><span>"Dokumenty a formuláře"</span><Icon class="shortcut-arrow"/></A>
             <A href=site_url("/kontakt#uredni-hodiny")><Icon name="clock"/><span>"Úřední hodiny"</span><Icon class="shortcut-arrow"/></A>
-            <A href=site_url("/obec#sluzby")><Icon name="bin"/><span>"Odpady a poplatky"</span><Icon class="shortcut-arrow"/></A>
         </nav>
     }
 }
