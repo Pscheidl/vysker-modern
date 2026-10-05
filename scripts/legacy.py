@@ -10,8 +10,10 @@ from datetime import date, datetime, timezone
 from email.message import Message
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
+import tempfile
 import time
 from urllib.error import HTTPError
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urljoin, urlsplit, urlunsplit
@@ -273,36 +275,198 @@ class SafeRedirect(HTTPRedirectHandler):
 
 
 class Capture:
-    def __init__(self, root, delay=.4, verbose=True):
+    def __init__(self, root, delay=.4, verbose=True, *, cache_root=None,
+                 refresh_assets=False, asset_loader=None):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.delay = delay
         self.verbose = verbose
         self.opener = build_opener(SafeRedirect())
+        self.cache_root = Path(cache_root) if cache_root is not None else None
+        if self.cache_root is not None:
+            self.cache_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.refresh_assets = refresh_assets
+        self.asset_loader = asset_loader
+        self.stats = dict(network_requests=0, downloaded_bytes=0, assets_downloaded=0,
+                          assets_reused=0, pages_downloaded=0, pages_not_modified=0,
+                          assets_seeded=0, cache_repairs=0, cache_objects_pruned=0)
+
+    @staticmethod
+    def _atomic_write(path, data):
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as output:
+                temporary = Path(output.name)
+                output.write(data)
+            os.replace(temporary, path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    def _save_response(self, root, result, body):
+        # Commit bytes before the URL index so interruption cannot expose a partial object.
+        obj = root / 'objects' / result['sha256']
+        if not obj.exists():
+            obj.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            try:
+                if root != self.root or self.cache_root is None:
+                    raise OSError('No shared object to link')
+                os.link(self.cache_root / 'objects' / result['sha256'], obj)
+            except OSError:
+                self._atomic_write(obj, body)
+        else:
+            same = obj.stat().st_size == len(body)
+            if same:
+                with obj.open('rb') as existing:
+                    same = existing.read(len(body) + 1) == body
+            if not same:
+                self._atomic_write(obj, body)
+        self._atomic_write(root / 'responses' / (digest(result['url'].encode()) + '.json'),
+                           json.dumps(result, ensure_ascii=False, indent=2).encode())
+
+    @staticmethod
+    def _validate_response(url, result, body, limit, asset=False):
+        if not isinstance(result, dict):
+            raise ValueError('Invalid cached response metadata')
+        final_url = result.get('final_url', url)
+        if (not isinstance(url, str) or canonical(url) != url or result.get('url') != url
+                or not isinstance(final_url, str) or not canonical(final_url)):
+            raise ValueError('Invalid cached response URL')
+        if (not isinstance(body, bytes) or len(body) > limit
+                or type(result.get('size')) is not int or result['size'] != len(body)
+                or result.get('sha256') != digest(body)):
+            raise ValueError('Invalid cached response object')
+        if (not isinstance(result.get('captured_at'), str)
+                or not isinstance(result.get('disposition'), str)
+                or not isinstance(result.get('content_type'), str)):
+            raise ValueError('Invalid cached response metadata')
+        if asset:
+            file_type(body)
+
+    def _cached_response(self, url, limit, asset):
+        index = self.cache_root / 'responses' / (digest(url.encode()) + '.json')
+        if not index.exists():
+            return None
+        try:
+            result = self._read_response_index(index)
+            if not isinstance(result, dict):
+                raise ValueError('Invalid cached response metadata')
+            size = result.get('size')
+            if type(size) is not int or not 0 <= size <= limit:
+                raise ValueError('Invalid cached response size')
+            body = self._blob_from(self.cache_root, result['sha256'], limit=size,
+                                   expected_size=size)
+            self._validate_response(url, result, body, limit, asset)
+            return result, body
+        except (OSError, ValueError, KeyError, TypeError):
+            self.stats['cache_repairs'] += 1
+            return None
+
+    @staticmethod
+    def _read_response_index(index):
+        limit = 1024 * 1024
+        if index.stat().st_size > limit:
+            raise ValueError('Cached response metadata exceeds size limit')
+        with index.open('rb') as source:
+            data = source.read(limit + 1)
+        if len(data) > limit:
+            raise ValueError('Cached response metadata exceeds size limit')
+        return json.loads(data)
+
+    def prune_cache(self):
+        """Drop superseded response bodies, retaining every previously seen URL.
+
+        Call only while the synchronization lock is held. Asset response indexes
+        remain even when their links disappear from the source website.
+        """
+        if self.cache_root is None:
+            return
+        referenced = set()
+        try:
+            for index in (self.cache_root / 'responses').glob('*.json'):
+                sha = self._read_response_index(index)['sha256']
+                if not isinstance(sha, str) or not re.fullmatch('[a-f0-9]{64}', sha):
+                    return
+                referenced.add(sha)
+        except (OSError, ValueError, KeyError, TypeError):
+            # An unreadable index makes the reachability proof incomplete.
+            return
+        for obj in (self.cache_root / 'objects').glob('*'):
+            if re.fullmatch('[a-f0-9]{64}', obj.name) and obj.name not in referenced:
+                try:
+                    obj.unlink()
+                    self.stats['cache_objects_pruned'] += 1
+                except OSError:
+                    pass
 
     def fetch(self, url, limit):
         cache = self.root / 'responses' / (digest(url.encode()) + '.json')
         if cache.exists():
             result = json.loads(cache.read_text())
             return result, self.blob(result['sha256'])
+        asset = is_asset(url)
+        cached = None
+        if self.cache_root is not None and not (asset and self.refresh_assets):
+            cached = self._cached_response(url, limit, asset)
+            if asset and cached is None and self.asset_loader is not None:
+                loaded = self.asset_loader(url)
+                if loaded is not None:
+                    try:
+                        result, body = loaded
+                        self._validate_response(url, result, body, limit, asset=True)
+                    except (ValueError, TypeError):
+                        self.stats['cache_repairs'] += 1
+                    else:
+                        self._save_response(self.cache_root, result, body)
+                        cached = result, body
+                        self.stats['assets_seeded'] += 1
+            if asset and cached is not None:
+                self._save_response(self.root, *cached)
+                self.stats['assets_reused'] += 1
+                return cached
+        headers = {'User-Agent': USER_AGENT}
+        if cached is not None:
+            for key, header in [('etag', 'If-None-Match'), ('last_modified', 'If-Modified-Since')]:
+                value = cached[0].get(key)
+                if isinstance(value, str) and value and '\r' not in value and '\n' not in value:
+                    headers[header] = value
         time.sleep(self.delay)
         for attempt in range(3):
             try:
-                with self.opener.open(Request(url, headers={'User-Agent': USER_AGENT}), timeout=40) as response:
+                self.stats['network_requests'] += 1
+                with self.opener.open(Request(url, headers=headers), timeout=40) as response:
                     body = response.read(limit + 1)
+                    self.stats['downloaded_bytes'] += len(body)
                     if len(body) > limit:
                         raise ValueError(f'Response exceeds {limit} bytes')
                     result = dict(url=url, final_url=response.url, captured_at=now(),
                                   content_type=response.headers.get('Content-Type', ''),
                                   disposition=response.headers.get('Content-Disposition', ''),
                                   sha256=digest(body), size=len(body))
-                    obj = self.root / 'objects' / result['sha256']
-                    obj.parent.mkdir(exist_ok=True)
-                    obj.write_bytes(body)
-                    cache.parent.mkdir(exist_ok=True)
-                    cache.write_text(json.dumps(result, ensure_ascii=False, indent=2))
+                    for key, header in [('etag', 'ETag'), ('last_modified', 'Last-Modified')]:
+                        if value := response.headers.get(header):
+                            result[key] = value
+                    if self.cache_root is not None:
+                        self._validate_response(url, result, body, limit, asset)
+                        self._save_response(self.cache_root, result, body)
+                    self._save_response(self.root, result, body)
+                    self.stats['assets_downloaded' if asset else 'pages_downloaded'] += 1
                     return result, body
             except HTTPError as e:
+                if e.code == 304 and cached is not None and not asset and len(headers) > 1:
+                    # Conditional success reuses verified bytes. Other HTTP/network failures
+                    # must remain visible and may never silently serve old HTML.
+                    result, body = cached
+                    result = dict(result, captured_at=now())
+                    for key, header in [('etag', 'ETag'), ('last_modified', 'Last-Modified')]:
+                        if value := e.headers.get(header):
+                            result[key] = value
+                    self._save_response(self.cache_root, result, body)
+                    self._save_response(self.root, result, body)
+                    self.stats['pages_not_modified'] += 1
+                    e.close()
+                    return result, body
                 if e.code < 500 and e.code != 429:
                     raise
             except (TimeoutError, OSError):
@@ -312,12 +476,22 @@ class Capture:
         raise ValueError('Download failed after three attempts')
 
     def blob(self, sha):
-        if not re.fullmatch('[a-f0-9]{64}', sha):
+        return self._blob_from(self.root, sha)
+
+    @staticmethod
+    def _blob_from(root, sha, limit=30 * 1024 * 1024, expected_size=None):
+        if not isinstance(sha, str) or not re.fullmatch('[a-f0-9]{64}', sha):
             raise ValueError('Invalid object hash')
-        path = self.root / 'objects' / sha
-        if path.resolve().parent != (self.root / 'objects').resolve():
+        path = root / 'objects' / sha
+        if path.resolve().parent != (root / 'objects').resolve():
             raise ValueError('Object outside bundle')
-        data = path.read_bytes()
+        size = path.stat().st_size
+        if size > limit or (expected_size is not None and size != expected_size):
+            raise ValueError('Object size mismatch')
+        with path.open('rb') as obj:
+            data = obj.read(limit + 1)
+        if len(data) > limit or (expected_size is not None and len(data) != expected_size):
+            raise ValueError('Object size mismatch')
         if digest(data) != sha:
             raise ValueError('Object checksum mismatch')
         return data
@@ -409,6 +583,8 @@ class Capture:
                        bytes=sum(a.get('capture', {}).get('size', 0) for a in assets.values()),
                        complete=not errors)
         (self.root / 'summary.json').write_text(json.dumps(summary, indent=2))
+        if manifest['complete']:
+            self.prune_cache()
         if self.verbose:
             print(json.dumps(summary, indent=2))
         return manifest

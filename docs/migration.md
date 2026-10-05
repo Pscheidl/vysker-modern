@@ -113,11 +113,33 @@ coverage, and missing documents must be reconciled before launch.
 ## Periodic synchronization while both websites run
 
 `legacy_sync.py run` is the cron entry point. The original website remains the
-source for new items during parallel operation. Every run downloads a fresh
-snapshot without reusing response caches, imports new identities, and records
+source for new items during parallel operation. Every run builds a fresh
+inventory, rechecks HTML pages and reuses previously verified attachment bytes.
+It imports new identities and records
 changed identities for human review. It never updates or deletes existing
 content, including when an item disappears from the original site. Local edits,
 publication decisions and attachment URLs remain intact.
+
+Known attachments are reused by canonical source URL, including document ID query
+parameters, without an HTTP request or download delay. The private persistent
+`capture-cache` directory stores response metadata and content-addressed objects.
+On a cache miss, existing imported attachments can seed it from PostgreSQL, one
+file at a time. Original response metadata is preserved and bytes are checked
+against their size, SHA-256 and file signature. Missing or corrupt cache entries
+are repaired from the database or downloaded again. Failed downloads and HTTP 404
+are not cached as successful files, so restored resources are checked next time.
+
+HTML pages and the sitemap are always requested again, using `ETag` or
+`Last-Modified` validators when the source provides them. HTTP 304 reuses verified
+HTML bytes. This discovers new attachments added to old pages as well as new
+pages. Transport and server errors never silently substitute old HTML. Unreferenced
+old object versions are pruned after a complete crawl, while cache entries for
+previously seen attachment URLs remain available even if their links disappear.
+
+The default intentionally does not detect replacement bytes at an unchanged
+attachment URL. Add `--refresh-assets` to the same `legacy_sync.py run` command
+when a full attachment refresh is needed. It bypasses both file cache and database
+reuse. Changed bytes are proposed for review, without replacing published originals.
 
 The database primary key on `legacy_sources.source_key` and the application's
 transactional write lock prevent duplicate inserts, including concurrent imports
@@ -125,7 +147,7 @@ and retries after interruption. A separate nonblocking database lock covers the
 whole scheduled crawl. If another sync is already running, the job exits
 successfully with `status: skipped` without downloading anything.
 
-Changed source content, file bytes, attachment descriptions and notice ownership
+Changed source content, file bytes detected during a refresh, attachment descriptions and notice ownership
 are kept in `legacy_sync_reviews`, with at most one current proposal per original
 identity. Repeated detection updates that proposal instead of creating duplicates.
 New items continue importing even when other items require review. Missing source
@@ -147,10 +169,13 @@ docker compose --env-file deploy/.env -f compose.production.yaml exec -T web \
 ```
 
 The updated web image contains the Python dependencies, scripts and maps. The
-private `migration-state` volume stores reports and temporary captures, outside
+private `migration-state` volume stores reports, persistent cache and temporary captures, outside
 the public website. Database access uses the existing `OBEC_DATABAZE_FILE` secret.
-The crawler downloads the whole site, so choose the interval with the site's size
-and available bandwidth in mind. Completed runs remove temporary captures.
+The crawler rechecks source pages and downloads new attachments. Choose the interval
+with the source's request rate and available bandwidth in mind. Completed runs
+remove temporary captures. Cache objects are shared with temporary bundles through
+hardlinks when supported. Allow disk space for one copy of the cached attachment
+library in addition to the database. The cache can be rebuilt and is not a backup.
 Changed source bytes are retained in PostgreSQL with their proposal and are
 included in normal database backups. Private exported review files may be removed
 and regenerated from the database.
@@ -162,12 +187,15 @@ operation. The job returns a nonzero exit code on failure, writes a compact resu
 to stdout on success, and keeps these private files in `/app/migration`:
 
 - `last-run.json`: running, completed or failed attempt, including whether import committed
-- `last-success.json`: last completed synchronization and item counts/lists
+- `last-success.json`: last completed synchronization, item counts/lists,
+  `duration_seconds` and `download_stats` (HTTP requests, downloaded bytes,
+  downloaded/reused attachments, database-seeded files and unchanged HTML responses)
 - `capture-errors.json`: failed source requests, including any deliberately allowed subset
 - `capture-unavailable.json`: HTTP 404 source resources observed in the latest capture,
   retained even if another capture error prevents import
 - `reviews.html` and `reviews.json`: all pending proposals with existing destinations,
   current local text, source text/metadata and downloadable changed attachments
+- `capture-cache/`: private reusable response metadata and verified source bytes
 
 Monitor the age of `last-success.json`, failures and `pending_reviews`. Unchanged
 source items do not create new reviews. No subscriber emails are sent. By default,

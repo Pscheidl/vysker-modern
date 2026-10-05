@@ -11,11 +11,12 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from legacy import Capture, digest, source_key
+from legacy import Capture, ORIGIN, digest, is_asset, source_key
 from legacy_import import import_bundle
-from legacy_sync import SYNC_LOCK, acknowledge, export_reviews, run_sync
+from legacy_sync import SYNC_LOCK, acknowledge, export_reviews, imported_asset_loader, run_sync
 from postgres import connect, temporary_database
-from test_legacy import add_page, bundle, navigation_bundle, FILE
+from test_legacy import add_page, bundle, navigation_bundle, FILE, HTML, URL
+from test_legacy_capture import Response
 
 
 def save(root, data):
@@ -250,6 +251,134 @@ class SyncTests(unittest.TestCase):
         self.assertFalse(any(path.exists() for path in roots))
         self.assertEqual(json.loads((Path(self.root) / 'last-success.json').read_text())['pending_reviews'], 1)
         self.assertEqual(len(json.loads((Path(self.root) / 'reviews.json').read_text())), 1)
+
+    def test_runner_bootstraps_existing_files_then_downloads_only_new_attachments(self):
+        html = [HTML.encode()]
+        requested = []
+        original_bytes = b'%PDF-1.7\nfixture\n%%EOF'
+        raw = [original_bytes]
+        second = FILE.replace('123', '456')
+
+        def open_response(request, timeout):
+            url = request.full_url
+            requested.append(url)
+            if is_asset(url):
+                return Response(url, raw[0] if url == FILE else original_bytes,
+                    {'Content-Type': 'application/pdf', 'Content-Disposition': 'attachment; filename="zapis.pdf"'})
+            if url.endswith('/vismo/sitemap.asp'):
+                body = ('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+                        f'<url><loc>{URL}</loc></url></urlset>').encode()
+            else:
+                body = html[0] if url == URL else b'<div id="stred"><h1>Navigation</h1></div>'
+            return Response(url, body, {'Content-Type': 'text/html'})
+
+        with patch('urllib.request.OpenerDirector.open', side_effect=open_response):
+            initial = Path(self.root) / 'initial'
+            Capture(initial, 0, verbose=False).crawl()
+            with connect(self.url) as conn:
+                import_bundle(conn, initial, publish_content=True, skip_pages=True)
+                original = conn.execute('SELECT * FROM attachments').fetchall()
+                metadata = conn.execute("SELECT metadata->'capture' FROM legacy_sources").fetchone()[0]
+            requested.clear()
+            state = Path(self.root) / 'sync'
+            with connect(self.url, autocommit=True) as conn:
+                first = run_sync(conn, state, delay=0, publish_content=True, skip_pages=True)
+                self.assertEqual(first['status'], 'ok')
+                self.assertEqual(first['new'], [])
+                self.assertEqual(first['conflicts'], [])
+                self.assertEqual(first['download_stats']['assets_seeded'], 1)
+                self.assertEqual(first['download_stats']['assets_reused'], 1)
+                self.assertEqual(first['download_stats']['assets_downloaded'], 0)
+                self.assertFalse(any(is_asset(url) for url in requested))
+                self.assertIn(URL, requested)
+                cached = state / 'capture-cache' / 'responses' / (digest(FILE.encode()) + '.json')
+                self.assertEqual(json.loads(cached.read_text()), metadata)
+
+                # New links on an existing HTML page are discovered on the next run.
+                html[0] = HTML.replace('</ul>', f'<li><a href="{second}">Nový dokument</a></li></ul>').encode()
+                requested.clear()
+                following = run_sync(conn, state, delay=0, publish_content=True, skip_pages=True)
+                self.assertEqual(following['new'], [source_key(second)])
+                self.assertEqual(following['conflicts'], [])
+                self.assertEqual(following['download_stats']['assets_seeded'], 0)
+                self.assertEqual(following['download_stats']['assets_reused'], 1)
+                self.assertEqual(following['download_stats']['assets_downloaded'], 1)
+                self.assertEqual([url for url in requested if is_asset(url)], [second])
+                self.assertEqual(conn.execute('SELECT * FROM attachments ORDER BY id LIMIT 1').fetchall(), original)
+                self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
+                self.assertGreater(following['duration_seconds'], 0)
+
+                # An explicit refresh detects a replacement at the same URL, preserving
+                # the imported original and queuing the new bytes for editorial review.
+                raw[0] = b'%PDF-1.7\nreplacement\n%%EOF'
+                refreshed = run_sync(conn, state, delay=0, publish_content=True,
+                    skip_pages=True, refresh_assets=True)
+                self.assertEqual(refreshed['conflicts'], [source_key(FILE)])
+                self.assertEqual(refreshed['download_stats']['assets_downloaded'], 2)
+                self.assertEqual(refreshed['download_stats']['assets_reused'], 0)
+                self.assertEqual(conn.execute('SELECT data FROM attachments ORDER BY id LIMIT 1').fetchone()[0], original_bytes)
+                # A queued replacement stays in cache without another HTTP download.
+                repeated = run_sync(conn, state, delay=0, publish_content=True, skip_pages=True)
+                self.assertEqual(repeated['download_stats']['assets_reused'], 2)
+                self.assertEqual(repeated['download_stats']['assets_downloaded'], 0)
+                self.assertEqual(repeated['pending_reviews'], 1)
+                self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
+
+    def test_database_asset_loader_rejects_changed_corrupt_or_removed_bytes(self):
+        data = bundle(self.root)
+        item = data['assets'][0]
+        item['capture'].update(url=FILE, final_url=FILE, content_type='application/pdf',
+            disposition='attachment; filename="zapis.pdf"')
+        save(self.root, data)
+        with connect(self.url, autocommit=True) as conn:
+            with conn.transaction():
+                import_bundle(conn, self.root)
+            load = imported_asset_loader(conn)
+            original = load(FILE)
+            self.assertIsNotNone(original)
+            self.assertEqual(original[0], item['capture'])
+            self.assertIsNone(load(FILE.replace('123', '456')))
+            for column, value in [('data', b'corrupt'), ('sha256', '0' * 64),
+                                  ('size_bytes', 1), ('content_type', 'image/png')]:
+                with self.subTest(column=column):
+                    with conn.transaction(force_rollback=True):
+                        conn.execute(f'UPDATE attachments SET {column}=%s', (value,))
+                        self.assertIsNone(load(FILE))
+            conn.execute("UPDATE attachments SET data=NULL, removed_at='2026-10-05'")
+            self.assertIsNone(load(FILE))
+            self.assertIsNone(imported_asset_loader(conn)(FILE))
+
+    def test_failed_import_keeps_verified_cache_for_retry_without_duplicate_or_email(self):
+        incomplete = [True]
+        raw = b'%PDF-1.7\nfixture\n%%EOF'
+
+        def crawl(capture, *_):
+            data = bundle(capture.root)
+            metadata, _ = capture.fetch(FILE, 30 * 1024 * 1024)
+            data['assets'][0]['capture'] = metadata
+            if incomplete[0]:
+                data.update(complete=False, errors=[{'url': URL, 'error': 'HTTP 503'}])
+            save(capture.root, data)
+            return data
+
+        with connect(self.url, autocommit=True) as conn, patch.object(Capture, 'crawl', crawl), \
+                patch('urllib.request.OpenerDirector.open', return_value=Response(FILE, raw,
+                    {'Content-Type': 'application/pdf', 'Content-Disposition': 'attachment; filename="zapis.pdf"'})) as http:
+            with self.assertRaisesRegex(ValueError, 'incomplete'):
+                run_sync(conn, self.root, delay=0, publish_content=True, skip_pages=True)
+            self.assertEqual(conn.execute('SELECT count(*) FROM legacy_sources').fetchone()[0], 0)
+            failed = json.loads((Path(self.root) / 'last-run.json').read_text())
+            self.assertEqual(failed['download_stats']['assets_downloaded'], 1)
+            incomplete[0] = False
+            for attempt in range(2):
+                report = run_sync(conn, self.root, delay=0, publish_content=True, skip_pages=True)
+                self.assertEqual(len(report['new']), 1 if attempt == 0 else 0)
+                self.assertEqual(report['download_stats']['assets_reused'], 1)
+                self.assertEqual(report['download_stats']['assets_downloaded'], 0)
+                self.assertEqual(report['conflicts'], [])
+            self.assertEqual(http.call_count, 1)
+            self.assertEqual(conn.execute('SELECT count(*) FROM attachments').fetchone()[0], 1)
+            self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
 
     def test_runner_archives_only_new_imported_notices_and_preserves_native_private_records(self):
         def crawl(capture, *_):

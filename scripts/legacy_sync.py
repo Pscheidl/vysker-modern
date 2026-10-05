@@ -6,11 +6,12 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 from urllib.parse import quote, urlsplit
 
 from psycopg.rows import dict_row
 
-from legacy import Capture, digest, file_type, now
+from legacy import Capture, canonical, digest, file_type, now
 from legacy_import import import_bundle
 from postgres import connect
 
@@ -103,9 +104,49 @@ def acknowledge(conn, key, fingerprint):
         raise ValueError('Pending proposal not found or has changed. Export reviews again.')
 
 
+def imported_asset_loader(conn):
+    """Index provenance cheaply, loading at most one existing attachment at a time."""
+    rows = conn.execute('''SELECT s.source_url, s.metadata->'capture', s.attachment_id
+        FROM legacy_sources s JOIN attachments a ON a.id=s.attachment_id
+        WHERE a.data IS NOT NULL AND a.removed_at IS NULL''').fetchall()
+    known = {canonical(url): (capture, attachment_id) for url, capture, attachment_id in rows
+             if canonical(url) and isinstance(capture, dict)}
+
+    def load(url):
+        record = known.get(url)
+        if record is None:
+            return None
+        capture, attachment_id = record
+        # Old or incomplete provenance must not invent response headers or filenames.
+        # Capture validates the original URL, byte hash, size and file signature too.
+        expected_size = capture.get('size')
+        if (capture.get('url') != url or type(expected_size) is not int
+                or not 0 <= expected_size <= 30 * 1024 * 1024):
+            return None
+        row = conn.execute('''SELECT data, sha256, size_bytes, content_type FROM attachments
+            WHERE id=%s AND data IS NOT NULL AND removed_at IS NULL
+            AND size_bytes=%s AND octet_length(data)=%s AND sha256=%s''',
+            (attachment_id, expected_size, expected_size, capture.get('sha256'))).fetchone()
+        if row is None:
+            return None
+        data, sha, size, mime = row
+        raw = bytes(data)
+        if (sha != capture.get('sha256') or size != capture.get('size')
+                or len(raw) != size or digest(raw) != sha):
+            return None
+        try:
+            if file_type(raw)[0] != mime:
+                return None
+        except ValueError:
+            return None
+        return capture, raw
+
+    return load
+
+
 def run_sync(conn, state, *, delay=.4, max_pages=1500, max_assets=5000,
              publish_content=False, allow_incomplete=False, page_map=None, notice_map=None,
-             base_url='', archive_notices=False, skip_pages=False):
+             base_url='', archive_notices=False, skip_pages=False, refresh_assets=False):
     """Use an autocommit connection so the crawl never holds a DB transaction open."""
     if not conn.autocommit:
         raise ValueError('run_sync requires an autocommit connection')
@@ -113,14 +154,19 @@ def run_sync(conn, state, *, delay=.4, max_pages=1500, max_assets=5000,
         return {'status': 'skipped', 'reason': 'Another synchronization is running'}
     state = Path(state)
     started = now()
+    started_clock = time.monotonic()
     committed = False
+    crawler = None
     try:
         state.mkdir(parents=True, exist_ok=True, mode=0o700)
         write_json(state / 'last-run.json', {'status': 'running', 'started_at': started})
-        # Every run starts without cached responses. Temporary downloads are removed
-        # afterwards, while proposed changes and their bytes are retained in PostgreSQL.
+        # Rebuild discovery each time, while validated attachment bytes survive runs.
+        # Bootstrap lazily from the DB so the first optimized run also avoids downloads.
         with tempfile.TemporaryDirectory(prefix='capture-', dir=state) as bundle:
-            capture = Capture(bundle, delay, verbose=False).crawl(max_pages, max_assets)
+            crawler = Capture(bundle, delay, verbose=False, cache_root=state / 'capture-cache',
+                refresh_assets=refresh_assets,
+                asset_loader=None if refresh_assets else imported_asset_loader(conn))
+            capture = crawler.crawl(max_pages, max_assets)
             write_json(state / 'capture-unavailable.json', capture.get('unavailable_resources', []))
             if not capture['complete'] and not allow_incomplete:
                 write_json(state / 'capture-errors.json', capture['errors'])
@@ -131,9 +177,11 @@ def run_sync(conn, state, *, delay=.4, max_pages=1500, max_assets=5000,
                     classify_navigation=True, notice_map=notice_map, sync=True,
                     archive_notices=archive_notices, skip_pages=skip_pages)
             committed = True
-        report.update(status='ok', started_at=started, completed_at=now())
         write_json(state / 'capture-errors.json', report['capture_errors'])
         report['pending_reviews'] = export_reviews(conn, state, base_url)
+        report.update(status='ok', started_at=started, completed_at=now(),
+            duration_seconds=round(time.monotonic() - started_clock, 3),
+            download_stats=crawler.stats, refresh_assets=refresh_assets)
         write_json(state / 'last-success.json', report)
         write_json(state / 'last-run.json', report)
         return report
@@ -141,7 +189,9 @@ def run_sync(conn, state, *, delay=.4, max_pages=1500, max_assets=5000,
         # Preserve the previous success marker, including when report export fails
         # after commit. The next import still cannot duplicate the committed items.
         write_json(state / 'last-run.json', dict(status='failed', started_at=started,
-            completed_at=now(), import_committed=committed, error_type=type(error).__name__))
+            completed_at=now(), import_committed=committed, error_type=type(error).__name__,
+            duration_seconds=round(time.monotonic() - started_clock, 3),
+            download_stats=crawler.stats if crawler else {}, refresh_assets=refresh_assets))
         raise
     finally:
         conn.execute(f'SELECT pg_advisory_unlock({SYNC_LOCK})')
@@ -150,8 +200,8 @@ def run_sync(conn, state, *, delay=.4, max_pages=1500, max_assets=5000,
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
-    run = commands.add_parser('run', help='Fresh capture, additive import and persistent review queue')
-    run.add_argument('--state', required=True, help='Private writable directory for reports and temporary downloads')
+    run = commands.add_parser('run', help='Fresh discovery, cached attachments and additive import with review queue')
+    run.add_argument('--state', required=True, help='Private writable directory for reports, persistent capture cache and temporary bundles')
     run.add_argument('--delay', type=float, default=.4)
     run.add_argument('--max-pages', type=int, default=1500)
     run.add_argument('--max-assets', type=int, default=5000)
@@ -159,6 +209,7 @@ def main():
     run.add_argument('--publish-content', action='store_true', help='Publish ordinary content. Notice visibility is controlled separately.')
     run.add_argument('--archive-notices', action='store_true', help='Import historical notices directly into the public archive without publication notifications.')
     run.add_argument('--skip-pages', action='store_true', help='Import documents, notices and calendar entries, excluding content pages, galleries and unrelated images.')
+    run.add_argument('--refresh-assets', action='store_true', help='Download known attachments again to detect files replaced at the same source URL.')
     run.add_argument('--page-map')
     run.add_argument('--notice-map')
     run.add_argument('--base-url', default=os.environ.get('OBEC_VEREJNA_URL', ''))
@@ -177,9 +228,11 @@ def main():
                 max_assets=args.max_assets, publish_content=args.publish_content,
                 allow_incomplete=args.allow_incomplete, base_url=args.base_url,
                 archive_notices=args.archive_notices, skip_pages=args.skip_pages,
+                refresh_assets=args.refresh_assets,
                 page_map=json.loads(Path(args.page_map).read_text()) if args.page_map else None,
                 notice_map=json.loads(Path(args.notice_map).read_text()) if args.notice_map else None)
-            summary = {key: report[key] for key in ('status', 'reason', 'pending_reviews') if key in report}
+            summary = {key: report[key] for key in ('status', 'reason', 'pending_reviews',
+                'duration_seconds', 'download_stats', 'refresh_assets') if key in report}
             summary.update({key: len(report[key]) for key in ('new', 'unchanged', 'conflicts', 'capture_errors', 'unavailable_resources', 'skipped_document_pages', 'grouped_gallery_pages', 'skipped_content') if key in report})
             print(json.dumps(summary, ensure_ascii=False), flush=True)
         elif args.command == 'reviews':

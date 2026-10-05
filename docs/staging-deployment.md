@@ -204,6 +204,13 @@ Přepínač `--skip-pages` vynechá obsahové stránky a galerie. Přepínač
 úřední desky rovnou do veřejného archivu a zachovává jejich názvy a přílohy.
 Nevyplněná zdrojová data zůstávají neznámá, datum importu se nevydává za
 datum vyvěšení nebo sejmutí. Import neodesílá oznámení odběratelům.
+Známé přílohy znovu nestahuje. Ověřené soubory přebírá z trvalé cache
+`/app/migration/capture-cache`, při prvním běhu i z databáze. Zdrojové stránky
+dál kontroluje kvůli novým odkazům. `last-success.json` obsahuje délku běhu
+`duration_seconds` a počty stažených či znovu použitých souborů v `download_stats`.
+Pro kontrolu souborů přepsaných na stejné zdrojové URL lze jednorázově spustit
+stejný příkaz importu s `--refresh-assets`. Běžný běh takovou změnu souboru
+nezjišťuje. Cache potřebuje místo pro jednu kopii knihovny příloh vedle databáze.
 Již importované koncepty vyžadují [jednorázový převod](migration.md#archive-existing-imported-notices).
 Až po úspěšném prvním importu zapnout rozvrh:
 
