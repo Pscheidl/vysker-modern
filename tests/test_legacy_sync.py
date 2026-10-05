@@ -8,7 +8,7 @@ import sys
 import tempfile
 from threading import Barrier
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from legacy import Capture, ORIGIN, digest, is_asset, source_key
@@ -27,6 +27,17 @@ def replace_bytes(root, item, raw):
     sha = digest(raw)
     (Path(root) / 'objects' / sha).write_bytes(raw)
     item['capture'] = dict(item['capture'], sha256=sha, size=len(raw))
+
+
+class ImportedAssetLoaderTests(unittest.TestCase):
+    def test_invalid_provenance_hash_is_rejected_before_querying_attachment_bytes(self):
+        for invalid in (None, 123, {}, [], 'A' * 64, '0' * 63, '../object'):
+            with self.subTest(sha256=invalid):
+                conn = Mock()
+                conn.execute.return_value.fetchall.return_value = [
+                    (FILE, dict(url=FILE, size=10, sha256=invalid), 1)]
+                self.assertIsNone(imported_asset_loader(conn)(FILE))
+                self.assertEqual(conn.execute.call_count, 1)
 
 
 @unittest.skipUnless(os.environ.get('TEST_DATABASE_URL'), 'Set TEST_DATABASE_URL or run scripts/test.sh')

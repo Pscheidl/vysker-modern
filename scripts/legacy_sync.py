@@ -5,6 +5,7 @@ from html import escape
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 import time
 from urllib.parse import quote, urlsplit
@@ -120,13 +121,15 @@ def imported_asset_loader(conn):
         # Old or incomplete provenance must not invent response headers or filenames.
         # Capture validates the original URL, byte hash, size and file signature too.
         expected_size = capture.get('size')
+        expected_hash = capture.get('sha256')
         if (capture.get('url') != url or type(expected_size) is not int
-                or not 0 <= expected_size <= 30 * 1024 * 1024):
+                or not 0 <= expected_size <= 30 * 1024 * 1024
+                or not isinstance(expected_hash, str) or not re.fullmatch('[a-f0-9]{64}', expected_hash)):
             return None
         row = conn.execute('''SELECT data, sha256, size_bytes, content_type FROM attachments
             WHERE id=%s AND data IS NOT NULL AND removed_at IS NULL
             AND size_bytes=%s AND octet_length(data)=%s AND sha256=%s''',
-            (attachment_id, expected_size, expected_size, capture.get('sha256'))).fetchone()
+            (attachment_id, expected_size, expected_size, expected_hash)).fetchone()
         if row is None:
             return None
         data, sha, size, mime = row
