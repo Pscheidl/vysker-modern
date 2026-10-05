@@ -210,7 +210,7 @@ def main():
     run.add_argument('--max-assets', type=int, default=5000)
     run.add_argument('--allow-incomplete', action='store_true')
     run.add_argument('--publish-content', action='store_true', help='Publish ordinary content. Notice visibility is controlled separately.')
-    run.add_argument('--archive-notices', action='store_true', help='Import historical notices directly into the public archive without publication notifications.')
+    run.add_argument('--archive-notices', action='store_true', help='Import historical notices directly into the public archive and notify current subscribers about new records.')
     run.add_argument('--skip-pages', action='store_true', help='Import documents, notices and calendar entries, excluding content pages, galleries and unrelated images.')
     run.add_argument('--refresh-assets', action='store_true', help='Download known attachments again to detect files replaced at the same source URL.')
     run.add_argument('--page-map')

@@ -241,6 +241,14 @@ async fn withdrawal_removes_bytes_but_preserves_record_metadata_and_audit() {
 #[tokio::test]
 async fn scheduled_publication_and_expiry_are_idempotent_in_prague_time() {
     let app = App::new().await;
+    let now = OffsetDateTime::now_utc();
+    common::request_subscription(&app.state, "archive-once@example.test", now)
+        .await
+        .unwrap();
+    let token = app.confirmation_token("archive-once@example.test").await;
+    backend::subscriptions::use_token(&app.state, &token, true, now)
+        .await
+        .unwrap();
     let id = app
         .notice(json!({"published_on":"2026-10-25","duration_days":2,"retain_attachments":true,"review":{"archive_basis":"Zveřejnění veřejných podkladů","archive_until":"2027-01-01"}}))
         .await;
@@ -282,6 +290,13 @@ async fn scheduled_publication_and_expiry_are_idempotent_in_prague_time() {
         .await
         .unwrap();
     assert_eq!(state, "published");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM mail_queue WHERE purpose='document'")
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap(),
+        1
+    );
     notices::maintenance(&app.state, datetime!(2026-10-26 23:01 UTC))
         .await
         .unwrap();
@@ -296,6 +311,20 @@ async fn scheduled_publication_and_expiry_are_idempotent_in_prague_time() {
     .await
     .unwrap();
     assert_eq!(count, 1);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM mail_queue WHERE purpose='document'")
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM publication_outbox")
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap(),
+        0
+    );
     let preserved: bool = sqlx::query_scalar(
         "SELECT data IS NOT NULL AND removed_at IS NULL FROM attachments WHERE id=$1",
     )

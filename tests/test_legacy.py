@@ -7,7 +7,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
-from datetime import date
+from datetime import date, datetime
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from legacy import Capture, canonical, digest, extract, source_key, event_timing, markdown, dates
@@ -98,6 +98,28 @@ def add_image(root, data, url, parents, title='Příloha obrázek'):
     data['assets'].append(image)
     (Path(root) / 'manifest.json').write_text(json.dumps(data))
     return image
+
+
+def subscription_fixture(conn):
+    """Include each subscriber and consent state relevant to publication delivery."""
+    conn.execute("INSERT INTO consent_notices VALUES ('legacy-test','test','Souhlas','{}')")
+    records = {}
+    for name in ('active', 'active_other', 'pending', 'unverified', 'unsubscribed',
+                 'withdrawn', 'superseded', 'no_consent'):
+        subscriber_id = conn.execute('''INSERT INTO subscribers
+            (email,verified_at,unsubscribed_at,retention_started_at)
+            VALUES (%s,%s,%s,1) RETURNING id''',
+            (name + '@example.test', None if name in ('pending', 'unverified') else 2,
+             3 if name == 'unsubscribed' else None)).fetchone()[0]
+        consent_id = None
+        if name != 'no_consent':
+            consent_id = conn.execute('''INSERT INTO subscription_consents
+                (subscriber_id,notice_fingerprint,requested_at,confirmed_at,withdrawn_at,superseded_at)
+                VALUES (%s,'legacy-test',1,%s,%s,%s) RETURNING id''',
+                (subscriber_id, None if name == 'pending' else 2,
+                 3 if name == 'withdrawn' else None, 3 if name == 'superseded' else None)).fetchone()[0]
+        records[name] = (subscriber_id, consent_id)
+    return records
 
 
 class ExtractionTests(unittest.TestCase):
@@ -330,9 +352,10 @@ class ImportTests(unittest.TestCase):
             self.assertEqual(conn.execute('SELECT count(*) FROM pages').fetchone()[0], 0)
             self.assertEqual(conn.execute('SELECT count(*) FROM attachments WHERE notice_id IS NOT NULL').fetchone()[0], 1)
 
-    def test_archive_import_keeps_navigation_files_and_provenance_without_notifications(self):
+    def test_archive_import_notifies_active_subscribers_and_keeps_files_and_provenance(self):
         navigation_bundle(self.root)
         with connect(self.url) as conn:
+            subscribers = subscription_fixture(conn)
             result = import_bundle(conn, self.root, publish_content=True,
                 classify_navigation=True, archive_notices=True)
             self.assertEqual(result['classification'], {'notice': 1, 'document': 1})
@@ -347,6 +370,16 @@ class ImportTests(unittest.TestCase):
             self.assertFalse(imported[0])
             self.assertTrue(imported[1]['archive_import'])
             self.assertTrue(conn.execute('SELECT metadata FROM legacy_sources WHERE notice_id IS NOT NULL').fetchone()[0]['archive_import'])
+            notice_id = conn.execute('SELECT id FROM notices').fetchone()[0]
+            document_id = conn.execute('SELECT id FROM documents').fetchone()[0]
+            created_at = int(datetime.fromisoformat(result['imported_at']).timestamp())
+            expected = [(notice_id, None, *subscribers[name], created_at) for name in ('active', 'active_other')]
+            expected += [(None, document_id, *subscribers[name], created_at) for name in ('active', 'active_other')]
+            self.assertEqual(conn.execute('''SELECT notice_id,document_id,subscriber_id,consent_id,created_at
+                FROM publication_outbox ORDER BY id''').fetchall(), expected)
+            # A later confirmation must not join an existing publication's recipients.
+            conn.execute('UPDATE subscribers SET verified_at=4 WHERE id=%s', (subscribers['pending'][0],))
+            conn.execute('UPDATE subscription_consents SET confirmed_at=4 WHERE id=%s', (subscribers['pending'][1],))
             conn.execute("UPDATE notices SET title='Upravený místní název'")
             repeated = import_bundle(conn, self.root, publish_content=True,
                 classify_navigation=True, archive_notices=True)
@@ -354,12 +387,14 @@ class ImportTests(unittest.TestCase):
             self.assertEqual(conn.execute('SELECT title FROM notices').fetchone()[0], 'Upravený místní název')
             self.assertEqual(conn.execute('SELECT count(*) FROM notice_events').fetchone()[0], 0)
             self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
+            self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox').fetchone()[0], 4)
 
     def test_archive_import_handles_structured_notices_without_a_known_posting_date(self):
         data = bundle(self.root, notice=True)
         data['pages'][0]['dates'] = {}
         (Path(self.root) / 'manifest.json').write_text(json.dumps(data))
         with connect(self.url) as conn:
+            subscribers = subscription_fixture(conn)
             plan, _, _ = prepare(conn, self.root, archive_notices=True)
             self.assertIn(data['pages'][0]['key'], plan['new'])
             import_bundle(conn, self.root, archive_notices=True)
@@ -371,6 +406,50 @@ class ImportTests(unittest.TestCase):
             self.assertTrue(conn.execute('SELECT metadata FROM legacy_notice_imports').fetchone()[0]['archive_import'])
             self.assertEqual(conn.execute('SELECT count(*) FROM notice_events').fetchone()[0], 0)
             self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
+            notice_id = conn.execute('SELECT id FROM notices').fetchone()[0]
+            self.assertEqual(conn.execute('''SELECT notice_id,document_id,subscriber_id,consent_id
+                FROM publication_outbox ORDER BY id''').fetchall(),
+                [(notice_id, None, *subscribers[name]) for name in ('active', 'active_other')])
+
+    def test_consumed_notifications_and_new_attachments_do_not_repeat_a_notice_publication(self):
+        data = bundle(self.root, notice=True)
+        with connect(self.url) as conn:
+            subscription_fixture(conn)
+            import_bundle(conn, self.root, archive_notices=True)
+            self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox').fetchone()[0], 2)
+            # The worker removes processed outbox entries after queuing messages.
+            conn.execute('DELETE FROM publication_outbox')
+            extra = copy.deepcopy(data['assets'][0])
+            extra.update(url=FILE.replace('123', '456'), title='Doplněná příloha')
+            data['assets'].append(extra)
+            (Path(self.root) / 'manifest.json').write_text(json.dumps(data))
+            result = import_bundle(conn, self.root, archive_notices=True, sync=True)
+            self.assertEqual(result['new'], [source_key(extra['url'])])
+            self.assertEqual(conn.execute('SELECT count(*) FROM notices').fetchone()[0], 1)
+            self.assertEqual(conn.execute('SELECT count(*) FROM attachments').fetchone()[0], 2)
+            self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox').fetchone()[0], 0)
+
+    def test_existing_public_imports_are_not_backfilled_for_new_subscribers(self):
+        navigation_bundle(self.root)
+        with connect(self.url) as conn:
+            import_bundle(conn, self.root, publish_content=True, classify_navigation=True, archive_notices=True)
+            subscription_fixture(conn)
+            result = import_bundle(conn, self.root, publish_content=True, classify_navigation=True,
+                                   archive_notices=True, sync=True)
+            self.assertEqual(result['new'], [])
+            self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox').fetchone()[0], 0)
+
+    def test_failed_public_import_rolls_back_records_and_notification_recipients(self):
+        navigation_bundle(self.root)
+        with connect(self.url) as conn:
+            subscription_fixture(conn)
+        with self.assertRaisesRegex(RuntimeError, 'rollback'), connect(self.url) as conn:
+            import_bundle(conn, self.root, publish_content=True, classify_navigation=True, archive_notices=True)
+            self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox').fetchone()[0], 4)
+            raise RuntimeError('rollback')
+        with connect(self.url) as conn:
+            for table in ('publication_outbox', 'legacy_sources', 'notices', 'documents', 'attachments'):
+                self.assertEqual(conn.execute('SELECT count(*) FROM ' + table).fetchone()[0], 0)
 
     def test_archive_import_does_not_schedule_future_source_notices_or_convert_existing_drafts(self):
         data = bundle(self.root, notice=True)
@@ -390,6 +469,7 @@ class ImportTests(unittest.TestCase):
         data = navigation_bundle(self.root)
         with patch.dict(os.environ, LOCAL_PREVIEW_ENV):
             with connect(self.url) as conn:
+                subscription_fixture(conn)
                 result = import_bundle(conn, self.root, publish_content=True, classify_navigation=True, preview_notices=True)
                 self.assertEqual(result['classification'], {'notice':1, 'document':1})
                 self.assertEqual(conn.execute('SELECT title,published_on,withdraw_on,status FROM notices').fetchone(), ('Zápis',None,None,'archived'))
@@ -399,6 +479,7 @@ class ImportTests(unittest.TestCase):
                 self.assertEqual(len(result['skipped_document_pages']), 2)
                 self.assertEqual(conn.execute('SELECT count(*) FROM notice_events').fetchone()[0], 0)
                 self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
+                self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox').fetchone()[0], 0)
                 notice_metadata = conn.execute('SELECT metadata FROM legacy_notice_imports').fetchone()[0]
                 self.assertIn(data['pages'][0]['key'], notice_metadata['navigation'])
                 again = import_bundle(conn, self.root, publish_content=True, classify_navigation=True, preview_notices=True)
@@ -523,6 +604,7 @@ class ImportTests(unittest.TestCase):
                 'key': source_key(URL), 'url': URL, 'documents': [source_key(FILE)], 'already_imported': False}])
             self.assertEqual(conn.execute('SELECT count(*) FROM pages').fetchone()[0], 0)
         with connect(self.url) as conn:
+            subscription_fixture(conn)
             first = import_bundle(conn, self.root)
             self.assertEqual(len(first['new']), 1)
         with connect(self.url) as conn:
@@ -530,6 +612,7 @@ class ImportTests(unittest.TestCase):
             self.assertEqual(len(second['new']), 0)
             self.assertEqual(len(second['unchanged']), 1)
             self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
+            self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox').fetchone()[0], 0)
             self.assertEqual(conn.execute('SELECT count(*) FROM page_revisions').fetchone()[0], 0)
             self.assertEqual(conn.execute('SELECT count(*) FROM pages').fetchone()[0], 0)
             self.assertEqual(conn.execute('SELECT published_at FROM documents').fetchone()[0], None)
@@ -559,6 +642,7 @@ class ImportTests(unittest.TestCase):
         data['pages'][0]['content'] += f'\n[Další zápis](<{second["url"]}>)'
         add_page(self.root, data, f'<div id="stred"><h1>Další stránka</h1><a href="{FILE}">Zápis</a></div>')
         with connect(self.url) as conn:
+            subscribers = subscription_fixture(conn)
             first = import_bundle(conn, self.root, publish_content=True, page_map={source_key(URL): 'dokumenty'})
             self.assertEqual(len(first['skipped_document_pages']), 2)
             self.assertEqual(first['skipped_document_pages'][0]['documents'], sorted([source_key(FILE), source_key(second['url'])]))
@@ -569,6 +653,11 @@ class ImportTests(unittest.TestCase):
             repeated = import_bundle(conn, self.root, publish_content=True)
             self.assertEqual(repeated['new'], [])
             self.assertEqual(len(repeated['unchanged']), 2)
+            document_ids = [row[0] for row in conn.execute('SELECT id FROM documents ORDER BY id')]
+            self.assertEqual(conn.execute('''SELECT notice_id,document_id,subscriber_id,consent_id
+                FROM publication_outbox ORDER BY id''').fetchall(),
+                [(None, document_id, *subscribers[name]) for document_id in document_ids
+                 for name in ('active', 'active_other')])
 
     def test_plain_pages_and_image_articles_keep_their_content_and_revisions(self):
         data = bundle(self.root, document_links=False)
@@ -636,12 +725,14 @@ class ImportTests(unittest.TestCase):
     def test_preview_does_not_publish_notices_or_their_files(self):
         bundle(self.root, notice=True)
         with connect(self.url) as conn:
+            subscription_fixture(conn)
             import_bundle(conn, self.root, publish_content=True)
             self.assertEqual(conn.execute('SELECT status,retain_attachments,published_at FROM notices').fetchone(), ('draft', False, None))
             self.assertEqual(conn.execute('SELECT count(*) FROM documents').fetchone()[0], 0)
             self.assertIsNotNone(conn.execute('SELECT notice_id FROM attachments').fetchone()[0])
             self.assertEqual(conn.execute('SELECT count(*) FROM notice_events').fetchone()[0], 0)
             self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
+            self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox').fetchone()[0], 0)
 
     def test_incomplete_capture_is_explicit(self):
         data = bundle(self.root)

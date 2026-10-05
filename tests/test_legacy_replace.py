@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -20,7 +21,8 @@ from test_legacy import add_page, navigation_bundle, FILE
 STAGING = {'OBEC_PRODUCTION': 'false', 'OBEC_VEREJNA_URL': 'https://staging.example.test'}
 TABLES = ('pages', 'page_revisions', 'page_images', 'documents', 'notices', 'events',
           'attachments', 'notice_events', 'legacy_sources', 'legacy_notice_imports',
-          'legacy_sync_reviews', 'audit_log', 'administrators', 'subscribers', 'mail_settings', 'mail_queue')
+          'legacy_sync_reviews', 'audit_log', 'administrators', 'subscribers', 'mail_settings',
+          'mail_queue', 'publication_outbox')
 
 
 class StagingGuardTests(unittest.TestCase):
@@ -73,6 +75,84 @@ class ReplaceTests(unittest.TestCase):
 
     def snapshot(self, conn):
         return {table: conn.execute('SELECT * FROM ' + table + ' ORDER BY 1').fetchall() for table in TABLES}
+
+    def subscriber(self, conn, address):
+        conn.execute("INSERT INTO consent_notices VALUES ('replacement','1','Consent','{}') ON CONFLICT DO NOTHING")
+        subscriber = conn.execute('''INSERT INTO subscribers(email,verified_at,retention_started_at)
+            VALUES (%s,1,1) RETURNING id''', (address,)).fetchone()[0]
+        consent = conn.execute('''INSERT INTO subscription_consents
+            (subscriber_id,notice_fingerprint,requested_at,confirmed_at)
+            VALUES (%s,'replacement',1,1) RETURNING id''', (subscriber,)).fetchone()[0]
+        return subscriber, consent
+
+    def test_replacement_notifies_first_public_drafts_and_new_sources_only(self):
+        new_file = copy.deepcopy(self.data['assets'][1])
+        new_file.update(url=FILE.replace('123', '789'), title='Nový dokument')
+        self.data['assets'].append(new_file)
+        (Path(self.root) / 'manifest.json').write_text(json.dumps(self.data))
+        with connect(self.url) as conn:
+            recipient, _ = self.subscriber(conn, 'original@example.test')
+            # A document removed from the library is still an existing publication.
+            conn.execute("UPDATE documents SET status='archived'")
+            first = replace_import(conn, self.root, self.source_count, archive_notices=True, skip_pages=True)
+            queued = conn.execute('''SELECT coalesce(n.title,d.title),o.subscriber_id
+                FROM publication_outbox o LEFT JOIN notices n ON n.id=o.notice_id
+                LEFT JOIN documents d ON d.id=o.document_id ORDER BY 1''').fetchall()
+            self.assertEqual(queued, [('Nový dokument', recipient), ('Zápis', recipient)])
+            self.subscriber(conn, 'later@example.test')
+            replace_import(conn, self.root, first['resulting_source_count'], archive_notices=True, skip_pages=True)
+            self.assertEqual(conn.execute('''SELECT coalesce(n.title,d.title),o.subscriber_id
+                FROM publication_outbox o LEFT JOIN notices n ON n.id=o.notice_id
+                LEFT JOIN documents d ON d.id=o.document_id ORDER BY 1''').fetchall(), queued)
+
+    def test_replacement_preserves_pending_recipients_and_mail_links_and_deduplication(self):
+        with connect(self.url) as conn:
+            first = replace_import(conn, self.root, self.source_count, archive_notices=True, skip_pages=True)
+            old_notice = conn.execute('SELECT id FROM notices').fetchone()[0]
+            old_document = conn.execute('SELECT id FROM documents').fetchone()[0]
+            recipients = [self.subscriber(conn, f'{state}@example.test') for state in ('pending', 'sent', 'cancelled')]
+            conn.execute('''INSERT INTO publication_outbox
+                (notice_id,subscriber_id,consent_id,created_at) VALUES (%s,%s,%s,11)''',
+                (old_notice, *recipients[0]))
+            mail_ids = []
+            for (subscriber, consent), state in zip(recipients, ('pending', 'sent', 'cancelled')):
+                mail_ids.append(conn.execute('''INSERT INTO mail_queue
+                    (subscriber_id,consent_id,purpose,deduplication_key,subject,body,
+                     next_attempt_at,created_at,sent_at,cancelled,attempts)
+                    VALUES (%s,%s,'document',%s,'Document',%s,123,11,%s,%s,2) RETURNING id''',
+                    (subscriber, consent, f'document:{old_document}:{subscriber}',
+                     f'https://staging.example.test/dokumenty/{old_document}\n\nUnsubscribe token remains intact\n'
+                     if state == 'pending' else None, 12 if state == 'sent' else None,
+                     state == 'cancelled')).fetchone()[0])
+            self.subscriber(conn, 'later@example.test')
+            replace_import(conn, self.root, first['resulting_source_count'], archive_notices=True, skip_pages=True)
+            new_notice = conn.execute('SELECT id FROM notices').fetchone()[0]
+            new_document = conn.execute('SELECT id FROM documents').fetchone()[0]
+            self.assertNotEqual(old_notice, new_notice)
+            self.assertNotEqual(old_document, new_document)
+            self.assertEqual(conn.execute('''SELECT notice_id,subscriber_id,consent_id,created_at
+                FROM publication_outbox''').fetchall(), [(new_notice, *recipients[0], 11)])
+            rows = conn.execute('''SELECT id,deduplication_key,body,sent_at,cancelled,next_attempt_at,attempts
+                FROM mail_queue ORDER BY id''').fetchall()
+            self.assertEqual([row[0] for row in rows], mail_ids)
+            self.assertEqual([row[1] for row in rows], [f'document:{new_document}:{subscriber}' for subscriber, _ in recipients])
+            self.assertEqual(rows[0][2], f'https://staging.example.test/dokumenty/{new_document}\n\nUnsubscribe token remains intact\n')
+            self.assertEqual([row[3:] for row in rows], [(None, False, 123, 2), (12, False, 123, 2), (None, True, 123, 2)])
+            self.assertEqual([row[2] for row in rows[1:]], [None, None])
+
+    def test_replacement_refuses_an_active_smtp_lease_without_changing_records(self):
+        with connect(self.url) as conn:
+            subscriber, consent = self.subscriber(conn, 'leased@example.test')
+            document = conn.execute('SELECT id FROM documents').fetchone()[0]
+            conn.execute('''INSERT INTO mail_queue
+                (subscriber_id,consent_id,purpose,deduplication_key,subject,body,
+                 next_attempt_at,created_at,locked_until,lock_token)
+                VALUES (%s,%s,'document',%s,'Document','Original body',1,1,%s,'lease')''',
+                (subscriber, consent, f'document:{document}:{subscriber}', int(time.time()) + 300))
+            before = self.snapshot(conn)
+            with self.assertRaisesRegex(ValueError, 'mail is being delivered'):
+                replace_import(conn, self.root, self.source_count, archive_notices=True, skip_pages=True)
+            self.assertEqual(self.snapshot(conn), before)
 
     def test_replacement_imports_only_documents_archived_notices_and_events(self):
         with connect(self.url) as conn:
@@ -151,6 +231,11 @@ class ReplaceTests(unittest.TestCase):
 
     def test_failure_after_reset_automatically_rolls_back_even_when_caller_catches_it(self):
         with connect(self.url) as conn:
+            subscriber, consent = self.subscriber(conn, 'rollback@example.test')
+            document = conn.execute('SELECT id FROM documents').fetchone()[0]
+            conn.execute('''INSERT INTO publication_outbox
+                (document_id,subscriber_id,consent_id,created_at) VALUES (%s,%s,%s,11)''',
+                (document, subscriber, consent))
             before = self.snapshot(conn)
             with patch('legacy_replace.import_bundle', side_effect=RuntimeError('forced import failure')):
                 with self.assertRaisesRegex(RuntimeError, 'forced import failure'):

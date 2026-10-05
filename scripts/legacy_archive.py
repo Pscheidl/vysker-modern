@@ -8,6 +8,7 @@ from pathlib import Path
 from psycopg.rows import dict_row
 
 from legacy import now
+from legacy_notifications import queue_publication
 from legacy_scope import archive_review
 from postgres import connect
 
@@ -65,7 +66,7 @@ def plan_archive(conn):
 
 
 def archive_imported_notices(conn, expected_count):
-    """Caller owns the transaction. No publication evidence or mail is generated."""
+    """Caller owns the transaction. First public availability notifies subscribers."""
     if type(expected_count) is not int or expected_count < 0:
         raise ValueError('Expected count must be a non-negative integer')
     conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':vysker-write', 0))")
@@ -82,6 +83,7 @@ def archive_imported_notices(conn, expected_count):
             (json.dumps(review, ensure_ascii=False), timestamp, notice_id))
         conn.execute('''INSERT INTO audit_log(occurred_at,operation,entity_type,entity_id)
             VALUES (%s,'legacy_archived','notice',%s)''', (timestamp, notice_id))
+        queue_publication(conn, timestamp, notice_id=notice_id)
     report.update(archived_count=expected_count, archived_ids=report['candidate_ids'].copy(), archived_at=timestamp)
     return report
 

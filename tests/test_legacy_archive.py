@@ -11,6 +11,7 @@ from legacy import digest
 from legacy_archive import archive_imported_notices, plan_archive
 from legacy_scope import archive_review
 from postgres import connect, temporary_database
+from test_legacy import subscription_fixture
 
 
 STAMP = '2026-10-01T12:00:00+00:00'
@@ -63,6 +64,7 @@ class ArchiveTests(unittest.TestCase):
         unchanged = ('legacy_sources', 'legacy_notice_imports', 'attachments',
                      'pages', 'documents', 'events', 'notice_events', 'mail_queue')
         with connect(self.url) as conn:
+            subscribers = subscription_fixture(conn)
             unknown, _ = self.imported(conn)
             dated, _ = self.imported(conn, posted='2020-03-02', end='2020-03-20')
             text_only, _ = self.imported(conn, attachment=False)
@@ -89,6 +91,10 @@ class ArchiveTests(unittest.TestCase):
                 self.assertEqual(json.loads(review), dict(original_reference='https://vysker.cz/puvodni', **archive_review('Původní zápis')))
             operations = conn.execute("SELECT operation,count(*) FROM audit_log WHERE entity_type='notice' GROUP BY operation ORDER BY operation").fetchall()
             self.assertEqual(operations, [('legacy_archived', 3), ('legacy_imported', 3)])
+            self.assertEqual(conn.execute('''SELECT notice_id,document_id,subscriber_id,consent_id
+                FROM publication_outbox ORDER BY id''').fetchall(),
+                [(notice_id, None, *subscribers[name]) for notice_id in (unknown, dated, text_only)
+                 for name in ('active', 'active_other')])
 
     def test_native_scheduled_edited_and_previously_published_records_are_excluded(self):
         with connect(self.url) as conn:
@@ -138,25 +144,30 @@ class ArchiveTests(unittest.TestCase):
 
     def test_expected_count_guard_and_failure_roll_back_the_whole_conversion(self):
         with connect(self.url) as conn:
+            subscription_fixture(conn)
             self.imported(conn)
             self.imported(conn)
-            before = self.snapshot(conn, ('notices', 'audit_log'))
+            before = self.snapshot(conn, ('notices', 'audit_log', 'publication_outbox'))
         with self.assertRaisesRegex(ValueError, 'Expected 1.*found 2'), connect(self.url) as conn:
             archive_imported_notices(conn, 1)
         with self.assertRaisesRegex(RuntimeError, 'forced failure'), connect(self.url) as conn:
             with patch('legacy_archive.archive_review', side_effect=[archive_review('Původní zápis'), RuntimeError('forced failure')]):
                 archive_imported_notices(conn, 2)
         with connect(self.url) as conn:
-            self.assertEqual(self.snapshot(conn, ('notices', 'audit_log')), before)
+            self.assertEqual(self.snapshot(conn, tuple(before)), before)
 
     def test_idempotence_and_standard_write_lock(self):
         with connect(self.url) as conn:
+            subscribers = subscription_fixture(conn)
             self.imported(conn)
         with connect(self.url) as conn, connect(self.url, autocommit=True) as concurrent:
             archive_imported_notices(conn, 1)
             self.assertFalse(concurrent.execute(f'SELECT pg_try_advisory_lock({WRITE_LOCK})').fetchone()[0])
         with connect(self.url) as conn:
-            before = self.snapshot(conn, ('notices', 'audit_log', 'legacy_sources', 'attachments'))
+            conn.execute('UPDATE subscribers SET verified_at=4 WHERE id=%s', (subscribers['pending'][0],))
+            conn.execute('UPDATE subscription_consents SET confirmed_at=4 WHERE id=%s', (subscribers['pending'][1],))
+            self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox').fetchone()[0], 2)
+            before = self.snapshot(conn, ('notices', 'audit_log', 'legacy_sources', 'attachments', 'publication_outbox'))
             report = archive_imported_notices(conn, 0)
             self.assertEqual(report['archived_count'], 0)
             self.assertEqual(report['archived_ids'], [])

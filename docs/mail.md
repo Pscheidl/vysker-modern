@@ -9,6 +9,14 @@ The selected service must allow the configured From address and provide SMTP
 credentials. A website-specific password or service credential can be rotated
 without changing a person's mailbox password.
 
+New public documents imported directly into PostgreSQL, including notices added
+straight to the archive, save a notification request in `publication_outbox`.
+The running web checks this table through its regular mail worker every 30 seconds
+and transfers requests to `mail_queue`. Both steps retain their data across web
+restarts. Only subscribers with active, confirmed consent at import time receive
+the announcement, and delivery rechecks that consent. Repeated imports and moving
+an already published notice to the archive do not announce it again.
+
 ## Google from the administration
 
 Production can start without any SMTP credentials in deployment files. Follow

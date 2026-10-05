@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from legacy import Capture, VERSION, canonical, digest, file_type, now, source_key
 from legacy_galleries import group_galleries
+from legacy_notifications import queue_publication
 from legacy_scope import notice_sections, notice_values, require_local_preview, source_dates
 from postgres import connect
 
@@ -194,7 +195,8 @@ def audit(conn, kind, id, timestamp):
 
 def import_bundle(conn, root, publish_content=False, allow_incomplete=False, page_map=None,
                   classify_navigation=False, preview_notices=False, notice_map=None, attachment_ids=None,
-                  sync=False, archive_notices=False, skip_pages=False):
+                  sync=False, archive_notices=False, skip_pages=False,
+                  notification_excluded_source_keys=None):
     """Caller owns transaction. Sync queues conflicts and imports only new identities."""
     if archive_notices and preview_notices:
         raise ValueError('Archive and preview notice imports are mutually exclusive')
@@ -216,6 +218,7 @@ def import_bundle(conn, root, publish_content=False, allow_incomplete=False, pag
     sections = report.get('notice_sections', {})
     categories = dict(conn.execute('SELECT name,id FROM categories'))
     attachment_ids = attachment_ids or {}
+    notification_excluded_source_keys = set(notification_excluded_source_keys or ())
     # Ordinary content and the isolated notice rehearsal have separate publication flags.
     routes = dict(conn.execute('SELECT source_key,destination FROM legacy_sources').fetchall())
     notice_keys = {item['key'] for item in items if item.get('kind') == 'notice'}
@@ -226,6 +229,7 @@ def import_bundle(conn, root, publish_content=False, allow_incomplete=False, pag
         if item['key'] not in new:
             continue
         page_id = document_id = attachment_id = notice_id = event_id = None
+        new_publication = False
         metadata = {k: item.get(k) for k in ('dates', 'event', 'warnings', 'parents', 'evidence', 'capture')}
         metadata['original_title'] = item['title']
         for key in ('page_alias', 'gallery_members'):
@@ -257,6 +261,7 @@ def import_bundle(conn, root, publish_content=False, allow_incomplete=False, pag
                      values['withdraw_on'], values['status'], preview_notices or archive_notices,
                      json.dumps(values['review'], ensure_ascii=False), timestamp, timestamp)).fetchone()[0]
                 notice_metadata = values['metadata']
+                new_publication = values['status'] in ('published', 'archived')
                 metadata.update(notice_metadata)
                 audit(conn, 'notice', notice_id, timestamp)
                 for issue in values['issues']:
@@ -266,10 +271,11 @@ def import_bundle(conn, root, publish_content=False, allow_incomplete=False, pag
                 posted = source_dates(item).get('published_on')
                 if posted:
                     description += ' Původní web uváděl zveřejnění dne ' + date.fromisoformat(posted).strftime('%d. %m. %Y') + '.'
+                document_status = 'published' if publish_content and (classify_navigation or not notice_keys.intersection(item.get('parents', []))) else 'draft'
                 document_id = conn.execute("INSERT INTO documents(title,description,status,created_at,published_at,source_published_on) VALUES (%s,%s,%s,%s,NULL,%s) RETURNING id",
-                    (item['title'][:300], description,
-                     'published' if publish_content and (classify_navigation or not notice_keys.intersection(item.get('parents', []))) else 'draft', timestamp,
+                    (item['title'][:300], description, document_status, timestamp,
                      posted)).fetchone()[0]
+                new_publication = document_status == 'published'
             raw = capture.blob(item['capture']['sha256'])
             columns, arguments = '', ()
             if item['key'] in attachment_ids:
@@ -290,6 +296,7 @@ def import_bundle(conn, root, publish_content=False, allow_incomplete=False, pag
                     (item['title'][:300], item['content'], values['category_id'], values['published_on'],
                      values['withdraw_on'], json.dumps(values['review'], ensure_ascii=False), timestamp, timestamp)).fetchone()[0]
                 notice_metadata = values['metadata']
+                new_publication = True
                 metadata.update(notice_metadata)
                 for issue in values['issues']:
                     report['review'].append({'key': item['key'], 'reason': issue})
@@ -326,6 +333,8 @@ def import_bundle(conn, root, publish_content=False, allow_incomplete=False, pag
             conn.execute('''INSERT INTO legacy_notice_imports(source_key,notice_id,imported_at,preview_published,metadata)
                 VALUES (%s,%s,%s,%s,%s::jsonb)''',
                 (item['key'], notice_id, timestamp, preview_notices, json.dumps(notice_metadata, ensure_ascii=False)))
+        if new_publication and not preview_notices and item['key'] not in notification_excluded_source_keys:
+            queue_publication(conn, timestamp, notice_id=notice_id, document_id=document_id)
     unresolved = set()
     for page_id, page_slug, item in new_pages:
         def rewrite(match):
@@ -373,7 +382,7 @@ def main():
     parser.add_argument('--notice-map', help='Optional JSON mapping of source section keys to notice categories')
     notice_mode = parser.add_mutually_exclusive_group()
     notice_mode.add_argument('--preview-notices', action='store_true', help='Make imported notices visible only in an isolated local preview.')
-    notice_mode.add_argument('--archive-notices', action='store_true', help='Import historical notices directly into the public archive, preserving their files without publication notifications.')
+    notice_mode.add_argument('--archive-notices', action='store_true', help='Import historical notices directly into the public archive and notify current subscribers about new records.')
     parser.add_argument('--publish-content', action='store_true', help='Publish ordinary content. Notice visibility is controlled separately.')
     args = parser.parse_args()
     with connect() as conn:

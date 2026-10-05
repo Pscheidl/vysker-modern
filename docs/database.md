@@ -31,6 +31,7 @@ internal `_sqlx_migrations` table are exceptions. Municipal content stays Czech.
 | `rate_limits` | Atomic request counters |
 | `subscribers` | Newsletter subscribers |
 | `subscription_tokens` | Hashed verification and unsubscribe tokens |
+| `publication_outbox` | Import-time recipients awaiting conversion to newsletter messages |
 | `mail_queue` | Durable queue and SMTP acceptance history |
 | `audit_log` | Operation history protected during retention |
 | `consent_notices` | Immutable subscription wording and policy snapshots |
@@ -67,6 +68,13 @@ Mail workers claim queue entries atomically with `FOR UPDATE SKIP LOCKED` and a
 lease token. Search counts and result pages share a repeatable-read snapshot.
 Rate limits use atomic upserts. Unique constraints protect normalized email
 addresses, active consents and notification deduplication keys.
+
+Public document and archive imports save recipient and consent IDs in
+`publication_outbox` inside the content transaction. The web mail worker converts
+these entries into `mail_queue` messages atomically, rechecking consent and public
+visibility. Importers and the web must use the same database and schema. Apply
+application migrations before running updated import scripts. Existing public
+records are not backfilled by the migration.
 
 ## Development and test instances
 

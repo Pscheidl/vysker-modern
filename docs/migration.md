@@ -99,11 +99,14 @@ are omitted unless they are document downloads or belong to an imported notice
 or calendar entry. This option is supported by both `legacy_import.py` and
 `legacy_sync.py run`. It does not delete content imported by earlier runs.
 
-`--publish-content` publishes ordinary pages, documents and calendar entries for
-a reviewed test environment. Notices remain drafts unless `--archive-notices`
-is also selected for a public historical archive. This option does not send
-subscription notifications. It also does not publish previously imported drafts
-on a repeated run. Use the administration for subsequent editorial decisions.
+`--publish-content` publishes ordinary pages, documents and calendar entries.
+Notices remain drafts unless `--archive-notices` is also selected for a public
+historical archive. Every newly public document or archived notice queues an
+email for subscribers with confirmed, active consent at import time. The
+application mail worker sends these messages through its normal mail queue.
+Private drafts and local `--preview-notices` rehearsals do not queue notifications.
+Repeated imports do not publish earlier drafts, repeat notifications or notify
+subscribers who confirmed later. Use the administration for subsequent editorial decisions.
 
 Incomplete captures are refused by default. After reading the capture errors,
 `--allow-incomplete` allows the successfully captured subset to be imported.
@@ -198,11 +201,14 @@ to stdout on success, and keeps these private files in `/app/migration`:
 - `capture-cache/`: private reusable response metadata and verified source bytes
 
 Monitor the age of `last-success.json`, failures and `pending_reviews`. Unchanged
-source items do not create new reviews. No subscriber emails are sent. By default,
+source items do not create new reviews or notifications. By default,
 new content is private. The example's `--publish-content` publishes new ordinary
 pages, documents and events, while notices remain drafts for editorial review.
 Add `--archive-notices` to `legacy_sync.py run` to put new historical notices
 directly into the public archive instead.
+New published documents and new archived notices notify current confirmed
+subscribers. Added attachments, source changes awaiting review and moving a
+previously published notice to the archive do not create another notification.
 Previously imported drafts keep their existing publication state.
 
 Incomplete captures fail without database changes by default. Only after reviewing
@@ -326,7 +332,12 @@ active notices, even when a source date is missing or lies in the future.
 Their original titles and attachments remain available, with archive retention
 set to `9999-12-31`. The operator can subsequently change the retention policy.
 Original dates are preserved without manufacturing publication or withdrawal
-timestamps. The import does not create publication evidence or send notifications.
+timestamps. The import does not create historical publication evidence. It queues
+a notification about each new archived notice for current confirmed subscribers.
+Recipients and their consent IDs are saved in `publication_outbox` in the same
+transaction as the import. Delivery rechecks public visibility and active consent,
+uses the usual document email format and includes an unsubscribe link. Existing
+public imports are not backfilled when this feature is enabled.
 This mode cannot be combined with `--preview-notices`. Without either flag,
 notices remain private drafts. The staging systemd service selects archive mode.
 
@@ -351,9 +362,10 @@ updates archive status, title retention and attachment retention in one
 transaction under the application's write lock. Native drafts, scheduled notices,
 edited imports, pages, documents and calendar entries are left unchanged.
 Existing IDs, original dates and attachment bytes are preserved. Each converted
-notice gets an audit entry, without a fabricated publication or withdrawal event
-and without subscriber mail. Repeating the plan after conversion finds no
-remaining candidates.
+notice gets an audit entry without a fabricated publication or withdrawal event.
+Because the private draft becomes publicly available for the first time, current
+confirmed subscribers receive a notification. Repeating the plan after conversion
+finds no remaining candidates and queues no additional messages.
 
 The older `legacy_reconcile.py` workflow made copies of already imported files.
 It is retained for older rehearsals, but is not used for the exclusive import.
@@ -386,7 +398,9 @@ and reimports content in one transaction, so a validation or import failure
 restores the previous state. Local edits to imported records are replaced too.
 Record sequences are not reset, and attachment IDs are retained by source identity
 where the same file remains in scope. Original source dates remain unchanged.
-No subscriber email is sent. Verify the public archive and attachment downloads,
+Already public source identities are not announced again. Newly public documents
+and archived notices notify current confirmed subscribers. Verify the public
+archive and attachment downloads,
 then re-enable the timer with `--archive-notices --skip-pages` selected.
 
 ## Clean local reimport
@@ -454,7 +468,8 @@ redirect or byte mismatch. It does not send email or edit content.
 2. Resolve failed downloads and review empty pages, dates and unmapped links.
 3. Open important pages and documents, compare text, tables, photographs and dates.
 4. Verify downloads, content hashes, redirects, page editing and calendar precision.
-5. Repeat the import to confirm zero duplicates and zero notification messages.
+5. Verify notifications for new public documents and archived notices, then repeat
+   the import to confirm zero duplicate records and zero additional notifications.
 6. Perform a fresh capture before cutover and reconcile changes since rehearsal.
 7. Agree notice-board continuity, approve content and switch DNS only after acceptance.
 
