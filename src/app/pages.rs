@@ -194,8 +194,6 @@ fn MunicipalityPreview() -> impl IntoView {
         <div class="page-width interior"><PageHeading title="Doma na Vyskři." description="Obec v Českém ráji. Informace pro každodenní život i návštěvu úřadu."/>
             <div class="municipality-intro"><div><h2>"Obec, ve které žijeme"</h2><p>"Na Vyskři se potkává krajina Českého ráje s každodenním životem obce. Tady najdete důležité dokumenty, praktické informace i to, co se u nás právě chystá."</p><A href=super::site_url("/kontakt") attr:class="button primary">"Kontakty na obecní úřad"<Icon/></A></div><div class="mini-terrain" aria-hidden="true"><img class="terrain-light" src=super::site_url("/images/relief-vysker-light.png") alt="" loading="lazy"/><img class="terrain-dark" src=super::site_url("/images/relief-vysker-dark.png") alt="" loading="lazy"/></div></div>
             <section id="sluzby" class="services-section"><h2>"Co potřebujete vyřídit?"</h2><div class="service-grid">
-                <article><Icon name="bin"/><h3>"Odpady a svoz"</h3><p>"Informace ke třídění odpadu a nejbližším svozům."</p><A href=super::site_url("/kalendar#svoz") attr:class="text-link">"Termíny v kalendáři"<Icon/></A></article>
-                <article><Icon name="paper"/><h3>"Místní poplatky"</h3><p>"Podklady k platbám a informace získáte na obecním úřadě."</p><A href=super::site_url("/kontakt") attr:class="text-link">"Spojit se s úřadem"<Icon/></A></article>
                 <article><Icon name="board"/><h3>"Zastupitelstvo"</h3><p>"Pozvánky na veřejná zasedání a zveřejněné dokumenty."</p><A href=super::site_url("/uredni-deska?kategorie=Zastupitelstvo") attr:class="text-link">"Dokumenty zastupitelstva"<Icon/></A></article>
             </div></section><Newsletter/>
         </div>
@@ -206,7 +204,7 @@ fn MunicipalityPreview() -> impl IntoView {
 fn ContactPreview() -> impl IntoView {
     view! {
         <Title text="Kontakt a úřední hodiny · Vyskeř"/>
-        <div class="page-width interior"><PageHeading title="Jsme tu pro vás." description="Zavolejte, napište nebo se zastavte na obecním úřadě." eyebrow="KONTAKT"/>
+        <div class="page-width interior"><header class="page-heading"><h1>"Kontakt"</h1></header>
             <div class="contact-grid"><section class="contact-panel"><h2>"Obecní úřad Vyskeř"</h2><address><p><Icon name="pin"/><span>"Vyskeř 50"<br/>"512 64 Vyskeř"</span></p><p><Icon name="phone"/><a href="tel:+420481329211">"+420 481 329 211"</a></p><p><Icon name="mail"/><a href="mailto:vysker@craj.cz">"vysker@craj.cz"</a></p></address><p class="field-note">"Před osobní návštěvou mimo úřední hodiny se prosím domluvte telefonicky."</p></section>
             <section id="uredni-hodiny" class="hours-panel"><Icon name="clock"/><h2>"Úřední hodiny"</h2>
                 <section class="hours-group" aria-labelledby="leadership-hours"><h3 id="leadership-hours">"Starosta a místostarostka"</h3><p>"Jan Kozák, starosta"<br/>"Ing. Michaela Brzobohatá, místostarostka"</p><dl><div><dt>"Pondělí a středa"</dt><dd>"16:00–18:00"</dd></div></dl></section>
