@@ -91,8 +91,17 @@ keep their normal attachment redirects. Repeated imports still deduplicate files
 Previously imported pages and local edits are retained, with the usual conflict
 checks. Removing those existing pages requires a separate reviewed cleanup.
 
+`--skip-pages` limits new imports to documents, notices and calendar entries.
+Content pages, gallery pages and their aliases are omitted, including their
+source-change proposals. The crawler still reads HTML to find files and preserve
+source dates, titles and notice-board ownership. Gallery and illustration images
+are omitted unless they are document downloads or belong to an imported notice
+or calendar entry. This option is supported by both `legacy_import.py` and
+`legacy_sync.py run`. It does not delete content imported by earlier runs.
+
 `--publish-content` publishes ordinary pages, documents and calendar entries for
-a reviewed test environment. Notices remain drafts. This option does not send
+a reviewed test environment. Notices remain drafts unless `--archive-notices`
+is also selected for a public historical archive. This option does not send
 subscription notifications. It also does not publish previously imported drafts
 on a repeated run. Use the administration for subsequent editorial decisions.
 
@@ -164,6 +173,8 @@ Monitor the age of `last-success.json`, failures and `pending_reviews`. Unchange
 source items do not create new reviews. No subscriber emails are sent. By default,
 new content is private. The example's `--publish-content` publishes new ordinary
 pages, documents and events, while notices remain drafts for editorial review.
+Add `--archive-notices` to `legacy_sync.py run` to put new historical notices
+directly into the public archive instead.
 Previously imported drafts keep their existing publication state.
 
 Incomplete captures fail without database changes by default. Only after reviewing
@@ -278,13 +289,77 @@ and is **never stored as a withdrawal date** or used to establish publication.
 
 Preview attachments remain available for testing. Import creates neither actual
 publication/withdrawal timestamps, publication events nor notification messages.
-Production startup rejects databases containing these preview records. Production
-imports use drafts and require separate editorial review before publication.
+Production startup rejects databases containing these preview records.
+
+`--archive-notices` is a separate mode for importing historical notices directly
+into the public archive. It applies to both structured notices and files
+classified under the original notice-board navigation. These records never become
+active notices, even when a source date is missing or lies in the future.
+Their original titles and attachments remain available, with archive retention
+set to `9999-12-31`. The operator can subsequently change the retention policy.
+Original dates are preserved without manufacturing publication or withdrawal
+timestamps. The import does not create publication evidence or send notifications.
+This mode cannot be combined with `--preview-notices`. Without either flag,
+notices remain private drafts. The staging systemd service selects archive mode.
+
+### Archive existing imported notices
+
+Enabling `--archive-notices` affects newly imported notices. To convert previously
+imported drafts, first inspect the read-only plan against the intended database:
+
+```sh
+python3 scripts/legacy_archive.py plan --report /app/migration/archive-plan.json
+```
+
+Then apply the reviewed candidate count, replacing `826` with the plan's count:
+
+```sh
+python3 scripts/legacy_archive.py apply --expected-count 826 \
+  --report /app/migration/archive-result.json
+```
+
+The conversion selects untouched imported drafts through their provenance and
+updates archive status, title retention and attachment retention in one
+transaction under the application's write lock. Native drafts, scheduled notices,
+edited imports, pages, documents and calendar entries are left unchanged.
+Existing IDs, original dates and attachment bytes are preserved. Each converted
+notice gets an audit entry, without a fabricated publication or withdrawal event
+and without subscriber mail. Repeating the plan after conversion finds no
+remaining candidates.
 
 The older `legacy_reconcile.py` workflow made copies of already imported files.
 It is retained for older rehearsals, but is not used for the exclusive import.
 An existing library with different ownership is reported as a conflict instead
 of silently changing its records.
+
+### Replace imported staging content
+
+For an explicitly requested fresh import of documents, archived notices and
+calendar entries, `legacy_replace.py` replaces only records identified by import
+provenance. Existing imported pages and galleries are removed. Native content,
+accounts, subscriptions, configuration and audit history remain in place.
+Stop the synchronization timer while preparing the replacement.
+
+First capture a fresh bundle with `legacy.py capture`. The replacement validates
+every captured object before changing the database. Then run against the intended
+staging database, using the inspected current `legacy_sources` count:
+
+```sh
+OBEC_PRODUCTION=false python3 scripts/legacy_replace.py \
+  --bundle /app/migration/fresh-capture \
+  --report /app/migration/replacement.json \
+  --expected-source-count 1515 \
+  --notice-map config/legacy-vysker-notices.json \
+  --archive-notices --skip-pages
+```
+
+This staging-only operation intentionally creates no database backup. It removes
+and reimports content in one transaction, so a validation or import failure
+restores the previous state. Local edits to imported records are replaced too.
+Record sequences are not reset, and attachment IDs are retained by source identity
+where the same file remains in scope. Original source dates remain unchanged.
+No subscriber email is sent. Verify the public archive and attachment downloads,
+then re-enable the timer with `--archive-notices --skip-pages` selected.
 
 ## Clean local reimport
 

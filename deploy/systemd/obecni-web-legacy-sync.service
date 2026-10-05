@@ -10,6 +10,6 @@ User=root
 WorkingDirectory=/srv/obecni-web-test
 # The base file selects the same project and running web service in both modes.
 # This command only execs inside it, it never starts or recreates containers.
-ExecStart=/usr/bin/docker compose --env-file deploy/.env -f compose.staging.yaml exec -T web python3 scripts/legacy_sync.py run --state /app/migration --page-map config/legacy-vysker-pages.json --notice-map config/legacy-vysker-notices.json --publish-content
+ExecStart=/usr/bin/docker compose --env-file deploy/.env -f compose.staging.yaml exec -T web python3 scripts/legacy_sync.py run --state /app/migration --notice-map config/legacy-vysker-notices.json --publish-content --archive-notices --skip-pages
 TimeoutStartSec=infinity
 UMask=0077

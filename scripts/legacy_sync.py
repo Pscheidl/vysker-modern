@@ -105,7 +105,7 @@ def acknowledge(conn, key, fingerprint):
 
 def run_sync(conn, state, *, delay=.4, max_pages=1500, max_assets=5000,
              publish_content=False, allow_incomplete=False, page_map=None, notice_map=None,
-             base_url=''):
+             base_url='', archive_notices=False, skip_pages=False):
     """Use an autocommit connection so the crawl never holds a DB transaction open."""
     if not conn.autocommit:
         raise ValueError('run_sync requires an autocommit connection')
@@ -128,7 +128,8 @@ def run_sync(conn, state, *, delay=.4, max_pages=1500, max_assets=5000,
             with conn.transaction():
                 report = import_bundle(conn, bundle, publish_content=publish_content,
                     allow_incomplete=allow_incomplete, page_map=page_map,
-                    classify_navigation=True, notice_map=notice_map, sync=True)
+                    classify_navigation=True, notice_map=notice_map, sync=True,
+                    archive_notices=archive_notices, skip_pages=skip_pages)
             committed = True
         report.update(status='ok', started_at=started, completed_at=now())
         write_json(state / 'capture-errors.json', report['capture_errors'])
@@ -155,7 +156,9 @@ def main():
     run.add_argument('--max-pages', type=int, default=1500)
     run.add_argument('--max-assets', type=int, default=5000)
     run.add_argument('--allow-incomplete', action='store_true')
-    run.add_argument('--publish-content', action='store_true', help='Publish new ordinary content. Notices remain drafts.')
+    run.add_argument('--publish-content', action='store_true', help='Publish ordinary content. Notice visibility is controlled separately.')
+    run.add_argument('--archive-notices', action='store_true', help='Import historical notices directly into the public archive without publication notifications.')
+    run.add_argument('--skip-pages', action='store_true', help='Import documents, notices and calendar entries, excluding content pages, galleries and unrelated images.')
     run.add_argument('--page-map')
     run.add_argument('--notice-map')
     run.add_argument('--base-url', default=os.environ.get('OBEC_VEREJNA_URL', ''))
@@ -173,10 +176,11 @@ def main():
             report = run_sync(conn, args.state, delay=args.delay, max_pages=args.max_pages,
                 max_assets=args.max_assets, publish_content=args.publish_content,
                 allow_incomplete=args.allow_incomplete, base_url=args.base_url,
+                archive_notices=args.archive_notices, skip_pages=args.skip_pages,
                 page_map=json.loads(Path(args.page_map).read_text()) if args.page_map else None,
                 notice_map=json.loads(Path(args.notice_map).read_text()) if args.notice_map else None)
             summary = {key: report[key] for key in ('status', 'reason', 'pending_reviews') if key in report}
-            summary.update({key: len(report[key]) for key in ('new', 'unchanged', 'conflicts', 'capture_errors', 'unavailable_resources', 'skipped_document_pages', 'grouped_gallery_pages') if key in report})
+            summary.update({key: len(report[key]) for key in ('new', 'unchanged', 'conflicts', 'capture_errors', 'unavailable_resources', 'skipped_document_pages', 'grouped_gallery_pages', 'skipped_content') if key in report})
             print(json.dumps(summary, ensure_ascii=False), flush=True)
         elif args.command == 'reviews':
             print(json.dumps({'pending_reviews': export_reviews(conn, args.output, args.base_url)}))

@@ -23,6 +23,8 @@ python3 tests/test_database.py
 python3 tests/test_monitor.py
 python3 tests/test_legacy.py
 python3 tests/test_legacy_capture.py
+python3 tests/test_legacy_archive.py
+python3 tests/test_legacy_replace.py
 python3 tests/test_legacy_galleries.py
 python3 tests/test_legacy_sync.py
 if [[ "${1:-}" == "--smtp" ]]; then

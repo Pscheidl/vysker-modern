@@ -12,7 +12,7 @@ from datetime import date
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from legacy import Capture, canonical, digest, extract, source_key, event_timing, markdown, dates
 from bs4 import BeautifulSoup
-from legacy_import import fingerprint, import_bundle, load_bundle, prepare
+from legacy_import import fingerprint, import_bundle, load_bundle, prepare, skipped_page_scope
 from legacy_reconcile import reconcile, require_local_preview
 from legacy_reimport import reset_import, reset_library
 from legacy_scope import notice_values
@@ -89,7 +89,61 @@ def navigation_bundle(root):
     return data
 
 
+def add_image(root, data, url, parents, title='Příloha obrázek'):
+    raw = b'\x89PNG\r\n\x1a\n' + url.encode()
+    sha = digest(raw)
+    (Path(root) / 'objects' / sha).write_bytes(raw)
+    image = dict(url=url, title=title, parents=parents, name=f'{sha[:12]}.png', mime='image/png',
+                 capture=dict(sha256=sha, size=len(raw), captured_at='2026-09-30T12:00:00+00:00'))
+    data['assets'].append(image)
+    (Path(root) / 'manifest.json').write_text(json.dumps(data))
+    return image
+
+
 class ExtractionTests(unittest.TestCase):
+    def test_skip_pages_preserves_images_owned_transitively_by_calendar_aliases(self):
+        items = [
+            dict(key='a:1', kind='page', content='Akce', event={'location': 'Náves'}),
+            dict(key='gs:2', kind='page', content='Galerie akce', page_alias='a:1'),
+            dict(key='g:3', kind='page', content='Detail fotografie', page_alias='gs:2'),
+            dict(key='event-photo', mime='image/png', url='https://vysker.cz/assets/Image.ashx?id_obrazky=4', parents=['g:3']),
+            dict(key='gs:5', kind='page', content='Samostatná galerie'),
+            dict(key='g:6', kind='page', content='Jiný detail', page_alias='gs:5'),
+            dict(key='other-photo', mime='image/png', url='https://vysker.cz/assets/Image.ashx?id_obrazky=7', parents=['g:6']),
+        ]
+        skipped = skipped_page_scope(items, {})
+        self.assertEqual(set(skipped), {'gs:2', 'g:3', 'gs:5', 'g:6', 'other-photo'})
+        # HTML aliases retain image ownership but never become content-page imports.
+        retained_html = [item['key'] for item in items if 'mime' not in item and item['key'] not in skipped]
+        self.assertEqual(retained_html, ['a:1'])
+
+    def test_historical_archive_preserves_known_and_unknown_dates_without_a_publication_claim(self):
+        for extracted in [
+            {},
+            {'published_on': '2020-03-02'},
+            {'published_on': '2020-03-02', 'withdraw_on': '2020-03-20'},
+            {'published_on': '2030-03-02', 'withdraw_on': '2030-03-20'},
+        ]:
+            with self.subTest(dates=extracted):
+                values = notice_values(dict(title='Původní název', url=FILE, dates=extracted),
+                    {'Ostatní': 1}, {}, {}, archive=True, as_of=date(2026, 10, 1))
+                self.assertEqual(values['status'], 'archived')
+                self.assertEqual(values['published_on'],
+                    date.fromisoformat(extracted['published_on']) if 'published_on' in extracted else None)
+                self.assertEqual(values['withdraw_on'],
+                    date.fromisoformat(extracted['withdraw_on']) if 'withdraw_on' in extracted else None)
+                self.assertEqual(values['review']['archive_title'], 'Původní název')
+                self.assertEqual(values['review']['archive_basis'], 'Archiv veřejné úřední desky původního webu.')
+                self.assertEqual(values['review']['archive_until'], '9999-12-31')
+                self.assertEqual(values['review']['original_reference'], FILE)
+                self.assertTrue(values['metadata']['archive_import'])
+                self.assertIsNone(values['metadata']['evidence'])
+                self.assertNotIn('Místní náhled', values['description'])
+        with self.assertRaisesRegex(ValueError, 'mutually exclusive'):
+            notice_values(dict(title='Zápis', url=FILE), {}, {}, {}, preview=True, archive=True)
+        with self.assertRaisesRegex(ValueError, 'mutually exclusive'):
+            import_bundle(None, '/unused', preview_notices=True, archive_notices=True)
+
     def test_preview_requires_both_dates_for_current_notices(self):
         cases = [
             ({}, 'archived', ['published_on', 'withdraw_on']),
@@ -216,6 +270,121 @@ class ImportTests(unittest.TestCase):
     def tearDown(self):
         self.directory.cleanup()
         self.database.__exit__(None, None, None)
+
+    def test_skip_pages_retains_calendar_and_files_classified_by_excluded_parent_html(self):
+        data = navigation_bundle(self.root)
+        page = add_page(self.root, data, '<div id="stred"><h1>Historie</h1><p>Samostatný text.</p></div>')
+        event = add_page(self.root, data, '<div id="stred"><h1>Setkání</h1><p>Na návsi.</p></div>',
+                         'https://vysker.cz/setkani/a-1')
+        event['event'] = dict(event_timing('1.10.2026 19:00'), location='Náves')
+        event_image = 'https://vysker.cz/assets/Image.ashx?id_obrazky=901'
+        event['content'] += f'\n![Plakát](<{event_image}>)'
+        add_image(self.root, data, event_image, [event['key']], 'Plakát akce')
+        add_image(self.root, data, 'https://vysker.cz/assets/Image.ashx?id_obrazky=902',
+                  [data['pages'][0]['key']], 'Sken úřední desky')
+        add_image(self.root, data, 'https://vysker.cz/assets/File.ashx?id_dokumenty=903',
+                  [page['key']], 'Obrazový dokument')
+        illustration = add_image(self.root, data, 'https://vysker.cz/assets/Image.ashx?id_obrazky=904',
+                                  [page['key']], 'Ilustrace článku')
+        with connect(self.url) as conn:
+            report = import_bundle(conn, self.root, publish_content=True, classify_navigation=True,
+                                   archive_notices=True, skip_pages=True)
+            self.assertEqual(report['classification'], {'notice': 2, 'document': 3})
+            self.assertEqual(conn.execute('SELECT count(*) FROM pages').fetchone()[0], 0)
+            self.assertEqual(conn.execute('SELECT count(*) FROM page_revisions').fetchone()[0], 0)
+            self.assertEqual(conn.execute('SELECT status FROM notices ORDER BY id').fetchall(), [('archived',), ('archived',)])
+            self.assertEqual(conn.execute('SELECT count(*) FROM documents').fetchone()[0], 3)
+            self.assertEqual(conn.execute('SELECT count(*) FROM attachments WHERE data IS NOT NULL').fetchone()[0], 5)
+            calendar = conn.execute('SELECT published,description FROM events').fetchone()
+            self.assertTrue(calendar[0])
+            self.assertIn('/api/v1/legacy-media/', calendar[1])
+            excluded = {item['key'] for item in report['skipped_content']}
+            self.assertIn(page['key'], excluded)
+            self.assertIn(source_key(illustration['url']), excluded)
+            self.assertNotIn(event['key'], excluded)
+            self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
+            repeated = import_bundle(conn, self.root, publish_content=True, classify_navigation=True,
+                                     archive_notices=True, skip_pages=True)
+            self.assertEqual(repeated['new'], [])
+            self.assertEqual(repeated['conflicts'], [])
+
+    def test_skip_pages_excludes_gallery_aliases_and_photos(self):
+        from test_legacy_galleries import gallery_bundle
+        data = gallery_bundle(self.root)
+        with connect(self.url) as conn:
+            report = import_bundle(conn, self.root, publish_content=True, skip_pages=True)
+            self.assertEqual(report['new'], [])
+            self.assertEqual(report['review'], [])
+            self.assertEqual(report['grouped_gallery_pages'], [])
+            self.assertEqual(len(report['skipped_content']), len(data['pages']) + len(data['assets']))
+            for table in ('pages', 'documents', 'attachments', 'legacy_sources'):
+                self.assertEqual(conn.execute('SELECT count(*) FROM ' + table).fetchone()[0], 0)
+
+    def test_skip_pages_keeps_structured_notices_with_unknown_dates_as_private_by_default(self):
+        data = bundle(self.root, notice=True)
+        data['pages'][0]['dates'] = {}
+        (Path(self.root) / 'manifest.json').write_text(json.dumps(data))
+        with connect(self.url) as conn:
+            import_bundle(conn, self.root, publish_content=True, skip_pages=True)
+            self.assertEqual(conn.execute('SELECT status,published_on FROM notices').fetchone(), ('draft', None))
+            self.assertEqual(conn.execute('SELECT count(*) FROM pages').fetchone()[0], 0)
+            self.assertEqual(conn.execute('SELECT count(*) FROM attachments WHERE notice_id IS NOT NULL').fetchone()[0], 1)
+
+    def test_archive_import_keeps_navigation_files_and_provenance_without_notifications(self):
+        navigation_bundle(self.root)
+        with connect(self.url) as conn:
+            result = import_bundle(conn, self.root, publish_content=True,
+                classify_navigation=True, archive_notices=True)
+            self.assertEqual(result['classification'], {'notice': 1, 'document': 1})
+            row = conn.execute('''SELECT title,status,retain_attachments,published_on,withdraw_on,
+                published_at,withdrawn_at,review_json::jsonb FROM notices''').fetchone()
+            self.assertEqual(row[:7], ('Zápis', 'archived', True, None, None, None, None))
+            self.assertEqual(row[7]['archive_title'], 'Zápis')
+            self.assertEqual(row[7]['archive_until'], '9999-12-31')
+            self.assertEqual(conn.execute('SELECT status FROM documents').fetchone()[0], 'published')
+            self.assertEqual(conn.execute('SELECT count(*) FROM attachments WHERE data IS NOT NULL').fetchone()[0], 2)
+            imported = conn.execute('SELECT preview_published,metadata FROM legacy_notice_imports').fetchone()
+            self.assertFalse(imported[0])
+            self.assertTrue(imported[1]['archive_import'])
+            self.assertTrue(conn.execute('SELECT metadata FROM legacy_sources WHERE notice_id IS NOT NULL').fetchone()[0]['archive_import'])
+            conn.execute("UPDATE notices SET title='Upravený místní název'")
+            repeated = import_bundle(conn, self.root, publish_content=True,
+                classify_navigation=True, archive_notices=True)
+            self.assertEqual(repeated['new'], [])
+            self.assertEqual(conn.execute('SELECT title FROM notices').fetchone()[0], 'Upravený místní název')
+            self.assertEqual(conn.execute('SELECT count(*) FROM notice_events').fetchone()[0], 0)
+            self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
+
+    def test_archive_import_handles_structured_notices_without_a_known_posting_date(self):
+        data = bundle(self.root, notice=True)
+        data['pages'][0]['dates'] = {}
+        (Path(self.root) / 'manifest.json').write_text(json.dumps(data))
+        with connect(self.url) as conn:
+            plan, _, _ = prepare(conn, self.root, archive_notices=True)
+            self.assertIn(data['pages'][0]['key'], plan['new'])
+            import_bundle(conn, self.root, archive_notices=True)
+            self.assertEqual(conn.execute('''SELECT status,retain_attachments,published_on,withdraw_on,
+                published_at,withdrawn_at FROM notices''').fetchone(),
+                ('archived', True, None, None, None, None))
+            self.assertEqual(conn.execute('SELECT count(*) FROM pages').fetchone()[0], 0)
+            self.assertEqual(conn.execute('SELECT count(*) FROM attachments WHERE notice_id IS NOT NULL AND data IS NOT NULL').fetchone()[0], 1)
+            self.assertTrue(conn.execute('SELECT metadata FROM legacy_notice_imports').fetchone()[0]['archive_import'])
+            self.assertEqual(conn.execute('SELECT count(*) FROM notice_events').fetchone()[0], 0)
+            self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
+
+    def test_archive_import_does_not_schedule_future_source_notices_or_convert_existing_drafts(self):
+        data = bundle(self.root, notice=True)
+        data['pages'][0]['dates'] = {'published_on': '2030-03-02', 'withdraw_on': '2030-03-20'}
+        (Path(self.root) / 'manifest.json').write_text(json.dumps(data))
+        with connect(self.url) as conn:
+            import_bundle(conn, self.root, archive_notices=True)
+            self.assertEqual(conn.execute('SELECT status,published_on,withdraw_on,published_at,withdrawn_at FROM notices').fetchone(),
+                ('archived', date(2030, 3, 2), date(2030, 3, 20), None, None))
+            conn.execute("UPDATE notices SET status='draft',retain_attachments=FALSE,review_json='{}'")
+            before = conn.execute('SELECT * FROM notices').fetchall()
+            import_bundle(conn, self.root, archive_notices=True)
+            self.assertEqual(conn.execute('SELECT * FROM notices').fetchall(), before)
+            self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
 
     def test_navigation_classification_is_exclusive_even_without_dates(self):
         data = navigation_bundle(self.root)

@@ -28,7 +28,8 @@ COPY --from=build /app/target/release/obecni-web /app/target/release/obec-admin 
 COPY --from=build /app/target/site ./target/site
 COPY Cargo.toml ./
 COPY scripts/database.py scripts/monitor.py scripts/postgres.py ./scripts/
-COPY scripts/legacy.py scripts/legacy_galleries.py scripts/legacy_import.py scripts/legacy_scope.py scripts/legacy_sync.py ./scripts/
+COPY scripts/legacy.py scripts/legacy_galleries.py scripts/legacy_import.py scripts/legacy_scope.py scripts/legacy_sync.py scripts/legacy_archive.py ./scripts/
+COPY scripts/legacy_reimport.py scripts/legacy_replace.py ./scripts/
 COPY config/legacy-vysker-pages.json config/legacy-vysker-notices.json ./config/
 USER 10001:10001
 ENV OBEC_ADRESA=0.0.0.0:3000

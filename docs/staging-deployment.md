@@ -182,9 +182,14 @@ dc exec web cat /app/migration/last-run.json /app/migration/last-success.json
 Ověřit `status: ok`, aktuální čas dokončení, počty a ukázkové přílohy ve webu.
 Stav `skipped` nedokládá úspěšné dokončení. Odpovědi HTTP 404 import přeskakuje
 a zaznamenává do `/app/migration/capture-unavailable.json`, ostatní chyby
-stahování zůstávají důvodem neúspěchu. Nové běžné stránky, dokumenty
-a události se publikují, položky úřední desky zůstávají koncepty. Import
-neodesílá oznámení odběratelům. Až po úspěšném prvním importu zapnout rozvrh:
+stahování zůstávají důvodem neúspěchu. Nové dokumenty a události se publikují.
+Přepínač `--skip-pages` vynechá obsahové stránky a galerie. Přepínač
+`--archive-notices` ukládá položky původní
+úřední desky rovnou do veřejného archivu a zachovává jejich názvy a přílohy.
+Nevyplněná zdrojová data zůstávají neznámá, datum importu se nevydává za
+datum vyvěšení nebo sejmutí. Import neodesílá oznámení odběratelům.
+Již importované koncepty vyžadují [jednorázový převod](migration.md#archive-existing-imported-notices).
+Až po úspěšném prvním importu zapnout rozvrh:
 
 ```bash
 sudo systemctl enable --now obecni-web-legacy-sync.timer

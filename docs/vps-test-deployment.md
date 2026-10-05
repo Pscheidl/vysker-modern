@@ -284,11 +284,12 @@ položky a nezdvojuje je. Každý běh znovu stáhne zdrojový web, přidá nov�
 a změny existujících položek uloží ke kontrole. Lokální úpravy nepřepisuje
 a zmizelé zdrojové položky automaticky nemaže.
 
-Pro obsah tohoto projektu použít mapy `config/legacy-vysker-pages.json` a
-`config/legacy-vysker-notices.json`. Tyto mapy souvisejí se zdrojovým webem,
-na poskytovateli VPS nezávisejí. Přepínač `--publish-content` zpřístupní nové
-běžné stránky, dokumenty a události. Ve veřejném HTTPS režimu jsou dostupné všem.
-Položky úřední desky zůstávají koncepty, předchozí koncepty se nemění a import
+Pro obsah tohoto projektu použít mapu `config/legacy-vysker-notices.json`.
+Mapa souvisí se zdrojovým webem, na poskytovateli VPS nezávisí.
+Přepínače `--publish-content --skip-pages` zpřístupní nové dokumenty a události
+a vynechají obsahové stránky i galerie. Ve veřejném HTTPS režimu jsou dostupné všem.
+Přepínač `--archive-notices` uloží položky původní úřední desky do veřejného
+archivu s jejich názvy a přílohami. Předchozí koncepty se automaticky nemění a import
 neodesílá oznámení odběratelům. Podrobnosti jsou v [postupu migrace](migration.md).
 
 První i plánované spuštění vést přes stejnou službu systemd. Budoucí soubor
@@ -305,7 +306,7 @@ After=network-online.target docker.service
 Type=oneshot
 User=root
 WorkingDirectory=/srv/obecni-web-test
-ExecStart=/usr/bin/docker compose --env-file deploy/.env -f compose.staging.yaml exec -T web python3 scripts/legacy_sync.py run --state /app/migration --page-map config/legacy-vysker-pages.json --notice-map config/legacy-vysker-notices.json --publish-content
+ExecStart=/usr/bin/docker compose --env-file deploy/.env -f compose.staging.yaml exec -T web python3 scripts/legacy_sync.py run --state /app/migration --notice-map config/legacy-vysker-notices.json --publish-content --archive-notices --skip-pages
 TimeoutStartSec=infinity
 ```
 

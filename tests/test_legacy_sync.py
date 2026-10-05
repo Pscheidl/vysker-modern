@@ -190,6 +190,27 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(conn.execute('SELECT count(*) FROM documents').fetchone()[0], 2)
             self.assertEqual(conn.execute('SELECT count(*) FROM attachments').fetchone()[0], 2)
 
+    def test_skip_pages_ignores_source_page_conflicts_and_reviews_without_changing_local_pages(self):
+        data = bundle(self.root, document_links=False)
+        with connect(self.url) as conn:
+            import_bundle(conn, self.root, publish_content=True)
+            conn.execute("UPDATE pages SET content='Místní oprava kontaktů'")
+            before = conn.execute('SELECT * FROM pages').fetchall()
+        page = data['pages'][0]
+        page['content'] = 'Nový text původního webu'
+        page['warnings'] = ['A source-page warning that is outside the selected scope']
+        page['review_required'] = 'A source-page review that is outside the selected scope'
+        save(self.root, data)
+        with connect(self.url) as conn:
+            report = import_bundle(conn, self.root, sync=True, skip_pages=True)
+            self.assertEqual(report['new'], [])
+            self.assertEqual(report['conflicts'], [])
+            self.assertEqual(report['review'], [])
+            self.assertEqual(report['pending_reviews'], 0)
+            self.assertEqual(report['skipped_content'][0]['key'], page['key'])
+            self.assertTrue(report['skipped_content'][0]['already_imported'])
+            self.assertEqual(conn.execute('SELECT * FROM pages').fetchall(), before)
+
     def test_sync_is_atomic_and_corrupt_source_does_not_change_live_records(self):
         data = bundle(self.root, document_links=False)
         with connect(self.url) as conn:
@@ -229,6 +250,28 @@ class SyncTests(unittest.TestCase):
         self.assertFalse(any(path.exists() for path in roots))
         self.assertEqual(json.loads((Path(self.root) / 'last-success.json').read_text())['pending_reviews'], 1)
         self.assertEqual(len(json.loads((Path(self.root) / 'reviews.json').read_text())), 1)
+
+    def test_runner_archives_only_new_imported_notices_and_preserves_native_private_records(self):
+        def crawl(capture, *_):
+            data = navigation_bundle(capture.root)
+            add_page(capture.root, data, '<div id="stred"><h1>Kontakt</h1><p>Vynechaná stránka.</p></div>')
+            return data
+        with connect(self.url, autocommit=True) as conn, patch.object(Capture, 'crawl', crawl):
+            conn.execute("INSERT INTO notices(title,status,published_on) VALUES ('Místní koncept','draft',NULL),('Místní plán','scheduled','2030-03-02')")
+            native = conn.execute('SELECT * FROM notices ORDER BY id').fetchall()
+            for attempt in range(2):
+                report = run_sync(conn, self.root, publish_content=True, archive_notices=True, skip_pages=True)
+                self.assertEqual(report['status'], 'ok')
+                self.assertEqual(len(report['new']), 2 if attempt == 0 else 0)
+                self.assertTrue(report['skip_pages'])
+                self.assertEqual(len(report['skipped_content']), 3)
+                self.assertEqual(conn.execute('SELECT count(*) FROM pages').fetchone()[0], 0)
+                self.assertEqual(conn.execute('SELECT * FROM notices WHERE title LIKE %s ORDER BY id', ('Místní%',)).fetchall(), native)
+                self.assertEqual(conn.execute("SELECT status,retain_attachments,published_at,withdrawn_at FROM notices WHERE title='Zápis'").fetchone(),
+                    ('archived', True, None, None))
+                self.assertEqual(conn.execute('SELECT count(*) FROM attachments WHERE data IS NOT NULL').fetchone()[0], 2)
+                self.assertEqual(conn.execute('SELECT count(*) FROM notice_events').fetchone()[0], 0)
+                self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
 
     def test_runner_skips_overlapping_crawl(self):
         with connect(self.url, autocommit=True) as first, connect(self.url, autocommit=True) as second:

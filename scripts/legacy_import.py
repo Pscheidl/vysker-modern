@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import re
 import unicodedata
+from urllib.parse import parse_qs, urlsplit
 
 from legacy import Capture, VERSION, canonical, digest, file_type, now, source_key
 from legacy_galleries import group_galleries
@@ -64,7 +65,7 @@ def load_bundle(root, allow_incomplete=False):
     return manifest, group_galleries(items, capture), capture
 
 
-def document_pages(items):
+def document_pages(items, archive_notices=False, skip_pages=False):
     """Find content pages linking to captured documents, excluding image assets."""
     documents = {item['key'] for item in items
                  if 'mime' in item and not item['mime'].startswith('image/')}
@@ -73,7 +74,7 @@ def document_pages(items):
         if 'mime' in item:
             continue
         # These records have structured destinations instead of content pages.
-        if item['kind'] == 'notice' and item.get('dates', {}).get('published_on'):
+        if item['kind'] == 'notice' and (archive_notices or skip_pages or item.get('dates', {}).get('published_on')):
             continue
         if item.get('event') and len(item['content']) <= 10_000:
             continue
@@ -83,21 +84,51 @@ def document_pages(items):
     return result
 
 
-def prepare(conn, root, allow_incomplete=False, classify_navigation=False):
+def skipped_page_scope(items, sections):
+    """Keep library/calendar records and their images, using all captured parents."""
+    owners = {item['key'] for item in items if 'mime' not in item and 'page_alias' not in item
+              and (item['kind'] == 'notice' or (item.get('event') and len(item['content']) <= 10_000))}
+    image_owners = owners | sections.keys()
+    while True:
+        aliases = {item['key'] for item in items
+                   if item.get('page_alias') in image_owners}
+        if aliases <= image_owners:
+            break
+        image_owners.update(aliases)
+    skipped = {}
+    for item in items:
+        if 'mime' in item:
+            if not item['mime'].startswith('image/'):
+                continue
+            query = parse_qs(urlsplit(item['url']).query)
+            document = any(name.casefold() == 'id_dokumenty' and any(values)
+                           for name, values in query.items())
+            if document or set(item.get('parents', [])) & image_owners:
+                continue
+            skipped[item['key']] = 'Image belongs only to content pages or photo galleries.'
+        elif item['key'] not in owners:
+            skipped[item['key']] = 'Content pages and photo galleries are excluded by --skip-pages.'
+    return skipped
+
+
+def prepare(conn, root, allow_incomplete=False, classify_navigation=False, archive_notices=False,
+            skip_pages=False):
     manifest, items, capture = load_bundle(root, allow_incomplete)
     known = {key: (signature, metadata) for key, signature, metadata in conn.execute(
         'SELECT source_key,fingerprint,metadata FROM legacy_sources')}
-    skipped = document_pages(items)
+    skipped = document_pages(items, archive_notices, skip_pages)
     result = {'new': [], 'unchanged': [], 'conflicts': [], 'review': [], 'skipped_document_pages': [], 'grouped_gallery_pages': [],
+              'skipped_content': [],
               'capture_errors': manifest['errors'], 'unavailable_resources': manifest.get('unavailable_resources', []),
               'source_summary': {'pages': len(manifest['pages']), 'assets': len(manifest['assets'])}}
-    sections = notice_sections(items, capture) if classify_navigation else {}
+    sections = notice_sections(items, capture) if classify_navigation or skip_pages else {}
+    excluded = skipped_page_scope(items, sections) if skip_pages else {}
     if classify_navigation:
         result['notice_sections'] = sections
         result['classification'] = {'notice': 0, 'document': 0}
         owners = dict(conn.execute("SELECT source_key,notice_id IS NOT NULL FROM legacy_sources WHERE attachment_id IS NOT NULL"))
         for item in items:
-            if 'mime' not in item:
+            if 'mime' not in item or item['key'] in excluded:
                 continue
             board = bool(set(item.get('parents', [])) & sections.keys())
             result['classification']['notice' if board else 'document'] += 1
@@ -105,6 +136,10 @@ def prepare(conn, root, allow_incomplete=False, classify_navigation=False):
                 result['conflicts'].append(item['key'])
     for item in items:
         key = item['key']
+        if key in excluded:
+            result['skipped_content'].append(dict(key=key, url=item['url'],
+                reason=excluded[key], already_imported=key in known))
+            continue
         if 'page_alias' in item:
             result['grouped_gallery_pages'].append({'key': key, 'parent': item['page_alias']})
         if key in skipped:
@@ -159,14 +194,16 @@ def audit(conn, kind, id, timestamp):
 
 def import_bundle(conn, root, publish_content=False, allow_incomplete=False, page_map=None,
                   classify_navigation=False, preview_notices=False, notice_map=None, attachment_ids=None,
-                  sync=False):
+                  sync=False, archive_notices=False, skip_pages=False):
     """Caller owns transaction. Sync queues conflicts and imports only new identities."""
+    if archive_notices and preview_notices:
+        raise ValueError('Archive and preview notice imports are mutually exclusive')
     conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':vysker-write', 0))")
     if preview_notices:
         require_local_preview()
         if not classify_navigation:
             raise ValueError('Preview notices require navigation classification')
-    report, items, capture = prepare(conn, root, allow_incomplete, classify_navigation)
+    report, items, capture = prepare(conn, root, allow_incomplete, classify_navigation, archive_notices, skip_pages)
     if report['conflicts'] and not sync:
         raise ValueError('Changed source records require manual reconciliation: ' + ', '.join(report['conflicts'][:20]))
     new = set(report['new'])
@@ -211,12 +248,13 @@ def import_bundle(conn, root, publish_content=False, allow_incomplete=False, pag
                 if len(owners) > 1:
                     report['review'].append({'key': item['key'], 'reason': 'Shared notice attachment. Review ownership before publishing.'})
             elif classify_navigation and on_board:
-                values = notice_values(item, categories, sections, notice_map or {}, preview_notices)
+                values = notice_values(item, categories, sections, notice_map or {}, preview_notices,
+                                       archive=archive_notices)
                 notice_id = conn.execute('''INSERT INTO notices(title,description,category_id,published_on,
                     withdraw_on,status,retain_attachments,review_json,created_at,updated_at)
                     VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id''',
                     (item['title'][:300], values['description'], values['category_id'], values['published_on'],
-                     values['withdraw_on'], values['status'], preview_notices,
+                     values['withdraw_on'], values['status'], preview_notices or archive_notices,
                      json.dumps(values['review'], ensure_ascii=False), timestamp, timestamp)).fetchone()[0]
                 notice_metadata = values['metadata']
                 metadata.update(notice_metadata)
@@ -242,14 +280,27 @@ def import_bundle(conn, root, publish_content=False, allow_incomplete=False, pag
             audit(conn, 'attachment', attachment_id, timestamp)
             if document_id:
                 audit(conn, 'document', document_id, timestamp)
-        elif item['kind'] == 'notice' and item.get('dates', {}).get('published_on'):
+        elif item['kind'] == 'notice' and (archive_notices or skip_pages or item.get('dates', {}).get('published_on')):
             # No inferred posting time, no default +15 days, no fabricated publication event.
-            notice_id = conn.execute("INSERT INTO notices(title,description,published_on,withdraw_on,status,review_json) VALUES (%s,%s,%s,%s,'draft',%s) RETURNING id",
-                (item['title'][:300], item['content'], item['dates']['published_on'], item['dates'].get('withdraw_on'),
-                 json.dumps({'original_reference': item['url']}))).fetchone()[0]
+            if archive_notices:
+                values = notice_values(item, categories, sections, notice_map or {}, archive=True)
+                notice_id = conn.execute('''INSERT INTO notices(title,description,category_id,published_on,
+                    withdraw_on,status,retain_attachments,review_json,created_at,updated_at)
+                    VALUES (%s,%s,%s,%s,%s,'archived',TRUE,%s,%s,%s) RETURNING id''',
+                    (item['title'][:300], item['content'], values['category_id'], values['published_on'],
+                     values['withdraw_on'], json.dumps(values['review'], ensure_ascii=False), timestamp, timestamp)).fetchone()[0]
+                notice_metadata = values['metadata']
+                metadata.update(notice_metadata)
+                for issue in values['issues']:
+                    report['review'].append({'key': item['key'], 'reason': issue})
+            else:
+                notice_id = conn.execute("INSERT INTO notices(title,description,published_on,withdraw_on,status,review_json) VALUES (%s,%s,%s,%s,'draft',%s) RETURNING id",
+                    (item['title'][:300], item['content'], item.get('dates', {}).get('published_on'), item.get('dates', {}).get('withdraw_on'),
+                     json.dumps({'original_reference': item['url']}))).fetchone()[0]
             destination = f'/uredni-deska/{notice_id}'
             audit(conn, 'notice', notice_id, timestamp)
-            report['review'].append({'key': item['key'], 'reason': 'Notice remains a draft. Check dates, attachments and publication rules before cutover.'})
+            if not archive_notices:
+                report['review'].append({'key': item['key'], 'reason': 'Notice remains a draft. Check dates, attachments and publication rules before cutover.'})
         elif item.get('event') and len(item['content']) <= 10_000:
             event = item['event']
             event_id = conn.execute('INSERT INTO events(title,description,location,starts_at,ends_at,start_time_known,end_time_known,end_date_known,published,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id',
@@ -303,6 +354,7 @@ def import_bundle(conn, root, publish_content=False, allow_incomplete=False, pag
             conn.execute('INSERT INTO page_revisions(page_id,version,title,content,slug,published,saved_at) SELECT id,version,title,content,slug,published,updated_at FROM pages WHERE id=%s', (page_id,))
     report['unresolved_internal_links'] = sorted(unresolved)
     report['published_content'] = publish_content
+    report['skip_pages'] = skip_pages
     report['imported_at'] = timestamp
     if sync:
         queue_changes(conn, report, items, capture, timestamp)
@@ -316,23 +368,28 @@ def main():
     parser.add_argument('--report', required=True)
     parser.add_argument('--allow-incomplete', action='store_true')
     parser.add_argument('--page-map', help='JSON mapping of source keys to reviewed page slugs')
+    parser.add_argument('--skip-pages', action='store_true', help='Import documents, notices and calendar entries, excluding content pages, galleries and unrelated images.')
     parser.add_argument('--classify-navigation', action='store_true', help='Import files under the original Úřední deska breadcrumb exclusively as notices.')
     parser.add_argument('--notice-map', help='Optional JSON mapping of source section keys to notice categories')
-    parser.add_argument('--preview-notices', action='store_true', help='Make imported notices visible only in an isolated local preview.')
-    parser.add_argument('--publish-content', action='store_true', help='Publish new ordinary pages/files/events. Notices stay drafts.')
+    notice_mode = parser.add_mutually_exclusive_group()
+    notice_mode.add_argument('--preview-notices', action='store_true', help='Make imported notices visible only in an isolated local preview.')
+    notice_mode.add_argument('--archive-notices', action='store_true', help='Import historical notices directly into the public archive, preserving their files without publication notifications.')
+    parser.add_argument('--publish-content', action='store_true', help='Publish ordinary content. Notice visibility is controlled separately.')
     args = parser.parse_args()
     with connect() as conn:
         if args.command == 'plan':
             conn.execute('SET TRANSACTION READ ONLY')
-            report, _, _ = prepare(conn, args.bundle, args.allow_incomplete, args.classify_navigation)
+            report, _, _ = prepare(conn, args.bundle, args.allow_incomplete, args.classify_navigation,
+                                   args.archive_notices, args.skip_pages)
         else:
             page_map = json.loads(Path(args.page_map).read_text()) if args.page_map else None
             notice_map = json.loads(Path(args.notice_map).read_text()) if args.notice_map else None
             report = import_bundle(conn, args.bundle, args.publish_content, args.allow_incomplete, page_map,
                                    args.classify_navigation, args.preview_notices, notice_map,
-                                   sync=args.command == 'sync')
+                                   sync=args.command == 'sync', archive_notices=args.archive_notices,
+                                   skip_pages=args.skip_pages)
     Path(args.report).write_text(json.dumps(report, ensure_ascii=False, indent=2))
-    print(json.dumps({k: len(report[k]) for k in ('new', 'unchanged', 'conflicts', 'review', 'skipped_document_pages', 'grouped_gallery_pages')}, indent=2))
+    print(json.dumps({k: len(report[k]) for k in ('new', 'unchanged', 'conflicts', 'review', 'skipped_document_pages', 'grouped_gallery_pages', 'skipped_content')}, indent=2))
 
 
 if __name__ == '__main__':

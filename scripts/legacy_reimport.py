@@ -47,6 +47,13 @@ def reset_library(conn):
 def reset_import(conn):
     """Remove all imported content and its dependents, retaining unrelated local records."""
     require_local_preview()
+    return reset_imported_content(conn, audit_operation='local_import_reset')
+
+
+def reset_imported_content(conn, *, audit_operation):
+    """Low-level reset for guarded entrypoints. Caller owns policy and transaction."""
+    if audit_operation not in ('local_import_reset', 'staging_import_reset'):
+        raise ValueError('Unsupported import reset operation')
     conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':vysker-write', 0))")
     ids = {kind: [row[0] for row in conn.execute(
         f'SELECT DISTINCT {kind}_id FROM legacy_sources WHERE {kind}_id IS NOT NULL')]
@@ -82,7 +89,7 @@ def reset_import(conn):
         counts[table] = conn.execute(f'DELETE FROM {table} WHERE {predicate}', params).rowcount
     for table, trigger in protected.items():
         conn.execute(f'ALTER TABLE {table} ENABLE TRIGGER {trigger}')
-    conn.execute("INSERT INTO audit_log(occurred_at,operation,entity_type,entity_id) VALUES (%s,'local_import_reset','migration',0)", (now(),))
+    conn.execute("INSERT INTO audit_log(occurred_at,operation,entity_type,entity_id) VALUES (%s,%s,'migration',0)", (now(), audit_operation))
     return counts, attachment_ids
 
 

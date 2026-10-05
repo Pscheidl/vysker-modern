@@ -45,7 +45,15 @@ def source_dates(item):
     return dates(evidence) if evidence else item.get('dates', {})
 
 
-def notice_values(item, categories, sections, category_map, preview=False, as_of=None):
+def archive_review(title):
+    return dict(archive_title=title[:300],
+                archive_basis='Archiv veřejné úřední desky původního webu.',
+                archive_until=date.max.isoformat())
+
+
+def notice_values(item, categories, sections, category_map, preview=False, as_of=None, archive=False):
+    if preview and archive:
+        raise ValueError('Archive and preview notice imports are mutually exclusive')
     extracted = source_dates(item)
     posted = date.fromisoformat(extracted['published_on']) if extracted.get('published_on') else None
     end = date.fromisoformat(extracted['withdraw_on']) if extracted.get('withdraw_on') else None
@@ -57,7 +65,7 @@ def notice_values(item, categories, sections, category_map, preview=False, as_of
     # A local archive grouping is not evidence of withdrawal. Never store a
     # deadline, import timestamp or default duration as an original posting/end date.
     missing_dates = [name for name, value in [('published_on', posted), ('withdraw_on', end)] if value is None]
-    status = 'draft'
+    status = 'archived' if archive else 'draft'
     if preview:
         if missing_dates or end <= day:
             status = 'archived'
@@ -77,12 +85,18 @@ def notice_values(item, categories, sections, category_map, preview=False, as_of
     if preview and missing_dates:
         description += '\n\nMístní náhled řadí záznam do archivu, protože není doloženo datum vyvěšení nebo sejmutí.'
     review = dict(original_reference=item['url'])
-    if preview:
+    if archive:
+        review.update(archive_review(item['title']))
+    elif preview:
         review.update(archive_title=item['title'][:300],
                       archive_basis='Místní náhled migrace, vyžaduje samostatné posouzení před produkcí.',
                       archive_until=date.max.isoformat())
+    # Keep a missing source value distinct from an explicitly empty string.
+    # Synchronization compares this value with the original captured item.
+    metadata = dict(source_dates=extracted, evidence=item.get('evidence'),
+                    navigation={p: sections[p] for p in item.get('parents', []) if p in sections},
+                    preview_archive_missing_dates=missing_dates if preview else [])
+    if archive:
+        metadata.update(archive_import=True, archive_missing_dates=missing_dates)
     return dict(published_on=posted, withdraw_on=end, status=status, description=description,
-                category_id=categories[category], review=review, issues=issues,
-                metadata=dict(source_dates=extracted, evidence=evidence,
-                              navigation={p: sections[p] for p in item.get('parents', []) if p in sections},
-                              preview_archive_missing_dates=missing_dates if preview else []))
+                category_id=categories[category], review=review, issues=issues, metadata=metadata)
