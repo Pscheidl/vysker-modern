@@ -1,7 +1,7 @@
 //! Public privacy notice and the exact wording used for newsletter consent.
 use serde::{Deserialize, Serialize};
 
-pub const CONSENT_VERSION: &str = "newsletter-2026-09-29.2";
+pub const CONSENT_VERSION: &str = "newsletter-2026-10-05";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -44,10 +44,7 @@ pub struct PrivacyNotice {
 
 impl PrivacyPolicy {
     pub fn consent_text(&self) -> String {
-        format!(
-            "Přihlášením žádáte správce {} o zasílání nových dokumentů včetně úřední desky na zadaný e-mail. Odhlásit se můžete kdykoli odkazem v každé zprávě.",
-            self.controller_name
-        )
+        "Přihlášením žádáte o zasílání nových dokumentů včetně úřední desky na zadaný e-mail. Odhlásit se můžete kdykoli odkazem v každé zprávě.".into()
     }
 
     #[cfg(feature = "ssr")]
