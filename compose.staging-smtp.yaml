@@ -1,0 +1,18 @@
+# Explicit opt-in after the owner authorizes real outgoing email.
+# Add after compose.staging.yaml (and the HTTPS overlay, when used).
+# Store the password only in deploy/secrets/smtp-password.txt.
+services:
+  web:
+    environment:
+      OBEC_SMTP_CAPTURE_ONLY: "false"
+      OBEC_SMTP_HOST: ${SMTP_HOST:?Set the approved SMTP host}
+      OBEC_SMTP_PORT: ${SMTP_PORT:-465}
+      OBEC_SMTP_TLS: ${SMTP_TLS:-tls}
+      OBEC_SMTP_UZIVATEL: ${SMTP_USERNAME:?Set the approved SMTP username}
+      OBEC_SMTP_HESLO_FILE: /run/secrets/smtp_password
+      OBEC_EMAIL_OD: ${EMAIL_FROM:?Set the approved sender address}
+    secrets: [smtp_password]
+
+secrets:
+  smtp_password:
+    file: ./deploy/secrets/smtp-password.txt

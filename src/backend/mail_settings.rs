@@ -26,6 +26,7 @@ struct Saved {
 
 #[derive(Serialize)]
 pub struct Settings {
+    capture_only: bool,
     provider: &'static str,
     username: String,
     sender_name: String,
@@ -61,8 +62,10 @@ fn google_sender(username: &str, sender_name: &str) -> anyhow::Result<String> {
 }
 
 fn view(config: &Config, saved: Option<&Saved>) -> anyhow::Result<Settings> {
+    let saved = saved.filter(|_| !config.smtp_capture_only);
     if let Some(saved) = saved {
         Ok(Settings {
+            capture_only: false,
             provider: "google",
             username: saved.username.clone(),
             sender_name: saved.sender_name.clone(),
@@ -74,6 +77,7 @@ fn view(config: &Config, saved: Option<&Saved>) -> anyhow::Result<Settings> {
         })
     } else {
         Ok(Settings {
+            capture_only: config.smtp_capture_only,
             provider: "environment",
             username: config.smtp_username.clone().unwrap_or_default(),
             sender_name: config
@@ -105,6 +109,12 @@ pub async fn get(State(s): State<Backend>, _: auth::Admin) -> Result<Json<Settin
 /// Reloaded by the mail worker so administration changes apply without a restart.
 /// Failure to decrypt stops delivery instead of silently selecting another sender.
 pub async fn effective_config(s: &Backend) -> anyhow::Result<Config> {
+    // Never load or decrypt a saved provider in staging. Its missing key must
+    // neither prevent local capture nor select another SMTP destination.
+    if s.config.smtp_capture_only {
+        s.config.validate_smtp_capture()?;
+        return Ok((*s.config).clone());
+    }
     let saved: Option<Saved> = sqlx::query_as(
         "SELECT username,sender_name,password_encrypted FROM mail_settings WHERE id=1",
     )
@@ -130,6 +140,11 @@ pub async fn update(
     Json(input): Json<Update>,
 ) -> Result<Json<Settings>> {
     let verified = accounts::reauthenticate(&s, &admin, input.current_password).await?;
+    if s.config.smtp_capture_only {
+        return Err(bad(
+            "V testovacím provozu se e-maily ukládají pouze do Mailpitu. Odesílací účet nelze změnit.",
+        ));
+    }
     if !matches!(input.provider.as_str(), "environment" | "google") {
         return Err(bad("Vyberte nastavení serveru nebo Google."));
     }

@@ -14,7 +14,7 @@ import urllib.parse
 
 
 def check(database, backups, ready_url, *, now=None, backup_hours=30,
-          mail_minutes=30, recovery_minutes=10, max_pending=1000, min_free_mib=1024, min_free_percent=10, database_disk=None):
+          mail_minutes=30, recovery_minutes=10, max_pending=1000, min_free_mib=1024, min_free_percent=10, database_disk=None, check_backups=True):
     now = time.time() if now is None else now
     alerts, metrics = [], {}
     try:
@@ -31,20 +31,22 @@ def check(database, backups, ready_url, *, now=None, backup_hours=30,
             metrics['free_percent'] = round(100 * usage.free / usage.total, 1)
             if metrics['free_mib'] < min_free_mib or metrics['free_percent'] < min_free_percent:
                 alerts.append('database_disk_space_low')
-        usage = shutil.disk_usage(backups)
-        if usage.free / 1048576 < min_free_mib or 100 * usage.free / usage.total < min_free_percent:
-            alerts.append('backup_disk_space_low')
+        if check_backups:
+            usage = shutil.disk_usage(backups)
+            if usage.free / 1048576 < min_free_mib or 100 * usage.free / usage.total < min_free_percent:
+                alerts.append('backup_disk_space_low')
     except OSError:
         alerts.append('disk_check_failed')
-    try:
-        snapshots = [p for p in Path(backups).glob('vysker-*.dump') if p.is_file() and not p.is_symlink() and p.stat().st_size > 0]
-        newest = max(p.stat().st_mtime for p in snapshots)
-        age = now - newest
-        metrics['backup_age_seconds'] = int(age)
-        if age < -300 or age > backup_hours * 3600:
-            alerts.append('backup_stale')
-    except (OSError, ValueError):
-        alerts.append('backup_missing')
+    if check_backups:
+        try:
+            snapshots = [p for p in Path(backups).glob('vysker-*.dump') if p.is_file() and not p.is_symlink() and p.stat().st_size > 0]
+            newest = max(p.stat().st_mtime for p in snapshots)
+            age = now - newest
+            metrics['backup_age_seconds'] = int(age)
+            if age < -300 or age > backup_hours * 3600:
+                alerts.append('backup_stale')
+        except (OSError, ValueError):
+            alerts.append('backup_missing')
     try:
         with connect(database, options='-c default_transaction_read_only=on') as conn:
             pending, oldest, retries = conn.execute('SELECT count(*),min(created_at),coalesce(max(attempts),0) FROM (SELECT created_at,attempts FROM mail_queue WHERE sent_at IS NULL AND cancelled=FALSE UNION ALL SELECT created_at,attempts FROM recovery_mail WHERE sent_at IS NULL AND cancelled=FALSE) pending').fetchone()
@@ -105,6 +107,12 @@ def main():
     parser.add_argument('--database')
     parser.add_argument('--database-disk', help='Mount of the actual PostgreSQL volume, omitted for managed databases')
     parser.add_argument('--backups', default='/app/backups')
+    backup_setting = os.environ.get('OBEC_MONITOR_CHECK_BACKUPS', 'true')
+    if backup_setting not in ('true', 'false'):
+        parser.error('OBEC_MONITOR_CHECK_BACKUPS must be true or false')
+    parser.add_argument('--check-backups', action=argparse.BooleanOptionalAction,
+                        default=backup_setting == 'true',
+                        help='Check backup freshness and disk space, enabled by default')
     parser.add_argument('--ready-url', default='http://web:3000/api/v1/ready')
     parser.add_argument('--state', default='/app/monitor/state.json')
     parser.add_argument('--interval', type=int, default=60)
@@ -124,7 +132,7 @@ def main():
         except (OSError, ValueError, KeyError):
             return 1
     while True:
-        report = check(database_url(args.database),args.backups,args.ready_url,backup_hours=args.backup_hours,mail_minutes=args.mail_minutes,recovery_minutes=args.recovery_minutes,max_pending=args.max_pending,min_free_mib=args.min_free_mib,min_free_percent=args.min_free_percent,database_disk=args.database_disk)
+        report = check(database_url(args.database),args.backups,args.ready_url,backup_hours=args.backup_hours,mail_minutes=args.mail_minutes,recovery_minutes=args.recovery_minutes,max_pending=args.max_pending,min_free_mib=args.min_free_mib,min_free_percent=args.min_free_percent,database_disk=args.database_disk,check_backups=args.check_backups)
         if args.mode == 'check':
             print(json.dumps(report),flush=True)
             return 0 if report['status']=='ok' else 2

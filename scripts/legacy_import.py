@@ -89,7 +89,8 @@ def prepare(conn, root, allow_incomplete=False, classify_navigation=False):
         'SELECT source_key,fingerprint,metadata FROM legacy_sources')}
     skipped = document_pages(items)
     result = {'new': [], 'unchanged': [], 'conflicts': [], 'review': [], 'skipped_document_pages': [], 'grouped_gallery_pages': [],
-              'capture_errors': manifest['errors'], 'source_summary': {'pages': len(manifest['pages']), 'assets': len(manifest['assets'])}}
+              'capture_errors': manifest['errors'], 'unavailable_resources': manifest.get('unavailable_resources', []),
+              'source_summary': {'pages': len(manifest['pages']), 'assets': len(manifest['assets'])}}
     sections = notice_sections(items, capture) if classify_navigation else {}
     if classify_navigation:
         result['notice_sections'] = sections

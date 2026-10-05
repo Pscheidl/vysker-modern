@@ -3,8 +3,9 @@
 Plán připravený 4. října 2026 pro VPS s Ubuntu Server 26.04 LTS u libovolného
 poskytovatele splňujícího níže uvedené požadavky. Cílem je nejprve zabezpečit
 nové VPS a předat správci ověřené přihlášení z linuxového počítače. Potom
-nasadit testovací web. Tento dokument popisuje budoucí kroky, žádný server
-zatím nebyl změněn.
+nasadit testovací web. Dokument je univerzální postup pro nový server.
+Připravené Compose soubory, veřejné HTTPS, volbu pošty a běžný provoz
+popisuje [provoz testovacího nasazení](staging-deployment.md).
 
 ## Dohodnutá konfigurace
 
@@ -39,7 +40,7 @@ nebo sériová konzole či záchranný režim.
 - Veřejný SSH klíč nebo cesta k již připravenému klíči na počítači správce.
 - Funkční konzole nebo záchranný režim pro případ opravy SSH nebo firewallu.
 - Případný firewall poskytovatele a pravidla platná pro veřejnou síť VPS.
-- Později testovací subdoména a povolené sítě testerů, pokud web zpřístupníme přes HTTPS.
+- Později doména a rozhodnutí o veřejném nebo omezeném přístupu přes HTTPS.
 
 Postup připouští i VPS pouze s IPv6, pokud k němu má správce a později všichni
 testeři konektivitu. V takovém případě navíc ověřit odchozí přístup hostitele
@@ -200,7 +201,7 @@ Konkrétní práce v repozitáři:
    ale zatím ho nepublikuje. Pro první nasazení použít `docker save`, přenos
    přes SSH a `docker load`, bez potřeby zřizovat registr.
 2. Test spouštět s `OBEC_PRODUCTION=false` a `OBEC_UKAZKOVA_DATA=false`
-   v release sestavení a s přístupem pouze přes tunel. Pravý produkční režim
+   v release sestavení, nejprve s přístupem přes tunel. Pravý produkční režim
    vyžaduje schválené údaje o soukromí a obsahové stránky. Kvůli testu tyto
    souhlasy nevyrábět.
 3. Do testovacího Compose vůbec nezařadit službu `backup`. Monitor doplnit
@@ -212,14 +213,17 @@ Konkrétní práce v repozitáři:
 5. Zachovat omezení oprávnění webového kontejneru, read-only souborový systém,
    trvalé databázové úložiště a limity logů. Paměťové limity všech služeb
    stanovit s rezervou pro OS a ověřit při importu i nahrávání obrázků.
-6. Pro testovací e-maily použít interní Mailpit bez předávání zpráv ven.
-   Jeho webové rozhraní zpřístupnit pouze na loopbacku přes SSH tunel.
+6. Ve výchozí variantě použít interní Mailpit bez předávání zpráv ven.
+   Jeho webové rozhraní zpřístupnit přes SSH tunel na interní IP kontejneru.
    Začít novou databází a testovacími účty, bez reálných odběratelů a Google
    SMTP přihlašovacích údajů. Uložené nastavení Google dnes přepisuje SMTP
    proměnné prostředí, samotná změna `SMTP_HOST` proto nestačí při kopii DB.
-7. Pro test vynutit zachytávání pošty i při pokusu nastavit Google v administraci.
-   Doplnit ověřitelný testovací přepínač nebo odpovídající omezení sítě a UI.
+7. V režimu zachytávání nastavit `OBEC_SMTP_CAPTURE_ONLY=true`. Tím se
+   ignorují uložené Google údaje a blokuje změna účtu přes administraci.
    Odeslání skutečného e-mailu nesmí být součástí ověřovacího testu.
+   Pokud provozovatel výslovně požaduje skutečné SMTP, použít samostatný
+   [SMTP overlay](staging-deployment.md#volba-přístupu-a-pošty), chráněný soubor
+   hesla a ověřit účinné nastavení. Autentizaci lze ověřit bez odeslání zprávy.
 
 Před použitím ověřit Compose, start služeb, stav monitoru bez záloh a zachycení
 e-mailu. U změn monitoru a směrování pošty doplnit cílené regresní testy.
@@ -250,8 +254,10 @@ Relevantní soubory:
    testovací administrátory. Připravit také privátní zapisovatelný svazek
    `migration-state` připojený do `/app/migration`. První import a následný
    rozvrh spustit podle následující etapy po ověření funkčnosti webu.
-6. Zveřejnit web pouze jako `127.0.0.1:3000:3000`. PostgreSQL a SMTP Mailpitu
-   vůbec nepublikovat. Mailpit UI případně jen `127.0.0.1:8025:8025`.
+6. Zveřejnit web pouze jako `127.0.0.1:3000:3000`. PostgreSQL ani porty Mailpitu
+   nepublikovat. Mailpit ponechat v interní síti bez vnějšího připojení a jeho
+   UI otevřít přes SSH přímo na interní IP kontejneru podle
+   [provozního postupu](staging-deployment.md#první-ověření).
 7. Vyzkoušet web přes tunel, přihlášení, uložení stránky, nahrání obrázku,
    soubor ke stažení a zachycení testovací pošty. Změřit RAM, swap a disk.
 
@@ -281,7 +287,7 @@ a zmizelé zdrojové položky automaticky nemaže.
 Pro obsah tohoto projektu použít mapy `config/legacy-vysker-pages.json` a
 `config/legacy-vysker-notices.json`. Tyto mapy souvisejí se zdrojovým webem,
 na poskytovateli VPS nezávisejí. Přepínač `--publish-content` zpřístupní nové
-běžné stránky, dokumenty a události uvnitř chráněného testovacího webu.
+běžné stránky, dokumenty a události. Ve veřejném HTTPS režimu jsou dostupné všem.
 Položky úřední desky zůstávají koncepty, předchozí koncepty se nemění a import
 neodesílá oznámení odběratelům. Podrobnosti jsou v [postupu migrace](migration.md).
 
@@ -363,7 +369,8 @@ Kontroly a chování při chybě:
 - Systemd znovu nespustí stejnou službu, pokud předchozí běh ještě probíhá.
   Skript navíc používá databázový zámek pro celý běh, takže chrání i před
   souběžným přímým spuštěním. Přeskočené hodiny se nehromadí do fronty.
-- Neúplné stažení zdroje ve výchozím stavu ukončí běh chybou před importem.
+- HTTP 404 se přeskočí a uloží do `capture-unavailable.json`. Ostatní chyby
+  stahování ve výchozím stavu ukončí běh chybou před importem.
   `--allow-incomplete` se do automatického příkazu nepřidává.
 - Při chybě zapsat neúspěch, zachovat poslední úspěšný stav a další automatický
   pokus provést v nejbližším plánovaném termínu. Ruční opakování je možné na pokyn.
@@ -383,23 +390,24 @@ celé jednotky je nutné před aktivací ověřit na cílovém VPS. Časovače p
 
 ## 8 Testovací doména a HTTPS
 
-Až bude známá subdoména a okruh testerů:
+Až bude známá doména a zvolený přístup:
 
 1. Nastavit A pro přidělenou IPv4 a AAAA pro ověřenou funkční IPv6 podle
    dostupných adres. U VPS pouze s IPv6 použít AAAA a ověřit dostupnost
    od testerů i certifikační autority. Produkční doménu obce nepřepínat.
-2. Připravit samostatný Caddyfile pro test. Omezit přístup k celému testovacímu
-   webu na povolené sítě, nejen k `/admin`. Při proměnlivé IP lze pokračovat
-   přes tunel, bez plošného otevření administrace.
+2. Připravit samostatný Caddyfile pro test. Pro veřejný frontend použít
+   `compose.staging-https.yaml` bez vstupního hesla. Administrace `/admin`
+   používá vlastní přihlášení silným heslem. Pokud provozovatel požaduje
+   uzavřený test, doplnit omezení přístupu k celému webu nebo zachovat tunel.
 3. Zapnout Caddy a veřejné TCP porty 80 a 443 pro vydání certifikátu a HTTPS
    v hostitelském i případném síťovém firewallu poskytovatele.
    HTTP přesměrovat na HTTPS. UDP 443 ponechat pro první test zavřený.
-4. Ověřit certifikát, obnovování certifikátu, blokování nepovolených adres,
-   skutečnou klientskou IP a všechny administrátorské API cesty.
+4. Ověřit certifikát, obnovování certifikátu, zvolený přístup, skutečnou
+   klientskou IP a odmítnutí nepřihlášených požadavků na administrátorské API.
    Zachovat shodu interní IP proxy a `OBEC_TRUSTED_PROXY`. V aplikaci
    přepnout veřejnou URL na testovací HTTPS doménu a ověřit generované odkazy.
 5. Odstranit dočasné publikování webového portu 3000. Interní web zůstane
-   za Caddy. Přidat viditelné označení testu a `X-Robots-Tag: noindex, nofollow`.
+   za Caddy. Zachovat označení neoficiálního webu a `X-Robots-Tag: noindex, nofollow`.
    Zákaz indexace nenahrazuje omezení přístupu.
 
 ## 9 Předání ručního přihlášení
@@ -459,6 +467,7 @@ poskytovatele. Pokud klíč přestane být dostupný, touto cestou opravit
 - Časovač spouští synchronizaci v 07:00 až 22:00 Europe/Prague včetně,
   bez souběhu a bez nočního dohánění zmeškaných běhů.
 - Monitor nehlásí chybějící zálohy a nadále kontroluje dostupnost a disk.
-- E-maily se zachytávají pouze v testu a nenačetly se reálné SMTP údaje.
+- Pošta odpovídá zvolenému režimu. Skutečné SMTP je zapnuté pouze na výslovný
+  požadavek, jinak všechny zprávy zachytává interní Mailpit.
 - Při reprezentativním testu nejsou pády kvůli paměti ani trvalé zahlcení swapu.
 - Předaný návod obsahuje ověřené připojení a konkrétní stav nasazení.

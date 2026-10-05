@@ -1,0 +1,184 @@
+name: vysker-staging
+
+# Build and transfer WEB_IMAGE on the workstation. This file never builds on VPS.
+# Start behind an SSH tunnel. Add compose.staging-https.yaml for public HTTPS.
+services:
+  postgres:
+    image: postgres:18-bookworm
+    restart: unless-stopped
+    mem_limit: 384m
+    pids_limit: 128
+    shm_size: 128m
+    security_opt: [no-new-privileges:true]
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      APP_DB_PASSWORD_FILE: /run/secrets/database_password
+    command:
+      - postgres
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - max_connections=30
+      - -c
+      - max_wal_size=512MB
+    secrets: [postgres_password, database_password]
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - ./deploy/init-postgres.sh:/docker-entrypoint-initdb.d/10-application.sh:ro
+    networks: [database]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U postgres -d postgres]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  web:
+    image: ${WEB_IMAGE:?Set WEB_IMAGE to the transferred release image}
+    pull_policy: never
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    # Python imports share this limit with the web process. Measure the first run.
+    mem_limit: 768m
+    pids_limit: 128
+    stop_grace_period: 60s
+    environment:
+      OBEC_PRODUCTION: "false"
+      OBEC_ADRESA: 0.0.0.0:3000
+      OBEC_MIN_PASSWORD_LENGTH: ${OBEC_MIN_PASSWORD_LENGTH:-24}
+      OBEC_DATABAZE_FILE: /run/secrets/database_url
+      OBEC_VEREJNA_URL: http://127.0.0.1:3000
+      OBEC_UKAZKOVA_DATA: "false"
+      OBEC_SMTP_CAPTURE_ONLY: "true"
+      OBEC_SMTP_HOST: mailpit
+      OBEC_SMTP_PORT: "1025"
+      OBEC_SMTP_TLS: none
+      OBEC_EMAIL_OD: Vyskeř test <noreply@vysker.test>
+      OBEC_MAIL_SETTINGS_KEY_FILE: /app/data/mail-settings.key
+    secrets: [database_url]
+    volumes:
+      - mail-secrets:/app/data
+      - migration-state:/app/migration
+    ports: ["127.0.0.1:3000:3000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mailpit:
+        condition: service_healthy
+    tmpfs: ["/tmp:size=32m,mode=1777"]
+    networks:
+      application:
+        ipv4_address: 172.30.80.3
+      database: {}
+      mail_capture: {}
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  mailpit:
+    image: axllent/mailpit:v1.31.3
+    restart: unless-stopped
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 96m
+    pids_limit: 64
+    environment:
+      MP_DATABASE: /tmp/mailpit.db
+      MP_LABEL: Vyskeř test
+      MP_MAX_MESSAGES: "100"
+      MP_MAX_AGE: 7d
+      MP_MAX_MESSAGE_SIZE: "1"
+      MP_DISABLE_VERSION_CHECK: "true"
+      MP_SMTP_DISABLE_RDNS: "true"
+      MP_BLOCK_REMOTE_CSS_AND_FONTS: "true"
+      MP_ALLOWED_HOSTS: localhost,127.0.0.1,mailpit
+      MP_SMTP_RELAY_ALL: "false"
+    # /tmp in the image is writable by the unprivileged account.
+    volumes: [mailpit-data:/tmp]
+    # Access the UI through SSH directly to its internal container IP.
+    # No external route, no relay credentials, no published ports.
+    networks: [mail_capture]
+    healthcheck:
+      test: [CMD, /mailpit, readyz]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    logging:
+      driver: local
+      options:
+        max-size: 5m
+        max-file: "2"
+
+  monitor:
+    image: ${WEB_IMAGE:?Set WEB_IMAGE to the transferred release image}
+    pull_policy: never
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 96m
+    pids_limit: 32
+    command: [python3, scripts/monitor.py, daemon, --database-disk, /app/database-volume]
+    environment:
+      OBEC_DATABAZE_FILE: /run/secrets/database_url
+      OBEC_MONITOR_CHECK_BACKUPS: "false"
+    secrets: [database_url]
+    volumes:
+      - postgres-data:/app/database-volume:ro
+      - monitor-state:/app/monitor
+    networks: [database]
+    depends_on:
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, python3, scripts/monitor.py, health]
+      interval: 60s
+      timeout: 5s
+      start_period: 120s
+      retries: 2
+    logging:
+      driver: local
+      options:
+        max-size: 5m
+        max-file: "2"
+
+secrets:
+  database_url:
+    file: ./deploy/secrets/database-url.txt
+  database_password:
+    file: ./deploy/secrets/database-password.txt
+  postgres_password:
+    file: ./deploy/secrets/postgres-password.txt
+
+volumes:
+  mail-secrets:
+  postgres-data:
+  monitor-state:
+  migration-state:
+  mailpit-data:
+
+networks:
+  application:
+    ipam:
+      config:
+        - subnet: 172.30.80.0/29
+  database:
+    internal: true
+  mail_capture:
+    internal: true

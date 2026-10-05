@@ -466,3 +466,145 @@ async fn running_worker_refreshes_settings_and_leaves_mail_unclaimed_when_key_is
             .unwrap();
     assert_eq!(retried, (1, 0, None));
 }
+
+#[tokio::test]
+async fn staging_capture_ignores_saved_google_and_captures_every_delivery_path() {
+    let (mut app, _directory) = app().await;
+    save(&app, google()).await;
+    std::fs::remove_file(&app.state.config.mail_settings_key_file).unwrap();
+
+    for path in ["test", "subscription", "recovery"] {
+        let (port, received) = smtp_capture().await;
+        let mut config = (*app.state.config).clone();
+        config.smtp_capture_only = true;
+        config.smtp_port = port;
+        app = reconfigure(app, config);
+        let effective = mail_settings::effective_config(&app.state).await.unwrap();
+        assert_eq!(effective.smtp_host, "127.0.0.1");
+        assert_eq!(effective.smtp_port, port);
+        assert!(effective.smtp_username.is_none());
+        assert!(effective.smtp_password.is_none());
+        let settings = body_json(app.call("GET", PATH, None, true).await).await;
+        assert_eq!(settings["capture_only"], true);
+        assert_eq!(settings["provider"], "environment");
+        assert_eq!(settings["smtp_port"], port);
+        assert!(!settings.to_string().contains("sender@gmail.com"));
+        // Neither replacing a provider nor returning to server configuration
+        // can change transport policy from the administration.
+        for input in [
+            google(),
+            json!({"provider": "environment", "current_password": ADMIN_PASSWORD}),
+        ] {
+            assert_eq!(
+                app.call("PUT", PATH, Some(input), true).await.status(),
+                StatusCode::BAD_REQUEST
+            );
+        }
+        let now = OffsetDateTime::now_utc();
+        match path {
+            "test" => {
+                assert_eq!(
+                    app.call(
+                        "POST",
+                        TEST_PATH,
+                        Some(json!({"current_password": ADMIN_PASSWORD})),
+                        true
+                    )
+                    .await
+                    .status(),
+                    StatusCode::OK
+                );
+            }
+            "subscription" => {
+                common::request_subscription(&app.state, "captured@example.test", now)
+                    .await
+                    .unwrap();
+                let mut worker = mail::Worker::new(&app.state).unwrap();
+                assert!(worker.deliver_one(&app.state, now).await.unwrap());
+                assert!(
+                    sqlx::query_scalar::<_, bool>("SELECT sent_at IS NOT NULL FROM mail_queue")
+                        .fetch_one(&app.state.pool)
+                        .await
+                        .unwrap()
+                );
+            }
+            "recovery" => {
+                assert_eq!(
+                    app.call(
+                        "POST",
+                        "/api/v1/admin/password-recovery",
+                        Some(json!({"email": "admin@vysker.test"})),
+                        false
+                    )
+                    .await
+                    .status(),
+                    StatusCode::ACCEPTED
+                );
+                let mut worker = mail::Worker::new(&app.state).unwrap();
+                assert!(
+                    worker
+                        .deliver_one(&app.state, OffsetDateTime::now_utc())
+                        .await
+                        .unwrap()
+                );
+                assert!(
+                    sqlx::query_scalar::<_, bool>("SELECT sent_at IS NOT NULL FROM recovery_mail")
+                        .fetch_one(&app.state.pool)
+                        .await
+                        .unwrap()
+                );
+            }
+            _ => unreachable!(),
+        }
+        let transcript = tokio::time::timeout(std::time::Duration::from_secs(3), received)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(transcript.contains("MAIL FROM:<noreply@vysker.test>"));
+        let recipient = if path == "subscription" {
+            "captured@example.test"
+        } else {
+            "admin@vysker.test"
+        };
+        assert!(transcript.contains(&format!("RCPT TO:<{recipient}>")));
+        assert!(!transcript.contains("AUTH"));
+        assert!(!transcript.contains(APP_PASSWORD));
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT username FROM mail_settings WHERE id=1")
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap(),
+        "sender@gmail.com"
+    );
+    assert!(!app.state.config.mail_settings_key_file.exists());
+}
+
+#[tokio::test]
+async fn staging_capture_rejects_external_or_authenticated_transports() {
+    let (app, _directory) = app().await;
+    let mut config = (*app.state.config).clone();
+    config.smtp_capture_only = true;
+    config.smtp_host = "mailpit".into();
+    assert!(mail::transport(&Backend::new(app.state.pool.clone(), config.clone())).is_ok());
+    for (host, port, tls, username, password, production) in [
+        ("smtp.gmail.com", 1025, "none", None, None, false),
+        ("192.0.2.1", 1025, "none", None, None, false),
+        ("mailpit", 25, "none", None, None, false),
+        ("mailpit", 1025, "starttls", None, None, false),
+        ("mailpit", 1025, "none", Some("user"), Some("secret"), false),
+        ("mailpit", 1025, "none", None, Some("secret"), false),
+        ("mailpit", 1025, "none", None, None, true),
+    ] {
+        let mut invalid = config.clone();
+        invalid.smtp_host = host.into();
+        invalid.smtp_port = port;
+        invalid.smtp_tls = tls.into();
+        invalid.smtp_username = username.map(str::to_owned);
+        invalid.smtp_password = password.map(str::to_owned);
+        invalid.production = production;
+        let state = Backend::new(app.state.pool.clone(), invalid);
+        assert!(mail::transport(&state).is_err());
+        assert!(mail_settings::effective_config(&state).await.is_err());
+    }
+}

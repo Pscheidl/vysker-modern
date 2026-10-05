@@ -41,6 +41,7 @@ impl App {
             smtp_tls: "none".into(),
             smtp_username: None,
             smtp_password: None,
+            smtp_capture_only: false,
             mail_settings_key_file: std::env::temp_dir()
                 .join(format!("obec-mail-settings-{}.key", auth::token())),
             email_from: "Vyskeř <noreply@vysker.test>".into(),

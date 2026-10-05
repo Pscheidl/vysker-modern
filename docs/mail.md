@@ -71,6 +71,7 @@ returns the stored password through the API or writes it into audit records.
 | `OBEC_SMTP_TLS` | `starttls` or `tls` in production, `none` only for local Mailpit |
 | `OBEC_SMTP_UZIVATEL` | Account or service username |
 | `OBEC_SMTP_HESLO_FILE` | Secret file containing the SMTP credential |
+| `OBEC_SMTP_CAPTURE_ONLY` | `true` locks test delivery to internal Mailpit or a loopback capture server, default `false` |
 | `OBEC_EMAIL_OD` | Authorized sender, for example `Vyskeř <web@vysker.cz>` |
 | `OBEC_VEREJNA_URL` | Canonical HTTPS website URL used in email links |
 
@@ -80,6 +81,17 @@ settings from `deploy/.env`. Its default transport is STARTTLS on port 587.
 If a provider requires implicit TLS, change the Compose transport to `tls` and
 its port to 465 together. Complete the approved privacy configuration before
 turning on public subscriptions.
+
+For an isolated test deployment set `OBEC_SMTP_CAPTURE_ONLY=true`,
+`OBEC_SMTP_HOST=mailpit`, `OBEC_SMTP_PORT=1025`, `OBEC_SMTP_TLS=none` and omit
+SMTP credentials. Capture mode requires `OBEC_PRODUCTION=false`. It ignores saved
+Google settings, including when the saved encryption key is unavailable, and
+blocks changes to the sending account in administration. Subscription, recovery
+and manual test messages all use the capture transport. A loopback IP is also
+accepted for local capture tests. External SMTP destinations, authenticated
+transports and production mode are rejected while capture mode is enabled.
+Keep Mailpit isolated from external mail services and do not configure forwarding.
+Only the server operator can disable capture mode through deployment configuration.
 
 ## Before public launch
 

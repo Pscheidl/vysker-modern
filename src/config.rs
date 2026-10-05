@@ -20,6 +20,8 @@ pub struct Config {
     pub smtp_tls: String,
     pub smtp_username: Option<String>,
     pub smtp_password: Option<String>,
+    /// Test-only delivery to the internal capture server, ignoring saved accounts.
+    pub smtp_capture_only: bool,
     pub mail_settings_key_file: std::path::PathBuf,
     pub email_from: String,
     pub production: bool,
@@ -122,7 +124,7 @@ impl Config {
             "OBEC_MIN_PASSWORD_LENGTH",
             &DEFAULT_MIN_PASSWORD_LENGTH.to_string(),
         ))?;
-        Ok(Self {
+        let config = Self {
             minimum_password_length,
             trusted_proxy: std::env::var("OBEC_TRUSTED_PROXY")
                 .ok()
@@ -146,13 +148,37 @@ impl Config {
             smtp_tls,
             smtp_username,
             smtp_password,
+            smtp_capture_only: env_var("OBEC_SMTP_CAPTURE_ONLY", "false")
+                .parse()
+                .context("OBEC_SMTP_CAPTURE_ONLY musí být true nebo false")?,
             mail_settings_key_file: env_var(
                 "OBEC_MAIL_SETTINGS_KEY_FILE",
                 "data/mail-settings.key",
             )
             .into(),
             email_from: env_var("OBEC_EMAIL_OD", "Vyskeř <noreply@localhost>"),
-        })
+        };
+        config.validate_smtp_capture()?;
+        Ok(config)
+    }
+
+    /// Also checked at transport creation so a later configuration change fails closed.
+    pub fn validate_smtp_capture(&self) -> anyhow::Result<()> {
+        if self.smtp_capture_only {
+            let local = self
+                .smtp_host
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|address| address.is_loopback());
+            anyhow::ensure!(
+                !self.production
+                    && ((self.smtp_host == "mailpit" && self.smtp_port == 1025) || local)
+                    && self.smtp_tls == "none"
+                    && self.smtp_username.is_none()
+                    && self.smtp_password.is_none(),
+                "OBEC_SMTP_CAPTURE_ONLY vyžaduje neprodukční provoz, mailpit:1025 nebo loopback IP, TLS none a žádné SMTP přihlašovací údaje"
+            );
+        }
+        Ok(())
     }
 }
 

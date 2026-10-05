@@ -1,0 +1,43 @@
+# docker compose --env-file deploy/.env -f compose.staging.yaml \
+#   -f compose.staging-https.yaml up -d
+# Requires current Docker Compose with support for !reset.
+services:
+  web:
+    # Public traffic enters through Caddy with HTTPS.
+    ports: !reset []
+    environment:
+      OBEC_VEREJNA_URL: https://${DOMAIN:?Set DOMAIN in deploy/.env}
+      OBEC_TRUSTED_PROXY: 172.30.80.2
+  proxy:
+    image: caddy:2.11.4
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 96m
+    pids_limit: 64
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in deploy/.env}
+      TLS_EMAIL: ${TLS_EMAIL:?Set TLS_EMAIL in deploy/.env}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./deploy/Caddyfile.staging:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+    depends_on:
+      web:
+        condition: service_healthy
+    networks:
+      application:
+        ipv4_address: 172.30.80.2
+    logging:
+      driver: local
+      options:
+        max-size: 5m
+        max-file: "2"
+
+volumes:
+  caddy-data:
+  caddy-config:

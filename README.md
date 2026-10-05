@@ -65,6 +65,7 @@ Documentation:
 - [Deployment requirements and hosting considerations](docs/deployment.md)
 - [Production operations, backups and recovery](docs/operations.md)
 - [Ubuntu VPS staging deployment and SSH hardening plan](docs/vps-test-deployment.md)
+- [Staging Compose modes, startup and scheduled import](docs/staging-deployment.md)
 - [Remaining implementation work](docs/roadmap.md)
 - [Original website migration and later host transfer](docs/migration.md)
 

@@ -1,0 +1,29 @@
+{
+	email {$TLS_EMAIL}
+	admin off
+	servers {
+		protocols h1 h2
+	}
+	log {
+		format filter {
+			wrap json
+			fields {
+				request delete
+			}
+		}
+	}
+}
+
+{$DOMAIN} {
+	route {
+		header X-Robots-Tag "noindex, nofollow"
+		header Strict-Transport-Security "max-age=86400"
+		encode zstd gzip
+		reverse_proxy web:3000 {
+			header_up X-Real-IP {remote_host}
+		}
+	}
+	# The public frontend is accessible without an additional proxy password.
+	# Administration uses the application's own authentication.
+	# No access logging of token URLs or credentials.
+}

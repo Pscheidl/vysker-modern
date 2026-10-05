@@ -324,8 +324,17 @@ class Capture:
 
     def crawl(self, max_pages=1500, max_assets=5000):
         started = now()
-        _, sitemap = self.fetch(ORIGIN + '/vismo/sitemap.asp', 5_000_000)
-        urls = [n.text for n in ElementTree.fromstring(sitemap).iter() if n.tag.endswith('}loc')]
+        unavailable_resources = []
+        sitemap_url = ORIGIN + '/vismo/sitemap.asp'
+        try:
+            _, sitemap = self.fetch(sitemap_url, 5_000_000)
+            urls = [n.text for n in ElementTree.fromstring(sitemap).iter() if n.tag.endswith('}loc')]
+        except HTTPError as error:
+            if error.code != 404:
+                raise
+            unavailable_resources.append(dict(url=sitemap_url, final_url=error.url,
+                kind='sitemap', status=404, checked_at=now(), error=str(error)))
+            urls = []
         queue = deque([ORIGIN + '/', ORIGIN + '/uredni-deska/2', ORIGIN + '/uredni-deska/1/archiv=1'] + urls)
         pages, aliases, assets, errors, skipped = {}, {}, {}, [], set()
         while queue:
@@ -353,8 +362,12 @@ class Capture:
                 if self.verbose:
                     print(f'page {len(pages)} assets {len(assets)} {url}', flush=True)
             except Exception as error:
-                errors.append(dict(url=url, error=f'{type(error).__name__}: {error}'))
                 pages[key] = dict(key=key, url=url, error=str(error))
+                if isinstance(error, HTTPError) and error.code == 404:
+                    unavailable_resources.append(dict(url=url, final_url=error.url, key=key,
+                        kind='page', status=404, checked_at=now(), error=str(error)))
+                else:
+                    errors.append(dict(url=url, error=f'{type(error).__name__}: {error}'))
         for i, (url, asset) in enumerate(assets.items()):
             if i >= max_assets:
                 asset['error'] = 'Asset limit reached'
@@ -380,12 +393,18 @@ class Capture:
                     print(f'asset {i+1}/{len(assets)} {len(raw)} bytes', flush=True)
             except Exception as error:
                 asset['error'] = f'{type(error).__name__}: {error}'
-                errors.append(dict(url=url, error=asset['error']))
+                if isinstance(error, HTTPError) and error.code == 404:
+                    unavailable_resources.append(dict(url=url, final_url=error.url, key=source_key(url),
+                        kind='asset', status=404, checked_at=now(), error=asset['error']))
+                else:
+                    errors.append(dict(url=url, error=asset['error']))
         manifest = dict(version=VERSION, origin=ORIGIN, started_at=started, completed_at=now(),
                         pages=list(pages.values()), assets=list(assets.values()), aliases=aliases,
-                        errors=errors, skipped=sorted(skipped), complete=not errors)
+                        errors=errors, unavailable_resources=unavailable_resources,
+                        skipped=sorted(skipped), complete=not errors)
         (self.root / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
         summary = dict(pages=len(pages), assets=len(assets), errors=len(errors),
+                       unavailable_resources=len(unavailable_resources),
                        warnings=sum(len(p.get('warnings', [])) for p in pages.values()),
                        bytes=sum(a.get('capture', {}).get('size', 0) for a in assets.values()),
                        complete=not errors)

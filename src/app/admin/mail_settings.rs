@@ -6,6 +6,8 @@ use serde_json::json;
 
 #[derive(Clone, Deserialize)]
 struct Settings {
+    #[serde(default)]
+    capture_only: bool,
     provider: String,
     username: String,
     sender_name: String,
@@ -124,10 +126,11 @@ fn SettingsForm(initial: Settings) -> impl IntoView {
                 .and_then(decode::<TestResult>);
             test_authorize.set(String::new());
             match result {
-                Ok(result) => test_success.set(Some(format!(
-                    "SMTP server přijal zkušební e-mail pro {}. Zkontrolujte schránku i složku se spamem. Přijetí serverem ještě nepotvrzuje doručení do schránky.",
-                    result.recipient
-                ))),
+                Ok(result) => test_success.set(Some(if saved.get_untracked().capture_only {
+                    format!("Zkušební e-mail pro {} byl uložen do Mailpitu. Do skutečné schránky se neposílá.", result.recipient)
+                } else {
+                    format!("SMTP server přijal zkušební e-mail pro {}. Zkontrolujte schránku i složku se spamem. Přijetí serverem ještě nepotvrzuje doručení do schránky.", result.recipient)
+                })),
                 Err(failure) => test_error.set(Some(failure)),
             }
         }
@@ -140,11 +143,14 @@ fn SettingsForm(initial: Settings) -> impl IntoView {
     view! {
         <section class="admin-panel admin-form-section">
             <h2>"Odesílací účet"</h2>
+            <Show when=move || saved.get().capture_only>
+                <p role="status">"Testovací provoz: všechny e-maily zůstávají v Mailpitu. Do skutečných schránek se neposílají a odesílací účet nelze změnit."</p>
+            </Show>
             <form on:submit=move |ev| {
                 ev.prevent_default();
                 if !busy.get_untracked() && dirty.get_untracked() { save.dispatch(()); }
             }>
-                <fieldset disabled=move || busy.get()>
+                <fieldset disabled=move || busy.get() || saved.get().capture_only>
                     <label class="admin-field" for="mail-provider"><span>"Způsob odesílání"</span>
                         <select id="mail-provider" prop:value=move || provider.get() on:change=move |ev| {
                             provider.set(event_target_value(&ev));

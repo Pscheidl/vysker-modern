@@ -37,6 +37,16 @@ times and sitemap modification dates are never treated as publication dates.
 The bundle contains municipal documents and belongs in controlled storage. The
 repository ignores `data/`, so it is not included in commits or demo builds.
 
+HTTP 404 responses for content pages, attachments and the sitemap are skipped
+without blocking the rest of the import. Their source/final URLs, resource kind, status and check
+time remain in `manifest.json` and import reports under `unavailable_resources`.
+The failed item retains its metadata and error, but has no imported content or
+attachment bytes. The surrounding captured page and its original link are
+preserved. Every fresh run requests these resources again, so restored resources
+are captured normally. Other HTTP statuses, transport failures, size limits and
+invalid file signatures still make capture fail. If the sitemap returns HTTP 404,
+discovery continues from the homepage, notice-board seeds and captured page links.
+
 ## Plan and import
 
 Create a separate PostgreSQL database and start the current application once
@@ -145,6 +155,8 @@ to stdout on success, and keeps these private files in `/app/migration`:
 - `last-run.json`: running, completed or failed attempt, including whether import committed
 - `last-success.json`: last completed synchronization and item counts/lists
 - `capture-errors.json`: failed source requests, including any deliberately allowed subset
+- `capture-unavailable.json`: HTTP 404 source resources observed in the latest capture,
+  retained even if another capture error prevents import
 - `reviews.html` and `reviews.json`: all pending proposals with existing destinations,
   current local text, source text/metadata and downloadable changed attachments
 

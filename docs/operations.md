@@ -204,6 +204,12 @@ Change thresholds using the command arguments listed by `python3 scripts/monitor
 checks their presence and age, not their content or recoverability. A successful
 restore rehearsal remains necessary.
 
+For a test deployment that intentionally has no backups, set
+`OBEC_MONITOR_CHECK_BACKUPS=false` or pass `--no-check-backups`. This skips backup
+age and backup-volume disk checks while keeping application readiness, database,
+database-volume disk and both mail-queue checks. The default remains `true`, and
+`--check-backups` explicitly enables the checks again.
+
 Without a webhook, alerts go to container logs. To send alerts to an operator's
 HTTPS webhook, put its URL in the ignored `deploy/secrets/alert-webhook.txt`, then
 include the optional overlay:

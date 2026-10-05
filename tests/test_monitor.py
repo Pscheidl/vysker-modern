@@ -13,6 +13,47 @@ monitor=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(monitor)
 
 class Monitoring(unittest.TestCase):
+    def test_no_backups_keeps_application_database_disk_and_mail_checks(self):
+        with tempfile.TemporaryDirectory() as root, temporary_database() as database:
+            root = Path(root)
+            with connect(database) as db:
+                db.execute('CREATE TABLE mail_queue(created_at BIGINT,attempts BIGINT,sent_at BIGINT,cancelled BOOLEAN)')
+                db.execute('CREATE TABLE recovery_mail(LIKE mail_queue)')
+                db.execute('ALTER TABLE recovery_mail ADD delivery_expired_at BIGINT')
+                db.execute('INSERT INTO recovery_mail VALUES (1,4,NULL,FALSE,NULL)')
+            usage = type('Usage', (), dict(total=100000, free=50000))()
+            with patch.object(monitor.urllib.request, 'urlopen', side_effect=OSError()), \
+                    patch.object(monitor.shutil, 'disk_usage', return_value=usage) as disk:
+                report = monitor.check(database, root/'absent', 'http://localhost',
+                                       now=10000, database_disk=root, check_backups=False)
+            disk.assert_called_once_with(root)
+            self.assertEqual(report['alerts'], ['application_not_ready', 'database_disk_space_low',
+                                               'mail_queue_stalled', 'recovery_mail_stalled'])
+            self.assertNotIn('backup_age_seconds', report['metrics'])
+            self.assertEqual(report['metrics']['pending_mail'], 1)
+            with patch.object(monitor.urllib.request, 'urlopen', side_effect=OSError()):
+                report = monitor.check('postgresql://invalid@127.0.0.1:1/missing', root/'absent',
+                                       'http://localhost', check_backups=False)
+            self.assertIn('database_check_failed', report['alerts'])
+            self.assertNotIn('backup_missing', report['alerts'])
+
+    def test_backup_optout_is_explicit_and_cli_can_enable_it_again(self):
+        report = {'checked_at': 10000, 'status': 'ok', 'alerts': [], 'metrics': {}}
+        for setting, options, expected in [
+                ('true', [], True), ('false', [], False),
+                ('false', ['--check-backups'], True), ('true', ['--no-check-backups'], False)]:
+            with patch.dict(monitor.os.environ, {'OBEC_MONITOR_CHECK_BACKUPS': setting}), \
+                    patch.object(sys, 'argv', ['monitor.py', 'check', *options]), \
+                    patch.object(monitor, 'check', return_value=report) as check, \
+                    patch('builtins.print'):
+                self.assertEqual(monitor.main(), 0)
+                self.assertIs(check.call_args.kwargs['check_backups'], expected)
+        with patch.dict(monitor.os.environ, {'OBEC_MONITOR_CHECK_BACKUPS': 'maybe'}), \
+                patch.object(sys, 'argv', ['monitor.py', 'check']), \
+                patch.object(sys, 'stderr'), self.assertRaises(SystemExit) as error:
+            monitor.main()
+        self.assertEqual(error.exception.code, 2)
+
     def test_health_and_thresholds(self):
         with tempfile.TemporaryDirectory() as root, temporary_database() as database:
             root=Path(root)

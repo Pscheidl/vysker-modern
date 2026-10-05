@@ -207,8 +207,11 @@ fn ContactPreview() -> impl IntoView {
     view! {
         <Title text="Kontakt a úřední hodiny · Vyskeř"/>
         <div class="page-width interior"><PageHeading title="Jsme tu pro vás." description="Zavolejte, napište nebo se zastavte na obecním úřadě." eyebrow="KONTAKT"/>
-            <div class="contact-grid"><section class="contact-panel"><h2>"Obecní úřad Vyskeř"</h2><address><p><Icon name="pin"/><span>"Vyskeř 50"<br/>"512 64 Vyskeř"</span></p><p><Icon name="phone"/><a href="tel:+420481320211">"+420 481 320 211"</a></p><p><Icon name="mail"/><a href="mailto:vysker@cmail.cz">"vysker@cmail.cz"</a></p></address><p class="field-note">"Před osobní návštěvou mimo úřední hodiny se prosím domluvte telefonicky."</p></section>
-            <section id="uredni-hodiny" class="hours-panel"><Icon name="clock"/><h2>"Úřední hodiny"</h2><dl><div><dt>"Pondělí"</dt><dd>"16.00–18.00"</dd></div><div><dt>"Středa"</dt><dd>"16.00–18.00"</dd></div></dl><p>"Těšíme se na vaši návštěvu."</p></section></div>
+            <div class="contact-grid"><section class="contact-panel"><h2>"Obecní úřad Vyskeř"</h2><address><p><Icon name="pin"/><span>"Vyskeř 50"<br/>"512 64 Vyskeř"</span></p><p><Icon name="phone"/><a href="tel:+420481329211">"+420 481 329 211"</a></p><p><Icon name="mail"/><a href="mailto:vysker@craj.cz">"vysker@craj.cz"</a></p></address><p class="field-note">"Před osobní návštěvou mimo úřední hodiny se prosím domluvte telefonicky."</p></section>
+            <section id="uredni-hodiny" class="hours-panel"><Icon name="clock"/><h2>"Úřední hodiny"</h2>
+                <section class="hours-group" aria-labelledby="leadership-hours"><h3 id="leadership-hours">"Starosta a místostarostka"</h3><p>"Jan Kozák, starosta"<br/>"Ing. Michaela Brzobohatá, místostarostka"</p><dl><div><dt>"Pondělí a středa"</dt><dd>"16:00–18:00"</dd></div></dl></section>
+                <section class="hours-group" aria-labelledby="accounting-hours"><h3 id="accounting-hours">"Ludmila Brzobohatá"</h3><p>"Účetní, výběr poplatků, ověřování podpisů"</p><dl><div><dt>"Pondělí až pátek"</dt><dd>"7:00–11:00"</dd></div><div><dt>"Pondělí a středa"</dt><dd>"14:00–18:00"</dd></div></dl></section>
+            </section></div>
             <section class="contact-followup"><h2>"Hledáte konkrétní dokument?"</h2><p>"Zkuste nejprve vyhledávání. Dokumenty najdete i podle čísla jednacího."</p><SearchBox/></section>
         </div>
     }

@@ -121,6 +121,7 @@ def run_sync(conn, state, *, delay=.4, max_pages=1500, max_assets=5000,
         # afterwards, while proposed changes and their bytes are retained in PostgreSQL.
         with tempfile.TemporaryDirectory(prefix='capture-', dir=state) as bundle:
             capture = Capture(bundle, delay, verbose=False).crawl(max_pages, max_assets)
+            write_json(state / 'capture-unavailable.json', capture.get('unavailable_resources', []))
             if not capture['complete'] and not allow_incomplete:
                 write_json(state / 'capture-errors.json', capture['errors'])
                 raise ValueError('Capture is incomplete. See capture-errors.json before allowing a partial import.')
@@ -175,7 +176,7 @@ def main():
                 page_map=json.loads(Path(args.page_map).read_text()) if args.page_map else None,
                 notice_map=json.loads(Path(args.notice_map).read_text()) if args.notice_map else None)
             summary = {key: report[key] for key in ('status', 'reason', 'pending_reviews') if key in report}
-            summary.update({key: len(report[key]) for key in ('new', 'unchanged', 'conflicts', 'capture_errors', 'skipped_document_pages', 'grouped_gallery_pages') if key in report})
+            summary.update({key: len(report[key]) for key in ('new', 'unchanged', 'conflicts', 'capture_errors', 'unavailable_resources', 'skipped_document_pages', 'grouped_gallery_pages') if key in report})
             print(json.dumps(summary, ensure_ascii=False), flush=True)
         elif args.command == 'reviews':
             print(json.dumps({'pending_reviews': export_reviews(conn, args.output, args.base_url)}))

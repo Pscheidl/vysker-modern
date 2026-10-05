@@ -7,6 +7,7 @@ use sqlx::PgConnection;
 use time::OffsetDateTime;
 
 pub fn transport(s: &Backend) -> anyhow::Result<AsyncSmtpTransport<Tokio1Executor>> {
+    s.config.validate_smtp_capture()?;
     let mut builder = match s.config.smtp_tls.as_str() {
         "none" => AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&s.config.smtp_host),
         "tls" => AsyncSmtpTransport::<Tokio1Executor>::relay(&s.config.smtp_host)?,

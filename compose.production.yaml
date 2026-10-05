@@ -59,7 +59,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    tmpfs: [/tmp:size=32m,mode=1777]
+    tmpfs: ["/tmp:size=32m,mode=1777"]
     networks:
       application:
         ipv4_address: 172.30.64.3
