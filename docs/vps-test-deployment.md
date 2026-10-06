@@ -289,8 +289,11 @@ Mapa souvisí se zdrojovým webem, na poskytovateli VPS nezávisí.
 Přepínače `--publish-content --skip-pages` zpřístupní nové dokumenty a události
 a vynechají obsahové stránky i galerie. Ve veřejném HTTPS režimu jsou dostupné všem.
 Přepínač `--archive-notices` uloží položky původní úřední desky do veřejného
-archivu s jejich názvy a přílohami. Předchozí koncepty se automaticky nemění a import
-neodesílá oznámení odběratelům. Podrobnosti jsou v [postupu migrace](migration.md).
+archivu s jejich názvy a přílohami. Předchozí koncepty se automaticky nemění.
+Nové veřejné dokumenty a položky úřední desky, včetně přímého importu do archivu,
+uloží požadavky na oznámení do `publication_outbox`. Web je automaticky předá
+do poštovní fronty. Opakovaný import ani přesun již zveřejněné položky do archivu
+další oznámení nevytvoří. Podrobnosti jsou v [postupu migrace](migration.md).
 
 První i plánované spuštění vést přes stejnou službu systemd. Budoucí soubor
 `/etc/systemd/system/obecni-web-legacy-sync.service`:

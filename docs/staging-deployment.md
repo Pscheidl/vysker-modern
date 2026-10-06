@@ -203,7 +203,11 @@ Přepínač `--skip-pages` vynechá obsahové stránky a galerie. Přepínač
 `--archive-notices` ukládá položky původní
 úřední desky rovnou do veřejného archivu a zachovává jejich názvy a přílohy.
 Nevyplněná zdrojová data zůstávají neznámá, datum importu se nevydává za
-datum vyvěšení nebo sejmutí. Import neodesílá oznámení odběratelům.
+datum vyvěšení nebo sejmutí. Nové veřejné dokumenty a položky úřední desky,
+včetně přímého importu do archivu, uloží požadavky na oznámení do
+`publication_outbox`. Web je každých 30 sekund předává do poštovní fronty.
+Opakovaný import ani přesun již zveřejněné položky do archivu další oznámení
+nevytvoří. Obsahové stránky a události se e-mailem neoznamují.
 Známé přílohy znovu nestahuje. Ověřené soubory přebírá z trvalé cache
 `/app/migration/capture-cache`, při prvním běhu i z databáze. Zdrojové stránky
 dál kontroluje kvůli novým odkazům. `last-success.json` obsahuje délku běhu

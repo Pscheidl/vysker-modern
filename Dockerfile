@@ -2,6 +2,7 @@ FROM postgres:18-bookworm AS postgres-tools
 FROM rust:1.98.1-bookworm AS source
 WORKDIR /app
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY Dockerfile.web Dockerfile.prebuilt ./
 COPY src ./src
 COPY migrations ./migrations
 COPY seed-demo.sql ./

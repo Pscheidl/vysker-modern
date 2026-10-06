@@ -36,7 +36,7 @@ def main():
     (output / 'scripts').mkdir()
     for name in ('database', 'monitor', 'postgres', 'legacy', 'legacy_galleries',
                  'legacy_import', 'legacy_scope', 'legacy_sync', 'legacy_archive',
-                 'legacy_reimport', 'legacy_replace'):
+                 'legacy_reimport', 'legacy_replace', 'legacy_notifications'):
         shutil.copy2(root / f'scripts/{name}.py', output / f'scripts/{name}.py')
     (output / 'config').mkdir()
     for name in ('legacy-vysker-pages.json', 'legacy-vysker-notices.json'):
