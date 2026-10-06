@@ -98,6 +98,11 @@ async fn consent_snapshot_is_immutable_and_unsubscribe_remains_available() {
     );
     assert_eq!(evidence[0]["confirmed_at"], now.unix_timestamp());
     app.publish(app.notice(json!({})).await).await;
+    assert!(
+        obecni_web::backend::mail::prepare_publications(&app.state, now)
+            .await
+            .unwrap()
+    );
     let body: String = sqlx::query_scalar("SELECT body FROM mail_queue WHERE purpose='document'")
         .fetch_one(&app.state.pool)
         .await
@@ -125,6 +130,11 @@ async fn legacy_verified_addresses_are_not_treated_as_proven_consent() {
     let app = App::new().await;
     sqlx::query("INSERT INTO subscribers(email,verified_at,retention_started_at) VALUES ('legacy@example.test',1,1)").execute(&app.state.pool).await.unwrap();
     app.publish(app.notice(json!({})).await).await;
+    assert!(
+        !obecni_web::backend::mail::prepare_publications(&app.state, OffsetDateTime::now_utc())
+            .await
+            .unwrap()
+    );
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM mail_queue WHERE purpose='document'")
         .fetch_one(&app.state.pool)
         .await
@@ -138,6 +148,11 @@ async fn legacy_verified_addresses_are_not_treated_as_proven_consent() {
         .await
         .unwrap();
     app.publish(app.notice(json!({})).await).await;
+    assert!(
+        obecni_web::backend::mail::prepare_publications(&app.state, OffsetDateTime::now_utc())
+            .await
+            .unwrap()
+    );
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM mail_queue WHERE purpose='document'")
         .fetch_one(&app.state.pool)
         .await

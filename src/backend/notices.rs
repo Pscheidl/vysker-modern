@@ -295,16 +295,7 @@ pub async fn publish_at(s: &Backend, id: i64, actor: i64, now: OffsetDateTime) -
             now,
         )
         .await?;
-        mail::enqueue_publication(
-            &mut tx,
-            s,
-            "notice",
-            id,
-            &record.title,
-            &format!("/uredni-deska/{id}"),
-            now,
-        )
-        .await?;
+        mail::enqueue_publication(&mut tx, mail::PublicationTarget::Notice(id), now).await?;
     }
     tx.commit().await?;
     Ok(())
@@ -463,16 +454,7 @@ pub async fn maintenance(s: &Backend, now: OffsetDateTime) -> Result<()> {
             now,
         )
         .await?;
-        mail::enqueue_publication(
-            &mut tx,
-            s,
-            "notice",
-            record.id,
-            &record.title,
-            &format!("/uredni-deska/{}", record.id),
-            now,
-        )
-        .await?;
+        mail::enqueue_publication(&mut tx, mail::PublicationTarget::Notice(record.id), now).await?;
     }
     sqlx::query("UPDATE attachments SET data=NULL,removed_at=COALESCE(removed_at,$1) WHERE notice_id IN (SELECT id FROM notices WHERE status IN ('archived','withdrawn') AND (retain_attachments=FALSE OR (review_json::jsonb->>'archive_until') IS NULL OR (review_json::jsonb->>'archive_until')::date<=$2)) AND data IS NOT NULL")
         .bind(timestamp(now)).bind(today(now)).execute(&mut *tx).await?;

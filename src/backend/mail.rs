@@ -59,32 +59,35 @@ impl Worker {
     }
 }
 
+pub enum PublicationTarget {
+    Notice(i64),
+    Document(i64),
+}
+
+/// Snapshot recipients in the same transaction that makes the content public.
+/// Both importers and native publication hand delivery to the durable outbox.
 pub async fn enqueue_publication(
     conn: &mut PgConnection,
-    s: &Backend,
-    kind: &str,
-    id: i64,
-    title: &str,
-    path: &str,
+    target: PublicationTarget,
     now: OffsetDateTime,
 ) -> Result<()> {
-    if s.config.privacy.is_none() {
-        return Ok(());
-    }
-    let recipients: Vec<(i64, i64)> = sqlx::query_as(
-        "SELECT s.id,c.id FROM subscribers s JOIN subscription_consents c ON c.subscriber_id=s.id WHERE s.verified_at IS NOT NULL AND s.unsubscribed_at IS NULL AND c.confirmed_at IS NOT NULL AND c.withdrawn_at IS NULL AND c.superseded_at IS NULL",
-    )
-    .fetch_all(&mut *conn)
-    .await?;
-    let publication = Publication {
-        kind,
-        id,
-        title,
-        path,
+    let (notice_id, document_id) = match target {
+        PublicationTarget::Notice(id) => (Some(id), None),
+        PublicationTarget::Document(id) => (None, Some(id)),
     };
-    for recipient in recipients {
-        enqueue_recipient(conn, s, &publication, recipient, now.unix_timestamp()).await?;
-    }
+    sqlx::query(
+        "INSERT INTO publication_outbox (notice_id,document_id,subscriber_id,consent_id,created_at)
+         SELECT $1,$2,s.id,c.id,$3 FROM subscribers s
+         JOIN subscription_consents c ON c.subscriber_id=s.id
+         WHERE s.verified_at IS NOT NULL AND s.unsubscribed_at IS NULL
+           AND c.confirmed_at IS NOT NULL AND c.withdrawn_at IS NULL AND c.superseded_at IS NULL
+         ORDER BY s.id,c.id ON CONFLICT DO NOTHING",
+    )
+    .bind(notice_id)
+    .bind(document_id)
+    .bind(now.unix_timestamp())
+    .execute(conn)
+    .await?;
     Ok(())
 }
 
@@ -141,7 +144,7 @@ async fn enqueue_recipient(
 }
 
 #[derive(sqlx::FromRow)]
-struct ImportedPublication {
+struct PublicationRequest {
     id: i64,
     subscriber_id: i64,
     consent_id: i64,
@@ -152,11 +155,14 @@ struct ImportedPublication {
     allowed: bool,
 }
 
-/// Importers share the database transaction, while the web owns mail rendering.
+/// Atomically transfer a bounded outbox batch to the SMTP queue.
 /// Keep the original recipient and consent even if delivery starts much later.
-async fn enqueue_imports(s: &Backend, now: OffsetDateTime) -> Result<bool> {
+pub async fn prepare_publications(s: &Backend, now: OffsetDateTime) -> Result<bool> {
+    if s.config.privacy.is_none() {
+        return Ok(false);
+    }
     let mut tx = crate::db::begin_write(&s.pool).await?;
-    let publications: Vec<ImportedPublication> = sqlx::query_as(
+    let publications: Vec<PublicationRequest> = sqlx::query_as(
         "SELECT o.id,o.subscriber_id,o.consent_id,o.created_at,
             CASE WHEN o.notice_id IS NOT NULL THEN 'notice' ELSE 'document' END AS kind,
             coalesce(o.notice_id,o.document_id) AS entity_id,coalesce(n.title,d.title) AS title,
@@ -174,29 +180,29 @@ async fn enqueue_imports(s: &Backend, now: OffsetDateTime) -> Result<bool> {
     )
     .fetch_all(&mut *tx)
     .await?;
-    for imported in &publications {
-        if imported.allowed {
-            let title = if imported.kind == "notice" {
+    for request in &publications {
+        if request.allowed {
+            let title = if request.kind == "notice" {
                 sqlx::query_as::<_, super::notices::NoticeRecord>(
                     "SELECT * FROM notices WHERE id=$1",
                 )
-                .bind(imported.entity_id)
+                .bind(request.entity_id)
                 .fetch_one(&mut *tx)
                 .await?
                 .into_public(now)
                 .title
             } else {
-                imported.title.clone()
+                request.title.clone()
             };
-            let route = if imported.kind == "notice" {
+            let route = if request.kind == "notice" {
                 "uredni-deska"
             } else {
                 "dokumenty"
             };
-            let path = format!("/{route}/{}", imported.entity_id);
+            let path = format!("/{route}/{}", request.entity_id);
             let publication = Publication {
-                kind: &imported.kind,
-                id: imported.entity_id,
+                kind: &request.kind,
+                id: request.entity_id,
                 title: &title,
                 path: &path,
             };
@@ -204,13 +210,13 @@ async fn enqueue_imports(s: &Backend, now: OffsetDateTime) -> Result<bool> {
                 &mut tx,
                 s,
                 &publication,
-                (imported.subscriber_id, imported.consent_id),
-                imported.created_at,
+                (request.subscriber_id, request.consent_id),
+                request.created_at,
             )
             .await?;
         }
         sqlx::query("DELETE FROM publication_outbox WHERE id=$1")
-            .bind(imported.id)
+            .bind(request.id)
             .execute(&mut *tx)
             .await?;
     }
@@ -242,14 +248,14 @@ pub async fn deliver_one(
     if s.config.privacy.is_none() {
         return Ok(false);
     }
-    let imported = enqueue_imports(s, now)
+    let prepared = prepare_publications(s, now)
         .await
         .map_err(|error| anyhow::anyhow!(error.1))?;
     let lease = auth::token();
     let message:Option<Pending>=sqlx::query_as("UPDATE mail_queue SET lock_token=$1,locked_until=$2,attempts=attempts+1 WHERE id=(SELECT id FROM mail_queue WHERE sent_at IS NULL AND cancelled=FALSE AND next_attempt_at<=$3 AND locked_until<=$4 ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id,subscriber_id,purpose,subject,body,attempts,consent_id")
         .bind(&lease).bind(now.unix_timestamp()+300).bind(now.unix_timestamp()).bind(now.unix_timestamp()).fetch_optional(&s.pool).await?;
     let Some(message) = message else {
-        return Ok(imported);
+        return Ok(prepared);
     };
     let (address, confirmed, unsubscribed): (String, Option<i64>, Option<i64>) =
         sqlx::query_as("SELECT email,verified_at,unsubscribed_at FROM subscribers WHERE id=$1")

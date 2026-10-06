@@ -9,13 +9,25 @@ The selected service must allow the configured From address and provide SMTP
 credentials. A website-specific password or service credential can be rotated
 without changing a person's mailbox password.
 
-New public documents imported directly into PostgreSQL, including notices added
-straight to the archive, save a notification request in `publication_outbox`.
+All new public documents and official notices save notification requests in
+`publication_outbox` in the same transaction as publication. This includes
+administration, scheduled publication and imports directly into the archive.
 The running web checks this table through its regular mail worker every 30 seconds
-and transfers requests to `mail_queue`. Both steps retain their data across web
-restarts. Only subscribers with active, confirmed consent at import time receive
-the announcement, and delivery rechecks that consent. Repeated imports and moving
-an already published notice to the archive do not announce it again.
+and atomically transfers requests to `mail_queue`. Both stages retain their data
+across web restarts. Only subscribers with active, confirmed consent when the
+document first becomes public receive the announcement. Delivery rechecks consent
+and public visibility. Repeated imports and moving an already published notice
+to the archive do not announce it again. Content pages do not send notifications.
+
+Subscription verification requests are limited on the server to one new email
+per address every 10 minutes and three in any rolling hour. A valid verification
+message still waiting for SMTP is reused regardless of the cooldown. Repeated
+clicks keep the existing link valid and return the same generic response.
+After a delivered message and the cooldown, a resend preserves earlier valid
+links for the same consent. Confirming one link consumes all remaining verification
+links. Limits are persisted and checked inside the enqueue transaction, so
+concurrent requests and restarts cannot bypass them. The additional IP limit
+remains 20 requests per hour.
 
 ## Google from the administration
 
@@ -124,7 +136,10 @@ application behavior, not deliverability from the future production provider.
 attempt count and SMTP acceptance time. Acceptance does not prove inbox delivery
 or reading. Security messages use `recovery_mail`, subscription messages use
 `mail_queue`. Bodies containing links are cleared after sending or cancellation.
-The monitor includes both queues in backlog and stalled-delivery checks.
+The monitor includes `publication_outbox` and both mail queues in backlog and
+stalled-delivery checks. Unsent, uncancelled document notifications are kept for
+delivery rather than removed by the mail-history retention timer. Sent and
+cancelled messages and verification emails follow the configured history period.
 
 Retries have stable Message-IDs and at-least-once semantics. A process crash after
 SMTP acceptance but before recording it may cause a duplicate. Provider bounce

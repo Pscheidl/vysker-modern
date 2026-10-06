@@ -67,7 +67,8 @@ pub async fn overview(State(s): State<Backend>, _: Admin) -> Result<Json<Overvie
         (SELECT count(*) FROM documents WHERE status='published') AS documents,
         (SELECT count(*) FROM pages WHERE published=TRUE) AS pages,
         (SELECT count(*) FROM subscribers s WHERE verified_at IS NOT NULL AND unsubscribed_at IS NULL AND EXISTS(SELECT 1 FROM subscription_consents c WHERE c.subscriber_id=s.id AND c.confirmed_at IS NOT NULL AND c.withdrawn_at IS NULL AND c.superseded_at IS NULL)) AS subscribers,
-        (SELECT count(*) FROM mail_queue WHERE sent_at IS NULL AND cancelled=FALSE) AS pending_mail")
+        (SELECT count(*) FROM mail_queue WHERE sent_at IS NULL AND cancelled=FALSE)
+            + (SELECT count(*) FROM publication_outbox) AS pending_mail")
         .fetch_one(&s.pool).await?;
     row.current_date = today(OffsetDateTime::now_utc()).to_string();
     Ok(Json(row))

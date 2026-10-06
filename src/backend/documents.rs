@@ -131,19 +131,10 @@ pub async fn publish(
 ) -> Result<StatusCode> {
     let now = OffsetDateTime::now_utc();
     let mut tx = crate::db::begin_write(&s.pool).await?;
-    let title: String=sqlx::query_scalar("UPDATE documents SET status='published',published_at=$1 WHERE id=$2 AND status='draft' RETURNING title")
+    sqlx::query_scalar::<_, i64>("UPDATE documents SET status='published',published_at=$1 WHERE id=$2 AND status='draft' RETURNING id")
         .bind(timestamp(now)).bind(id).fetch_optional(&mut *tx).await?.ok_or_else(||conflict("Zveřejnit lze pouze koncept dokumentu."))?;
     audit(&mut tx, Some(admin.id), "published", "document", id, now).await?;
-    mail::enqueue_publication(
-        &mut tx,
-        &s,
-        "document",
-        id,
-        &title,
-        &format!("/dokumenty/{id}"),
-        now,
-    )
-    .await?;
+    mail::enqueue_publication(&mut tx, mail::PublicationTarget::Document(id), now).await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }

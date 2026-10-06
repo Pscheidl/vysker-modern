@@ -12,6 +12,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
+const VERIFICATION_COOLDOWN_SECONDS: i64 = 600;
+const VERIFICATION_WINDOW_SECONDS: i64 = 3600;
+const VERIFICATION_WINDOW_LIMIT: i64 = 3;
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubscribeInput {
@@ -60,7 +64,6 @@ pub async fn request_subscription(
         ));
     }
     let address = auth::email(address)?;
-    auth::throttle(s, &format!("subscribe-mail:{address}"), 3, 3600, now).await?;
     let mut tx = crate::db::begin_write(&s.pool).await?;
     let old: Option<(i64, Option<i64>, Option<i64>)> =
         sqlx::query_as("SELECT id,verified_at,unsubscribed_at FROM subscribers WHERE email=$1")
@@ -77,18 +80,71 @@ pub async fn request_subscription(
         tx.commit().await?;
         return Ok(());
     }
+    // Count queued messages, not clicks. The write lock makes this persistent
+    // sliding window and the following enqueue atomic across all processes.
+    let (recent, last_activity): (i64, Option<i64>) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE m.created_at>$2),
+         max(GREATEST(m.created_at,COALESCE(m.sent_at,m.created_at)))
+         FROM mail_queue m JOIN subscribers s ON s.id=m.subscriber_id
+         WHERE s.email=$1 AND m.purpose='verification'",
+    )
+    .bind(&address)
+    .bind(now.unix_timestamp() - VERIFICATION_WINDOW_SECONDS)
+    .fetch_one(&mut *tx)
+    .await?;
+    let waiting: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM mail_queue m
+         JOIN subscribers s ON s.id=m.subscriber_id
+         JOIN subscription_consents c ON c.id=m.consent_id AND c.subscriber_id=s.id
+         WHERE s.email=$1 AND m.purpose='verification' AND m.sent_at IS NULL
+           AND m.cancelled=FALSE AND m.body IS NOT NULL
+           AND c.confirmed_at IS NULL AND c.withdrawn_at IS NULL AND c.superseded_at IS NULL
+           AND EXISTS(SELECT 1 FROM subscription_tokens t WHERE t.subscriber_id=s.id
+               AND t.consent_id=c.id AND t.purpose='verification' AND t.expires_at>$2))",
+    )
+    .bind(&address)
+    .bind(now.unix_timestamp())
+    .fetch_one(&mut *tx)
+    .await?;
+    if recent >= VERIFICATION_WINDOW_LIMIT
+        || last_activity
+            .is_some_and(|last| last > now.unix_timestamp() - VERIFICATION_COOLDOWN_SECONDS)
+        || waiting
+    {
+        // Keep the same response for pending, confirmed and rate-limited addresses.
+        tx.commit().await?;
+        return Ok(());
+    }
+    let reusable_consent: Option<i64> = sqlx::query_scalar(
+        "SELECT c.id FROM subscription_consents c JOIN subscribers s ON s.id=c.subscriber_id
+         WHERE s.email=$1 AND c.notice_fingerprint=$2 AND c.confirmed_at IS NULL
+           AND c.withdrawn_at IS NULL AND c.superseded_at IS NULL
+           AND EXISTS(SELECT 1 FROM subscription_tokens t WHERE t.subscriber_id=s.id
+               AND t.consent_id=c.id AND t.purpose='verification' AND t.expires_at>$3)",
+    )
+    .bind(&address)
+    .bind(&notice.fingerprint)
+    .bind(now.unix_timestamp())
+    .fetch_optional(&mut *tx)
+    .await?;
     let id=sqlx::query_scalar::<_,i64>("INSERT INTO subscribers(email,retention_started_at) VALUES ($1,$2) ON CONFLICT(email) DO UPDATE SET verified_at=NULL,unsubscribed_at=NULL,retention_started_at=excluded.retention_started_at RETURNING id").bind(address).bind(now.unix_timestamp()).fetch_one(&mut *tx).await?;
-    sqlx::query("UPDATE subscription_consents SET superseded_at=$1 WHERE subscriber_id=$2 AND confirmed_at IS NULL AND superseded_at IS NULL")
-        .bind(now.unix_timestamp()).bind(id).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO consent_notices(fingerprint,version,consent_text,privacy_json) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING")
-        .bind(&notice.fingerprint).bind(&notice.consent_version).bind(&notice.consent_text)
-        .bind(serde_json::to_string(&notice.policy).expect("serializable privacy policy")).execute(&mut *tx).await?;
-    let consent_id = sqlx::query_scalar::<_, i64>("INSERT INTO subscription_consents(subscriber_id,notice_fingerprint,requested_at) VALUES ($1,$2,$3) RETURNING id")
-        .bind(id).bind(&notice.fingerprint).bind(now.unix_timestamp()).fetch_one(&mut *tx).await?;
-    sqlx::query("DELETE FROM subscription_tokens WHERE subscriber_id=$1")
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
+    let consent_id = if let Some(consent_id) = reusable_consent {
+        // A deliberate resend must not invalidate a link already in the inbox.
+        consent_id
+    } else {
+        sqlx::query("UPDATE subscription_consents SET superseded_at=$1 WHERE subscriber_id=$2 AND confirmed_at IS NULL AND superseded_at IS NULL")
+            .bind(now.unix_timestamp()).bind(id).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO consent_notices(fingerprint,version,consent_text,privacy_json) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING")
+            .bind(&notice.fingerprint).bind(&notice.consent_version).bind(&notice.consent_text)
+            .bind(serde_json::to_string(&notice.policy).expect("serializable privacy policy")).execute(&mut *tx).await?;
+        let consent_id = sqlx::query_scalar::<_, i64>("INSERT INTO subscription_consents(subscriber_id,notice_fingerprint,requested_at) VALUES ($1,$2,$3) RETURNING id")
+            .bind(id).bind(&notice.fingerprint).bind(now.unix_timestamp()).fetch_one(&mut *tx).await?;
+        sqlx::query("DELETE FROM subscription_tokens WHERE subscriber_id=$1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        consent_id
+    };
     sqlx::query(
         "UPDATE mail_queue SET cancelled=TRUE,body=NULL WHERE subscriber_id=$1 AND sent_at IS NULL",
     )
@@ -170,6 +226,12 @@ pub async fn use_token(
             .execute(&mut *tx)
             .await?;
         sqlx::query("UPDATE mail_queue SET cancelled=TRUE,body=NULL WHERE subscriber_id=$1 AND purpose='verification' AND sent_at IS NULL").bind(id).execute(&mut *tx).await?;
+        sqlx::query(
+            "DELETE FROM subscription_tokens WHERE subscriber_id=$1 AND purpose='verification'",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
     } else {
         sqlx::query("UPDATE subscription_consents SET withdrawn_at=$1 WHERE subscriber_id=$2 AND withdrawn_at IS NULL AND superseded_at IS NULL")
             .bind(now.unix_timestamp()).bind(id).execute(&mut *tx).await?;

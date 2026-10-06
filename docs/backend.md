@@ -273,13 +273,24 @@ addresses receive no publication notifications. Verified subscribers receive
 future notices and general documents. Republishing the same record does not
 enqueue duplicate notifications.
 
+Repeated subscription requests are idempotent while a valid verification email
+is pending. Once sent, another email is allowed after 10 minutes, with at most
+three messages per address in a rolling hour. The server checks persisted mail
+history under the write lock and retains the existing confirmation links for the
+same pending consent. The public response does not disclose which limit applied.
+The separate IP limit remains 20 requests per hour.
+
 Links open confirmation forms. GET requests do not change subscription state,
 preventing automated email scanners from activating or cancelling subscriptions.
 New notification emails contain unsubscribe links without a fixed expiry date,
 usable while the associated subscription remains active.
 
-The durable mail queue is populated in the publication transaction. SMTP
-failures use increasing retry delays, capped at six hours. Message bodies are
+Every document publication, including scheduled notices and imports, saves its
+recipient snapshot in `publication_outbox` in the publication transaction. The
+mail worker atomically builds `mail_queue` messages and removes those requests.
+Unprocessed requests survive restart, and pending document emails are retained
+until delivery or cancellation. Content pages remain outside the subscription.
+SMTP failures use increasing retry delays, capped at six hours. Message bodies are
 removed after SMTP acceptance or cancellation. Worker leases expire after a
 crash. Delivery is at least once. A crash after SMTP acceptance but before the
 database update can cause another delivery with the same Message-ID.

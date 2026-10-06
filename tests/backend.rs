@@ -291,7 +291,7 @@ async fn scheduled_publication_and_expiry_are_idempotent_in_prague_time() {
         .unwrap();
     assert_eq!(state, "published");
     assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM mail_queue WHERE purpose='document'")
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM publication_outbox")
             .fetch_one(&app.state.pool)
             .await
             .unwrap(),
@@ -311,6 +311,16 @@ async fn scheduled_publication_and_expiry_are_idempotent_in_prague_time() {
     .await
     .unwrap();
     assert_eq!(count, 1);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM publication_outbox")
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap(),
+        1
+    );
+    backend::mail::prepare_publications(&app.state, datetime!(2026-10-26 23:02 UTC))
+        .await
+        .unwrap();
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM mail_queue WHERE purpose='document'")
             .fetch_one(&app.state.pool)
@@ -437,6 +447,11 @@ async fn double_opt_in_only_announces_future_documents_and_unsubscribe_cancels_q
     let token = app.confirmation_token(email).await;
     let draft = app.notice(json!({})).await;
     app.publish(draft).await;
+    assert!(
+        !backend::mail::prepare_publications(&app.state, OffsetDateTime::now_utc())
+            .await
+            .unwrap()
+    );
     let queued: i64 =
         sqlx::query_scalar("SELECT count(*) FROM mail_queue WHERE purpose='document'")
             .fetch_one(&app.state.pool)
@@ -489,6 +504,11 @@ async fn double_opt_in_only_announces_future_documents_and_unsubscribe_cancels_q
         StatusCode::NO_CONTENT
     );
     assert_eq!(app.publish(published).await.status(), StatusCode::CONFLICT);
+    assert!(
+        backend::mail::prepare_publications(&app.state, OffsetDateTime::now_utc())
+            .await
+            .unwrap()
+    );
     let bodies: Vec<String> =
         sqlx::query_scalar("SELECT body FROM mail_queue WHERE purpose='document'")
             .fetch_all(&app.state.pool)
@@ -526,6 +546,11 @@ async fn double_opt_in_only_announces_future_documents_and_unsubscribe_cancels_q
     .unwrap();
     assert_eq!(pending, 0);
     app.publish(app.notice(json!({})).await).await;
+    assert!(
+        !backend::mail::prepare_publications(&app.state, OffsetDateTime::now_utc())
+            .await
+            .unwrap()
+    );
     let queued: i64 =
         sqlx::query_scalar("SELECT count(*) FROM mail_queue WHERE purpose='document'")
             .fetch_one(&app.state.pool)
@@ -535,7 +560,7 @@ async fn double_opt_in_only_announces_future_documents_and_unsubscribe_cancels_q
 }
 
 #[tokio::test]
-async fn verification_tokens_expire_and_resending_revokes_old_link() {
+async fn verification_tokens_expire_and_repeated_clicks_keep_the_original_link() {
     let app = App::new().await;
     let now = OffsetDateTime::now_utc();
     common::request_subscription(&app.state, "expire@example.test", now)
@@ -550,12 +575,7 @@ async fn verification_tokens_expire_and_resending_revokes_old_link() {
     .await
     .unwrap();
     let new = app.confirmation_token("expire@example.test").await;
-    assert_ne!(old, new);
-    assert!(
-        subscriptions::use_token(&app.state, &old, true, now)
-            .await
-            .is_err()
-    );
+    assert_eq!(old, new);
     assert!(
         subscriptions::use_token(&app.state, &new, true, now + Duration::hours(25))
             .await
@@ -626,6 +646,11 @@ async fn generic_documents_and_pages_are_private_until_published() {
             .await
             .status(),
         StatusCode::OK
+    );
+    assert!(
+        backend::mail::prepare_publications(&app.state, OffsetDateTime::now_utc())
+            .await
+            .unwrap()
     );
     let notifications: i64 =
         sqlx::query_scalar("SELECT count(*) FROM mail_queue WHERE purpose='document'")

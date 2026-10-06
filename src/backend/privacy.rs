@@ -50,8 +50,9 @@ pub async fn maintenance(s: &Backend, now: OffsetDateTime) -> Result<()> {
     let r = &policy.retention;
     let cutoff = |days: u16| now.unix_timestamp() - i64::from(days) * 86400;
     let mut tx = crate::db::begin_write(&s.pool).await?;
-    // Do not delete records while an SMTP worker owns their lease.
-    let mail = sqlx::query("DELETE FROM mail_queue WHERE created_at<$1 AND locked_until<=$2")
+    // Keep document delivery pending through outages. Retention removes completed
+    // history and verification mail, never records owned by an SMTP worker.
+    let mail = sqlx::query("DELETE FROM mail_queue WHERE created_at<$1 AND locked_until<=$2 AND (purpose<>'document' OR sent_at IS NOT NULL OR cancelled=TRUE)")
         .bind(cutoff(r.mail_days))
         .bind(now.unix_timestamp())
         .execute(&mut *tx)
@@ -59,7 +60,7 @@ pub async fn maintenance(s: &Backend, now: OffsetDateTime) -> Result<()> {
         .rows_affected();
     let subscribers = sqlx::query("DELETE FROM subscribers WHERE ((unsubscribed_at IS NOT NULL AND unsubscribed_at<$1) OR (unsubscribed_at IS NULL AND retention_started_at<$2 AND NOT EXISTS(SELECT 1 FROM subscription_consents c WHERE c.subscriber_id=subscribers.id AND c.confirmed_at IS NOT NULL AND c.withdrawn_at IS NULL AND c.superseded_at IS NULL))) AND NOT EXISTS(SELECT 1 FROM mail_queue m WHERE m.subscriber_id=subscribers.id AND m.locked_until>$3)")
         .bind(cutoff(r.withdrawn_days)).bind(cutoff(r.pending_days)).bind(now.unix_timestamp()).execute(&mut *tx).await?.rows_affected();
-    let consents = sqlx::query("DELETE FROM subscription_consents WHERE (withdrawn_at<$1 OR (confirmed_at IS NULL AND requested_at<$2)) AND NOT EXISTS(SELECT 1 FROM mail_queue m WHERE m.consent_id=subscription_consents.id AND m.locked_until>$3)")
+    let consents = sqlx::query("DELETE FROM subscription_consents WHERE (withdrawn_at<$1 OR (confirmed_at IS NULL AND requested_at<$2 AND NOT EXISTS(SELECT 1 FROM subscription_tokens t WHERE t.consent_id=subscription_consents.id AND t.purpose='verification' AND t.expires_at>$3))) AND NOT EXISTS(SELECT 1 FROM mail_queue m WHERE m.consent_id=subscription_consents.id AND m.locked_until>$3)")
         .bind(cutoff(r.withdrawn_days)).bind(cutoff(r.pending_days)).bind(now.unix_timestamp()).execute(&mut *tx).await?.rows_affected();
     let audit_cutoff = timestamp(now - Duration::days(i64::from(r.audit_days)));
     sqlx::query("UPDATE privacy_maintenance SET audit_delete_before=$1 WHERE id=1")

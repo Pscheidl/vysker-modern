@@ -18,6 +18,7 @@ class Monitoring(unittest.TestCase):
             root = Path(root)
             with connect(database) as db:
                 db.execute('CREATE TABLE mail_queue(created_at BIGINT,attempts BIGINT,sent_at BIGINT,cancelled BOOLEAN)')
+                db.execute('CREATE TABLE publication_outbox(created_at BIGINT)')
                 db.execute('CREATE TABLE recovery_mail(LIKE mail_queue)')
                 db.execute('ALTER TABLE recovery_mail ADD delivery_expired_at BIGINT')
                 db.execute('INSERT INTO recovery_mail VALUES (1,4,NULL,FALSE,NULL)')
@@ -59,6 +60,7 @@ class Monitoring(unittest.TestCase):
             root=Path(root)
             with connect(database) as db:
                 db.execute('CREATE TABLE mail_queue(created_at INTEGER,attempts INTEGER,sent_at INTEGER,cancelled BOOLEAN)')
+                db.execute('CREATE TABLE publication_outbox(created_at BIGINT)')
                 db.execute('CREATE TABLE recovery_mail(LIKE mail_queue)')
                 db.execute('ALTER TABLE recovery_mail ADD delivery_expired_at BIGINT')
                 db.execute('INSERT INTO mail_queue VALUES (1,4,NULL,FALSE)')
@@ -87,6 +89,7 @@ class Monitoring(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root, temporary_database() as database:
             with connect(database) as db:
                 db.execute('CREATE TABLE mail_queue(created_at BIGINT,attempts BIGINT,sent_at BIGINT,cancelled BOOLEAN)')
+                db.execute('CREATE TABLE publication_outbox(created_at BIGINT)')
                 db.execute('CREATE TABLE recovery_mail(LIKE mail_queue)')
                 db.execute('ALTER TABLE recovery_mail ADD delivery_expired_at BIGINT')
                 db.execute('INSERT INTO recovery_mail VALUES (9000,3,NULL,FALSE,NULL)')
@@ -102,6 +105,35 @@ class Monitoring(unittest.TestCase):
                     db.execute('UPDATE recovery_mail SET delivery_expired_at=NULL')
                 report=monitor.check(database,root,'http://localhost',now=11000)
                 self.assertNotIn('recovery_delivery_expired',report['alerts'])
+
+    def test_publication_handoff_is_monitored_before_and_after_materialization(self):
+        with temporary_database() as database:
+            with connect(database) as db:
+                db.execute('CREATE TABLE mail_queue(created_at BIGINT,attempts BIGINT,sent_at BIGINT,cancelled BOOLEAN)')
+                db.execute('CREATE TABLE publication_outbox(created_at BIGINT)')
+                db.execute('CREATE TABLE recovery_mail(LIKE mail_queue)')
+                db.execute('ALTER TABLE recovery_mail ADD delivery_expired_at BIGINT')
+                db.execute('INSERT INTO publication_outbox VALUES (0)')
+            response = MagicMock()
+            response.__enter__.return_value.status = 200
+            response.__enter__.return_value.read.return_value = b'{"status":"ready"}'
+            with patch.object(monitor.urllib.request, 'urlopen', return_value=response):
+                waiting = monitor.check(database, '/unused', 'http://localhost', now=10000,
+                                        check_backups=False, max_pending=1)
+                self.assertEqual(waiting['alerts'], ['mail_queue_large', 'mail_queue_stalled'])
+                self.assertEqual(waiting['metrics']['pending_mail'], 1)
+                self.assertEqual(waiting['metrics']['oldest_mail_age_seconds'], 10000)
+                self.assertEqual(waiting['metrics']['maximum_mail_attempts'], 0)
+                # The worker atomically exchanges handoff records for rendered mail.
+                with connect(database) as db:
+                    db.execute('INSERT INTO mail_queue SELECT created_at,2,NULL,FALSE FROM publication_outbox')
+                    db.execute('DELETE FROM publication_outbox')
+                ready = monitor.check(database, '/unused', 'http://localhost', now=10000,
+                                      check_backups=False, max_pending=1)
+                self.assertEqual(ready['alerts'], waiting['alerts'])
+                self.assertEqual(ready['metrics']['pending_mail'], 1)
+                self.assertEqual(ready['metrics']['oldest_mail_age_seconds'], 10000)
+                self.assertEqual(ready['metrics']['maximum_mail_attempts'], 2)
 
     def test_notifications_are_deduplicated_and_recovery_is_sent(self):
         report={'alerts':['backup_stale'],'checked_at':10000}

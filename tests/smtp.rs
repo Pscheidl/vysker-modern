@@ -116,7 +116,10 @@ async fn concurrent_workers_claim_a_pending_message_only_once() {
 }
 
 async fn confirmed_subscriber(app: &App, email: &str) -> (i64, i64) {
-    let now = OffsetDateTime::now_utc();
+    confirmed_subscriber_at(app, email, OffsetDateTime::now_utc()).await
+}
+
+async fn confirmed_subscriber_at(app: &App, email: &str, now: OffsetDateTime) -> (i64, i64) {
     common::request_subscription(&app.state, email, now)
         .await
         .unwrap();
@@ -241,7 +244,8 @@ async fn imported_notifications_recheck_original_consent_and_public_visibility()
         .execute(&app.state.pool)
         .await
         .unwrap();
-    let renewed = confirmed_subscriber(&app, "withdrawn@example.test").await;
+    let now = now + time::Duration::seconds(601);
+    let renewed = confirmed_subscriber_at(&app, "withdrawn@example.test", now).await;
     assert_eq!(recipient.0, renewed.0);
     assert_ne!(recipient.1, renewed.1);
     let hidden = imported_notice(&app, renewed, now).await;
@@ -285,6 +289,7 @@ async fn disabled_subscriptions_preserve_import_handoff_and_erasure_removes_it()
     let mut config = (*app.state.config).clone();
     config.privacy = None;
     let state = Backend::new(app.state.pool.clone(), config);
+    assert!(!mail::prepare_publications(&state, now).await.unwrap());
     assert!(
         !mail::deliver_one(&state, &mail::transport(&state).unwrap(), now)
             .await
@@ -423,4 +428,274 @@ async fn web_worker_delivers_real_python_archive_import_to_mailpit() {
             .unwrap(),
         2
     );
+}
+
+async fn native_publications(app: &App) -> (i64, i64) {
+    use axum::http::StatusCode;
+    use serde_json::json;
+
+    let notice = app.notice(json!({"title":"Nová nativní vyhláška"})).await;
+    assert_eq!(app.publish(notice).await.status(), StatusCode::NO_CONTENT);
+    let response = app
+        .call(
+            "POST",
+            "/api/v1/admin/documents",
+            Some(json!({"title":"Nový nativní dokument","description":"Podklad pro občany"})),
+            true,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let document = common::body_json(response).await["id"].as_i64().unwrap();
+    assert_eq!(
+        app.call(
+            "POST",
+            &format!("/api/v1/admin/documents/{document}/publish"),
+            None,
+            true,
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    (notice, document)
+}
+
+async fn restarted_backend(app: &App, config: obecni_web::config::Config) -> Backend {
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+    use std::str::FromStr;
+
+    let schema: String = sqlx::query_scalar("SELECT current_schema()")
+        .fetch_one(&app.state.pool)
+        .await
+        .unwrap();
+    let options = PgConnectOptions::from_str(&config.database_url)
+        .unwrap()
+        .options([("search_path", schema.as_str()), ("timezone", "UTC")]);
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect_with(options)
+        .await
+        .unwrap();
+    Backend::new(pool, config)
+}
+
+#[tokio::test]
+async fn native_publication_materialization_rolls_back_as_a_batch_and_survives_restart() {
+    let app = App::new().await;
+    let original = confirmed_subscriber(&app, "native-original@example.test").await;
+    let (notice, document) = native_publications(&app).await;
+    confirmed_subscriber(&app, "native-later@example.test").await;
+    let outbox: Vec<(Option<i64>, Option<i64>, i64, i64)> = sqlx::query_as(
+        "SELECT notice_id,document_id,subscriber_id,consent_id FROM publication_outbox ORDER BY id",
+    )
+    .fetch_all(&app.state.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        outbox,
+        vec![
+            (Some(notice), None, original.0, original.1),
+            (None, Some(document), original.0, original.1),
+        ]
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM mail_queue WHERE purpose='document'")
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap(),
+        0
+    );
+
+    // Fail the second publication after the first mail, token and outbox removal.
+    sqlx::raw_sql(
+        "CREATE FUNCTION fail_document_materialization() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+             IF NEW.deduplication_key LIKE 'document:%' THEN
+                 RAISE EXCEPTION 'injected materialization failure';
+             END IF;
+             RETURN NEW;
+         END;
+         $$;
+         CREATE TRIGGER fail_document_materialization BEFORE INSERT ON mail_queue
+         FOR EACH ROW EXECUTE FUNCTION fail_document_materialization();",
+    )
+    .execute(&app.state.pool)
+    .await
+    .unwrap();
+    let now = OffsetDateTime::now_utc();
+    assert!(mail::prepare_publications(&app.state, now).await.is_err());
+    let counts: (i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM publication_outbox),
+                (SELECT count(*) FROM mail_queue WHERE purpose='document'),
+                (SELECT count(*) FROM subscription_tokens WHERE purpose='unsubscribe')",
+    )
+    .fetch_one(&app.state.pool)
+    .await
+    .unwrap();
+    assert_eq!(counts, (2, 0, 0));
+    let statuses: (String, String) = sqlx::query_as(
+        "SELECT (SELECT status FROM notices WHERE id=$1),(SELECT status FROM documents WHERE id=$2)",
+    )
+    .bind(notice)
+    .bind(document)
+    .fetch_one(&app.state.pool)
+    .await
+    .unwrap();
+    assert_eq!(statuses, ("published".into(), "published".into()));
+    sqlx::raw_sql(
+        "DROP TRIGGER fail_document_materialization ON mail_queue;
+         DROP FUNCTION fail_document_materialization();",
+    )
+    .execute(&app.state.pool)
+    .await
+    .unwrap();
+
+    // A fresh backend and connection pool recover solely from committed rows.
+    let restarted = restarted_backend(&app, (*app.state.config).clone()).await;
+    assert!(mail::prepare_publications(&restarted, now).await.unwrap());
+    let messages: Vec<(i64, i64, String, String)> = sqlx::query_as(
+        "SELECT subscriber_id,consent_id,deduplication_key,body FROM mail_queue WHERE purpose='document' ORDER BY id",
+    )
+    .fetch_all(&restarted.pool)
+    .await
+    .unwrap();
+    assert_eq!(messages.len(), 2);
+    assert!(messages.iter().all(|row| (row.0, row.1) == original));
+    assert_eq!(messages[0].2, format!("notice:{notice}:{}", original.0));
+    assert!(messages[0].3.contains(&format!("/uredni-deska/{notice}")));
+    assert_eq!(messages[1].2, format!("document:{document}:{}", original.0));
+    assert!(messages[1].3.contains(&format!("/dokumenty/{document}")));
+    let tokens_before: Vec<String> = sqlx::query_scalar(
+        "SELECT hash FROM subscription_tokens WHERE purpose='unsubscribe' ORDER BY hash",
+    )
+    .fetch_all(&restarted.pool)
+    .await
+    .unwrap();
+    assert_eq!(tokens_before.len(), 2);
+    restarted.pool.close().await;
+    let restarted_again = restarted_backend(&app, (*app.state.config).clone()).await;
+    assert!(
+        !mail::prepare_publications(&restarted_again, now)
+            .await
+            .unwrap()
+    );
+    let tokens_after: Vec<String> = sqlx::query_scalar(
+        "SELECT hash FROM subscription_tokens WHERE purpose='unsubscribe' ORDER BY hash",
+    )
+    .fetch_all(&restarted_again.pool)
+    .await
+    .unwrap();
+    assert_eq!(tokens_after, tokens_before);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM mail_queue WHERE purpose='document'")
+            .fetch_one(&restarted_again.pool)
+            .await
+            .unwrap(),
+        2
+    );
+    restarted_again.pool.close().await;
+}
+
+#[tokio::test]
+#[ignore = "vyžaduje Mailpit, spusťte scripts/test.sh --smtp"]
+async fn native_publications_recover_after_worker_restart_and_expired_lease_without_duplicates() {
+    let app = App::new().await;
+    confirmed_subscriber(&app, "native-restart@example.test").await;
+    native_publications(&app).await;
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM publication_outbox")
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM mail_queue WHERE purpose='document'")
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap(),
+        0
+    );
+    let mut config = (*app.state.config).clone();
+    config.smtp_host = std::env::var("TEST_SMTP_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+    config.smtp_port = std::env::var("TEST_SMTP_PORT")
+        .unwrap_or_else(|_| "1025".into())
+        .parse()
+        .unwrap();
+    let state = restarted_backend(&app, config.clone()).await;
+    let now = OffsetDateTime::now_utc();
+    let mut worker = mail::Worker::new(&state).unwrap();
+    assert!(worker.deliver_one(&state, now).await.unwrap());
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM publication_outbox")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap(),
+        0
+    );
+    let pending: i64 = sqlx::query_scalar(
+        "SELECT id FROM mail_queue WHERE purpose='document' AND sent_at IS NULL",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .unwrap();
+    // Simulate process death after claiming the second mail, before SMTP.
+    sqlx::query("UPDATE mail_queue SET lock_token='interrupted-worker',locked_until=$1,attempts=1 WHERE id=$2")
+        .bind(now.unix_timestamp() + 300).bind(pending).execute(&state.pool).await.unwrap();
+    drop(worker);
+    state.pool.close().await;
+
+    let restarted = restarted_backend(&app, config.clone()).await;
+    let mut worker = mail::Worker::new(&restarted).unwrap();
+    assert!(!worker.deliver_one(&restarted, now).await.unwrap());
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT attempts FROM mail_queue WHERE id=$1")
+            .bind(pending)
+            .fetch_one(&restarted.pool)
+            .await
+            .unwrap(),
+        1
+    );
+    let after_lease = now + time::Duration::seconds(301);
+    assert!(worker.deliver_one(&restarted, after_lease).await.unwrap());
+    assert!(!worker.deliver_one(&restarted, after_lease).await.unwrap());
+    let deliveries: Vec<(bool, bool, i64, i64, bool)> = sqlx::query_as(
+        "SELECT sent_at IS NOT NULL,body IS NULL,attempts,locked_until,lock_token IS NULL
+         FROM mail_queue WHERE purpose='document' ORDER BY id",
+    )
+    .fetch_all(&restarted.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        deliveries,
+        vec![(true, true, 1, 0, true), (true, true, 2, 0, true)]
+    );
+    drop(worker);
+    restarted.pool.close().await;
+
+    let restarted_again = restarted_backend(&app, config).await;
+    let mut worker = mail::Worker::new(&restarted_again).unwrap();
+    assert!(
+        !worker
+            .deliver_one(&restarted_again, after_lease)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM mail_queue WHERE purpose='document'")
+            .fetch_one(&restarted_again.pool)
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM subscription_tokens WHERE purpose='unsubscribe'"
+        )
+        .fetch_one(&restarted_again.pool)
+        .await
+        .unwrap(),
+        2
+    );
+    restarted_again.pool.close().await;
 }

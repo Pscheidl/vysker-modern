@@ -49,7 +49,10 @@ def check(database, backups, ready_url, *, now=None, backup_hours=30,
             alerts.append('backup_missing')
     try:
         with connect(database, options='-c default_transaction_read_only=on') as conn:
-            pending, oldest, retries = conn.execute('SELECT count(*),min(created_at),coalesce(max(attempts),0) FROM (SELECT created_at,attempts FROM mail_queue WHERE sent_at IS NULL AND cancelled=FALSE UNION ALL SELECT created_at,attempts FROM recovery_mail WHERE sent_at IS NULL AND cancelled=FALSE) pending').fetchone()
+            pending, oldest, retries = conn.execute('''SELECT count(*),min(created_at),coalesce(max(attempts),0)
+                FROM (SELECT created_at,attempts FROM mail_queue WHERE sent_at IS NULL AND cancelled=FALSE
+                    UNION ALL SELECT created_at,0 FROM publication_outbox
+                    UNION ALL SELECT created_at,attempts FROM recovery_mail WHERE sent_at IS NULL AND cancelled=FALSE) pending''').fetchone()
             recovery_oldest = conn.execute('SELECT min(created_at) FROM recovery_mail WHERE sent_at IS NULL AND cancelled=FALSE').fetchone()[0]
             recovery_expired = conn.execute('SELECT count(*) FROM recovery_mail WHERE sent_at IS NULL AND delivery_expired_at>=%s', (int(now)-86400,)).fetchone()[0]
         metrics['expired_recovery_last_day'] = recovery_expired
@@ -57,7 +60,7 @@ def check(database, backups, ready_url, *, now=None, backup_hours=30,
             alerts.append('recovery_mail_stalled')
         if recovery_expired:
             alerts.append('recovery_delivery_expired')
-        metrics.update(pending_mail=pending, oldest_mail_age_seconds=max(0, int(now-oldest)) if oldest else 0, maximum_mail_attempts=retries)
+        metrics.update(pending_mail=pending, oldest_mail_age_seconds=max(0, int(now-oldest)) if oldest is not None else 0, maximum_mail_attempts=retries)
         if pending >= max_pending:
             alerts.append('mail_queue_large')
         if oldest is not None and now - oldest > mail_minutes * 60:
