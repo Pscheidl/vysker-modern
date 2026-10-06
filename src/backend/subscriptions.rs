@@ -3,6 +3,7 @@ use super::{
     auth::{self, ClientIp},
     bad,
 };
+use crate::catalog::SubscriptionPreferences;
 use axum::{
     Form, Json,
     extract::{Query, State},
@@ -21,6 +22,8 @@ const VERIFICATION_WINDOW_LIMIT: i64 = 3;
 pub struct SubscribeInput {
     pub email: String,
     pub consent: ConsentAcceptance,
+    #[serde(default)]
+    pub preferences: SubscriptionPreferences,
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -48,13 +51,94 @@ pub async fn subscribe(
         OffsetDateTime::now_utc(),
     )
     .await?;
-    request_subscription(&s, &input.email, &input.consent, OffsetDateTime::now_utc()).await?;
+    request_subscription_with_preferences(
+        &s,
+        &input.email,
+        &input.consent,
+        &input.preferences,
+        OffsetDateTime::now_utc(),
+    )
+    .await?;
     Ok(StatusCode::ACCEPTED)
 }
 pub async fn request_subscription(
     s: &Backend,
     address: &str,
     consent: &ConsentAcceptance,
+    now: OffsetDateTime,
+) -> Result<()> {
+    request_subscription_with_preferences(
+        s,
+        address,
+        consent,
+        &SubscriptionPreferences::default(),
+        now,
+    )
+    .await
+}
+
+pub async fn validate_preferences(
+    conn: &mut sqlx::PgConnection,
+    preferences: &SubscriptionPreferences,
+) -> Result<SubscriptionPreferences> {
+    let mut preferences = preferences.clone();
+    if preferences.notice_category_ids.len() > 1000 {
+        return Err(bad("Výběr obsahuje příliš mnoho kategorií."));
+    }
+    preferences.notice_category_ids.sort_unstable();
+    preferences.notice_category_ids.dedup();
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM categories WHERE id=ANY($1)")
+        .bind(&preferences.notice_category_ids)
+        .fetch_one(conn)
+        .await?;
+    if count as usize != preferences.notice_category_ids.len() {
+        return Err(bad(
+            "Některá kategorie již není dostupná. Obnovte stránku a upravte výběr.",
+        ));
+    }
+    if preferences.all_notice_categories {
+        preferences.notice_category_ids.clear();
+    }
+    if !preferences.all_notice_categories
+        && preferences.notice_category_ids.is_empty()
+        && !preferences.uncategorized_notices
+        && !preferences.documents
+    {
+        return Err(bad(
+            "Vyberte alespoň jednu kategorii nebo obecné dokumenty.",
+        ));
+    }
+    Ok(preferences)
+}
+
+async fn preferences_description(
+    conn: &mut sqlx::PgConnection,
+    preferences: &SubscriptionPreferences,
+) -> Result<String> {
+    let mut topics = if preferences.all_notice_categories {
+        vec!["Všechny kategorie úřední desky, i nově přidané".to_owned()]
+    } else {
+        sqlx::query_scalar::<_, String>(
+            "SELECT name FROM categories WHERE id=ANY($1) ORDER BY sort_order,id",
+        )
+        .bind(&preferences.notice_category_ids)
+        .fetch_all(conn)
+        .await?
+    };
+    if preferences.uncategorized_notices {
+        topics.push("Úřední deska bez kategorie".into());
+    }
+    if preferences.documents {
+        topics.push("Obecné dokumenty".into());
+    }
+    Ok(topics.join(", "))
+}
+
+pub async fn request_subscription_with_preferences(
+    s: &Backend,
+    address: &str,
+    consent: &ConsentAcceptance,
+    preferences: &SubscriptionPreferences,
     now: OffsetDateTime,
 ) -> Result<()> {
     let notice = super::privacy::notice(s)?;
@@ -65,6 +149,7 @@ pub async fn request_subscription(
     }
     let address = auth::email(address)?;
     let mut tx = crate::db::begin_write(&s.pool).await?;
+    let preferences = validate_preferences(&mut tx, preferences).await?;
     let old: Option<(i64, Option<i64>, Option<i64>)> =
         sqlx::query_as("SELECT id,verified_at,unsubscribed_at FROM subscribers WHERE email=$1")
             .bind(&address)
@@ -119,12 +204,18 @@ pub async fn request_subscription(
         "SELECT c.id FROM subscription_consents c JOIN subscribers s ON s.id=c.subscriber_id
          WHERE s.email=$1 AND c.notice_fingerprint=$2 AND c.confirmed_at IS NULL
            AND c.withdrawn_at IS NULL AND c.superseded_at IS NULL
+           AND c.all_notice_categories=$4 AND c.notice_category_ids=$5
+           AND c.uncategorized_notices=$6 AND c.documents=$7
            AND EXISTS(SELECT 1 FROM subscription_tokens t WHERE t.subscriber_id=s.id
                AND t.consent_id=c.id AND t.purpose='verification' AND t.expires_at>$3)",
     )
     .bind(&address)
     .bind(&notice.fingerprint)
     .bind(now.unix_timestamp())
+    .bind(preferences.all_notice_categories)
+    .bind(&preferences.notice_category_ids)
+    .bind(preferences.uncategorized_notices)
+    .bind(preferences.documents)
     .fetch_optional(&mut *tx)
     .await?;
     let id=sqlx::query_scalar::<_,i64>("INSERT INTO subscribers(email,retention_started_at) VALUES ($1,$2) ON CONFLICT(email) DO UPDATE SET verified_at=NULL,unsubscribed_at=NULL,retention_started_at=excluded.retention_started_at RETURNING id").bind(address).bind(now.unix_timestamp()).fetch_one(&mut *tx).await?;
@@ -137,8 +228,10 @@ pub async fn request_subscription(
         sqlx::query("INSERT INTO consent_notices(fingerprint,version,consent_text,privacy_json) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING")
             .bind(&notice.fingerprint).bind(&notice.consent_version).bind(&notice.consent_text)
             .bind(serde_json::to_string(&notice.policy).expect("serializable privacy policy")).execute(&mut *tx).await?;
-        let consent_id = sqlx::query_scalar::<_, i64>("INSERT INTO subscription_consents(subscriber_id,notice_fingerprint,requested_at) VALUES ($1,$2,$3) RETURNING id")
-            .bind(id).bind(&notice.fingerprint).bind(now.unix_timestamp()).fetch_one(&mut *tx).await?;
+        let consent_id = sqlx::query_scalar::<_, i64>("INSERT INTO subscription_consents(subscriber_id,notice_fingerprint,requested_at,all_notice_categories,notice_category_ids,uncategorized_notices,documents) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id")
+            .bind(id).bind(&notice.fingerprint).bind(now.unix_timestamp())
+            .bind(preferences.all_notice_categories).bind(&preferences.notice_category_ids)
+            .bind(preferences.uncategorized_notices).bind(preferences.documents).fetch_one(&mut *tx).await?;
         sqlx::query("DELETE FROM subscription_tokens WHERE subscriber_id=$1")
             .bind(id)
             .execute(&mut *tx)
@@ -159,8 +252,9 @@ pub async fn request_subscription(
         .bind(consent_id)
         .execute(&mut *tx)
         .await?;
+    let topics = preferences_description(&mut tx, &preferences).await?;
     let body = format!(
-        "Dobrý den,\n\npotvrďte odběr nových dokumentů z webu Vyskeř na tomto odkazu:\n{}/odber/potvrdit?token={}\n\nOdkaz platí 24 hodin. Do potvrzení vám novinky chodit nebudou. Pokud jste o odběr nepožádali, zprávu ignorujte.\n\nZnění souhlasu ({}):\n{}\n\nInformace o soukromí: {}/ochrana-udaju\n\n{}",
+        "Dobrý den,\n\npotvrďte odběr nových dokumentů z webu Vyskeř na tomto odkazu:\n{}/odber/potvrdit?token={}\n\nVybraný odběr: {topics}.\n\nOdkaz platí 24 hodin. Do potvrzení vám novinky chodit nebudou. Pokud jste o odběr nepožádali, zprávu ignorujte.\n\nZnění souhlasu ({}):\n{}\n\nInformace o soukromí: {}/ochrana-udaju\n\n{}",
         s.config.public_url,
         secret,
         notice.consent_version,
@@ -220,9 +314,10 @@ pub async fn use_token(
                 "Souhlas již není možné potvrdit. Požádejte o nový odběr.",
             ));
         }
-        sqlx::query("UPDATE subscribers SET verified_at=$1,unsubscribed_at=NULL WHERE id=$2")
+        sqlx::query("UPDATE subscribers s SET verified_at=$1,unsubscribed_at=NULL,all_notice_categories=c.all_notice_categories,notice_category_ids=c.notice_category_ids,uncategorized_notices=c.uncategorized_notices,documents=c.documents FROM subscription_consents c WHERE s.id=$2 AND c.id=$3 AND c.subscriber_id=s.id")
             .bind(now.unix_timestamp())
             .bind(id)
+            .bind(consent_id)
             .execute(&mut *tx)
             .await?;
         sqlx::query("UPDATE mail_queue SET cancelled=TRUE,body=NULL WHERE subscriber_id=$1 AND purpose='verification' AND sent_at IS NULL").bind(id).execute(&mut *tx).await?;
@@ -302,10 +397,24 @@ async fn landing(s: &Backend, secret: &str, confirm: bool) -> Result<Html<String
         ("Odhlásit odběr novinek", "/odber/odhlasit")
     };
     let details = if confirm {
-        let row: Option<(String, String, String)> = sqlx::query_as("SELECT n.version,n.consent_text,n.privacy_json FROM subscription_tokens t JOIN subscription_consents c ON c.id=t.consent_id JOIN consent_notices n ON n.fingerprint=c.notice_fingerprint WHERE t.hash=$1 AND t.purpose='verification' AND t.expires_at>$2 AND c.confirmed_at IS NULL AND c.withdrawn_at IS NULL AND c.superseded_at IS NULL")
+        let row: Option<(String, String, String, bool, Vec<i64>, bool, bool)> = sqlx::query_as("SELECT n.version,n.consent_text,n.privacy_json,c.all_notice_categories,c.notice_category_ids,c.uncategorized_notices,c.documents FROM subscription_tokens t JOIN subscription_consents c ON c.id=t.consent_id JOIN consent_notices n ON n.fingerprint=c.notice_fingerprint WHERE t.hash=$1 AND t.purpose='verification' AND t.expires_at>$2 AND c.confirmed_at IS NULL AND c.withdrawn_at IS NULL AND c.superseded_at IS NULL")
             .bind(auth::hash(secret)).bind(OffsetDateTime::now_utc().unix_timestamp()).fetch_optional(&s.pool).await?;
-        let (version, wording, json) =
-            row.ok_or_else(|| bad("Odkaz není platný nebo vypršel. Požádejte o nový odběr."))?;
+        let (
+            version,
+            wording,
+            json,
+            all_notice_categories,
+            notice_category_ids,
+            uncategorized_notices,
+            documents,
+        ) = row.ok_or_else(|| bad("Odkaz není platný nebo vypršel. Požádejte o nový odběr."))?;
+        let preferences = SubscriptionPreferences {
+            all_notice_categories,
+            notice_category_ids,
+            uncategorized_notices,
+            documents,
+        };
+        let topics = preferences_description(&mut *s.pool.acquire().await?, &preferences).await?;
         let policy: SubscriptionPolicySnapshot = serde_json::from_str(&json)
             .map_err(|_| bad("Informace o souhlasu nejsou dostupné."))?;
         let controller_address = if policy.controller_address.trim().is_empty() {
@@ -324,7 +433,8 @@ async fn landing(s: &Backend, secret: &str, confirm: bool) -> Result<Html<String
             format!("Zálohy: {} dní.", policy.retention.backup_days)
         };
         format!(
-            "<p>{}</p><p>Verze souhlasu: {}. Informace o soukromí: {}.</p><details><summary>Informace platné při žádosti</summary><p>Správce: {}{controller_address}. Kontakt: {}.{dpo}</p><p>Účel: odběr nových dokumentů. Právní důvod: dobrovolný souhlas podle čl. 6 odst. 1 písm. a) GDPR. Souhlas lze kdykoli odvolat odkazem v každé zprávě.</p><p>Nepotvrzené žádosti: {} dní. Údaje po odhlášení: {} dní. Poštovní fronta: {} dní. {backups}</p><p>Důvod uchování dokladu: {}</p><p>Příjemci: {}</p><p>Předávání: {}</p><p>Práva: přístup, oprava, výmaz, omezení, podle právního důvodu přenositelnost a námitka. Stížnost lze podat u ÚOOÚ.</p></details>",
+            "<p>Vybraný odběr: {}.</p><p>{}</p><p>Verze souhlasu: {}. Informace o soukromí: {}.</p><details><summary>Informace platné při žádosti</summary><p>Správce: {}{controller_address}. Kontakt: {}.{dpo}</p><p>Účel: odběr nových dokumentů. Právní důvod: dobrovolný souhlas podle čl. 6 odst. 1 písm. a) GDPR. Souhlas lze kdykoli odvolat odkazem v každé zprávě.</p><p>Nepotvrzené žádosti: {} dní. Údaje po odhlášení: {} dní. Poštovní fronta: {} dní. {backups}</p><p>Důvod uchování dokladu: {}</p><p>Příjemci: {}</p><p>Předávání: {}</p><p>Práva: přístup, oprava, výmaz, omezení, podle právního důvodu přenositelnost a námitka. Stížnost lze podat u ÚOOÚ.</p></details>",
+            escape(&topics),
             escape(&wording),
             escape(&version),
             escape(&policy.version),
@@ -338,7 +448,9 @@ async fn landing(s: &Backend, secret: &str, confirm: bool) -> Result<Html<String
             escape(&policy.international_transfers)
         )
     } else {
-        "<p>Odhlášením odvoláte souhlas s dalším zasíláním novinek. Přihlášení k účtu není potřeba.</p>".into()
+        format!(
+            "<p>Odhlášením odvoláte souhlas s dalším zasíláním novinek. Přihlášení k účtu není potřeba.</p><p>Chcete dostávat jen některé zprávy? <a href=\"/odber/nastaveni?token={secret}\">Upravit výběr kategorií</a>.</p>"
+        )
     };
     Ok(Html(format!(
         "<!doctype html><html lang=\"cs\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"robots\" content=\"noindex\"><title>{heading} · Vyskeř</title><body><main><h1>{heading}</h1><p>Web Vyskeř</p>{details}<form method=\"post\" action=\"{action}\"><input type=\"hidden\" name=\"token\" value=\"{secret}\"><button type=\"submit\">{heading}</button></form></main></body></html>"

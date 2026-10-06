@@ -47,6 +47,92 @@ async function subscribe(page: Page, email: string, confirm: boolean) {
   return { id: id as number, token: token as string }
 }
 
+test('newsletter saves selected categories, confirms them and allows changes from a notification link', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  const email = `selected-topics-${Date.now()}@vysker.test`
+  await page.goto('/odber')
+  const form = page.locator('.newsletter-form')
+  const submit = form.getByRole('button', { name: 'Přihlásit k odběru', exact: true })
+  await expect(submit).toBeEnabled()
+  await form.locator('summary').click()
+  await form.getByLabel('Všechny kategorie úřední desky (i budoucí)', { exact: true }).uncheck()
+  await form.getByLabel('Úřední deska bez kategorie', { exact: true }).uncheck()
+  const budget = form.getByLabel('Rozpočet', { exact: true })
+  await budget.check()
+  const categoryId = Number(await budget.inputValue())
+  await form.getByLabel('E-mailová adresa', { exact: true }).fill(email)
+  await submit.click()
+  await expect(form.getByRole('status')).toContainText('e-mail')
+  const savedPreferences = () => fixtureQuery('SELECT all_notice_categories,notice_category_ids,uncategorized_notices,documents FROM subscribers WHERE email=%s', [email])[0]
+  expect(savedPreferences()).toEqual([true, [], true, true])
+  expect(fixtureQuery('SELECT c.all_notice_categories,c.notice_category_ids,c.uncategorized_notices,c.documents FROM subscription_consents c JOIN subscribers s ON s.id=c.subscriber_id WHERE s.email=%s AND c.confirmed_at IS NULL', [email])).toEqual([[false, [categoryId], false, true]])
+  expect(fixtureQuery('SELECT verified_at FROM subscribers WHERE email=%s', [email])[0][0]).toBeNull()
+  const verification = fixtureQuery("SELECT m.body FROM mail_queue m JOIN subscribers s ON s.id=m.subscriber_id WHERE s.email=%s AND m.purpose='verification' ORDER BY m.id DESC LIMIT 1", [email])[0][0] as string
+  const confirmation = verification.match(/http:\/\/127\.0\.0\.1:3107\/odber\/potvrdit\?token=[a-f0-9]+/)![0]
+  await page.goto(confirmation)
+  await expect(page.locator('main')).toContainText('Rozpočet')
+  expect(fixtureQuery('SELECT verified_at FROM subscribers WHERE email=%s', [email])[0][0]).toBeNull()
+  await page.getByRole('button', { name: 'Potvrdit odběr novinek', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Odběr je potvrzený.', exact: true })).toBeVisible()
+  expect(savedPreferences()).toEqual([false, [categoryId], false, true])
+  expect(fixtureQuery('SELECT verified_at FROM subscribers WHERE email=%s', [email])[0][0]).not.toBeNull()
+
+  // Publish through the real UI to obtain the settings link generated in mail.
+  await login(page)
+  await page.getByRole('link', { name: 'Dokumenty', exact: true }).click()
+  await page.getByRole('link', { name: 'Nový dokument', exact: true }).click()
+  await page.getByLabel('Název', { exact: false }).fill('Dokument pro test výběru odběru')
+  await page.getByRole('button', { name: 'Uložit koncept', exact: true }).click()
+  await expect(page).toHaveURL(/\/admin\/dokumenty\/\d+$/)
+  await page.getByRole('button', { name: 'Zveřejnit', exact: true }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Zveřejnit', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Archivovat dokument', exact: true })).toBeVisible()
+  const notification = () => fixtureQuery("SELECT m.body FROM mail_queue m JOIN subscribers s ON s.id=m.subscriber_id WHERE s.email=%s AND m.purpose='document' ORDER BY m.id DESC LIMIT 1", [email])
+  // The durable publication outbox is prepared by the worker every 30 seconds.
+  await expect.poll(() => notification().length, { timeout: 45_000 }).toBe(1)
+  const message = notification()[0][0] as string
+  const management = message.match(/http:\/\/127\.0\.0\.1:3107\/odber\/nastaveni\?token=[a-f0-9]+/)![0]
+  await page.context().clearCookies()
+  await page.goto(management)
+  await expect(page.getByRole('heading', { name: 'Nastavení odběru', exact: true })).toBeVisible()
+  expect(savedPreferences()).toEqual([false, [categoryId], false, true])
+  await expect(page.getByLabel('Rozpočet', { exact: true })).toBeChecked()
+  await expect(page.getByLabel('Všechny kategorie úřední desky, i nově přidané', { exact: true })).not.toBeChecked()
+  await expect(page.getByLabel('Úřední deska bez kategorie', { exact: true })).not.toBeChecked()
+  await expect(page.getByLabel('Obecné dokumenty', { exact: true })).toBeChecked()
+  await page.getByLabel('Rozpočet', { exact: true }).uncheck()
+  await page.getByRole('button', { name: 'Uložit výběr', exact: true }).click()
+  await expect(page.getByRole('status')).toContainText('Výběr je uložený.')
+  expect(savedPreferences()).toEqual([false, [], false, true])
+  await page.goto(management)
+  await expect(page.getByLabel('Rozpočet', { exact: true })).not.toBeChecked()
+  await expect(page.getByLabel('Obecné dokumenty', { exact: true })).toBeChecked()
+  // Later settings must not rewrite what the subscriber originally confirmed.
+  expect(fixtureQuery('SELECT c.all_notice_categories,c.notice_category_ids,c.uncategorized_notices,c.documents FROM subscription_consents c JOIN subscribers s ON s.id=c.subscriber_id WHERE s.email=%s AND c.confirmed_at IS NOT NULL', [email])).toEqual([[false, [categoryId], false, true]])
+  expect(errors).toEqual([])
+})
+
+test('newsletter server accepts the default selection and documents only with no category IDs', async ({ page }) => {
+  for (const documentsOnly of [false, true]) {
+    const email = `empty-category-list-${documentsOnly}-${Date.now()}@vysker.test`
+    await page.goto('/odber')
+    const form = page.locator('.newsletter-form')
+    const submit = form.getByRole('button', { name: 'Přihlásit k odběru', exact: true })
+    await expect(submit).toBeEnabled()
+    if (documentsOnly) {
+      await form.locator('summary').click()
+      await form.getByLabel('Všechny kategorie úřední desky (i budoucí)', { exact: true }).uncheck()
+      await form.getByLabel('Úřední deska bez kategorie', { exact: true }).uncheck()
+    }
+    await form.getByLabel('E-mailová adresa', { exact: true }).fill(email)
+    await submit.click()
+    await expect(form.getByRole('status')).toContainText('e-mail')
+    expect(fixtureQuery('SELECT all_notice_categories,notice_category_ids,uncategorized_notices,documents FROM subscribers WHERE email=%s', [email])).toEqual([[true, [], true, true]])
+    expect(fixtureQuery('SELECT c.all_notice_categories,c.notice_category_ids,c.uncategorized_notices,c.documents FROM subscription_consents c JOIN subscribers s ON s.id=c.subscriber_id WHERE s.email=%s AND c.confirmed_at IS NULL', [email])).toEqual([[!documentsOnly, [], !documentsOnly, true]])
+  }
+})
+
 test('subscriber search is literal and normalized, filters use consent and pagination has a total', async ({ page }) => {
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))

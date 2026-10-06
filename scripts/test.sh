@@ -29,5 +29,5 @@ python3 tests/test_legacy_replace.py
 python3 tests/test_legacy_galleries.py
 python3 tests/test_legacy_sync.py
 if [[ "${1:-}" == "--smtp" ]]; then
-  cargo test --locked --no-default-features --features ssr --test smtp --test recovery -- --ignored
+  cargo test --locked --no-default-features --features ssr --test smtp --test recovery --test subscription_filters -- --ignored
 fi

@@ -30,6 +30,10 @@ Current illustration and identity: [Saint Anne's Chapel and the treeless Hůra h
 - Markdown page editor with preview, immutable revisions and edit conflict protection.
 - Page image uploads with descriptions, draft previews and publication-aware access.
 - Editable navigation and categories, subscriber evidence export, withdrawal and erasure.
+- Email subscriptions default to all publications. Readers can select notice-board
+  categories, uncategorized notices and general documents, then change their
+  selection through the private link in each notification. Filtering applies to
+  native publications, imports and messages waiting for delivery.
 - Email password recovery and configurable password minimum, default 24 characters.
 
 Production uses municipal content stored in the database for contact details,

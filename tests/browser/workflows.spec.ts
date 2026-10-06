@@ -116,7 +116,10 @@ test('email opt-in requires confirmation and opt-out cancels future deliveries',
   await page.getByRole('button', { name: 'Zveřejnit', exact: true }).click()
   await page.getByRole('dialog').getByRole('button', { name: 'Zveřejnit', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Archivovat dokument', exact: true })).toBeVisible()
-  const message = fixtureQuery("SELECT m.body FROM mail_queue m JOIN subscribers s ON s.id=m.subscriber_id WHERE s.email=%s AND m.purpose='document' ORDER BY m.id DESC LIMIT 1", [email])[0][0]
+  const notification = () => fixtureQuery("SELECT m.body FROM mail_queue m JOIN subscribers s ON s.id=m.subscriber_id WHERE s.email=%s AND m.purpose='document' ORDER BY m.id DESC LIMIT 1", [email])
+  // Publication is committed to the outbox before the 30-second mail worker runs.
+  await expect.poll(() => notification().length, { timeout: 45_000 }).toBe(1)
+  const message = notification()[0][0]
   const unsubscribe = message.match(/http:\/\/127\.0\.0\.1:3107\/odber\/odhlasit\?token=[a-f0-9]+/)[0]
   await page.goto(unsubscribe)
   expect(fixtureQuery('SELECT unsubscribed_at FROM subscribers WHERE email=%s', [email])[0][0]).toBeNull()

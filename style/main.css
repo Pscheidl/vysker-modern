@@ -41,6 +41,17 @@
 :root[data-theme=dark] .admin-login-terrain{background-image:url('../images/relief-vysker-dark.png')}
 .newsletter-form{flex-wrap:wrap}
 .newsletter-form .button.newsletter-confirmed{background:var(--success-bg);color:var(--success);box-shadow:inset 0 0 0 1px currentColor;opacity:1;cursor:default}
+.newsletter-preferences{flex-basis:100%;min-width:0;border-top:1px solid var(--border);margin-top:6px;padding-top:8px;font-size:13px}
+.newsletter-preferences summary{cursor:pointer;padding-block:7px;color:var(--text);line-height:1.7}
+.newsletter-preferences summary>span{display:block;margin-left:17px;color:var(--muted);font-size:12px}
+.newsletter-preferences fieldset{min-width:0;border:0;margin:10px 0 0;padding:0}
+.newsletter-preferences legend{font-weight:550;padding:0}
+.newsletter-preferences .newsletter-preferences-help{font-size:12px;line-height:1.65;margin:8px 0 12px}
+.newsletter-option{display:flex;align-items:flex-start;gap:10px;padding-block:6px;line-height:1.6;cursor:pointer;overflow-wrap:anywhere}
+.newsletter-option input{width:17px;height:17px;flex:0 0 17px;margin:2px 0 0;padding:0;accent-color:var(--accent)}
+.newsletter-option:has(input:disabled){color:var(--muted);cursor:default}
+.newsletter-categories{padding-left:27px;margin-block:2px 6px}
+.newsletter-categories>.newsletter-option{font-size:12px;padding-block:4px}
 .newsletter-consent{flex-basis:100%;font-size:.875rem;line-height:1.6}
 .newsletter-consent a{text-decoration:underline}
 

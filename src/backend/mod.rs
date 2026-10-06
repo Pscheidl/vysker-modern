@@ -16,6 +16,7 @@ pub mod recovery;
 pub mod search;
 pub mod server;
 pub mod subscriber_admin;
+pub mod subscription_preferences;
 pub mod subscriptions;
 
 use crate::config::Config;
@@ -341,6 +342,10 @@ pub fn router(state: Backend) -> Router {
         .route(
             "/odber/odhlasit",
             get(subscriptions::unsubscribe_page).post(subscriptions::unsubscribe_form),
+        )
+        .route(
+            "/odber/nastaveni",
+            get(subscription_preferences::page).post(subscription_preferences::update),
         )
         .layer(DefaultBodyLimit::max(128 * 1024))
         .layer(axum::middleware::from_fn(auth::response_headers))

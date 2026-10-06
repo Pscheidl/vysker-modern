@@ -13,6 +13,8 @@ def queue_publication(conn, timestamp, notice_id=None, document_id=None):
         WHERE s.verified_at IS NOT NULL AND s.unsubscribed_at IS NULL
           AND c.confirmed_at IS NOT NULL AND c.withdrawn_at IS NULL
           AND c.superseded_at IS NULL
+          AND subscription_matches_publication(s.id,%s,%s)
         ORDER BY s.id,c.id
         ON CONFLICT DO NOTHING''',
-        (notice_id, document_id, int(datetime.fromisoformat(timestamp).timestamp())))
+        (notice_id, document_id, int(datetime.fromisoformat(timestamp).timestamp()),
+         notice_id, document_id))

@@ -183,6 +183,29 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(conn.execute('SELECT count(*) FROM page_revisions').fetchone()[0], 0)
             self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox').fetchone()[0], 2)
 
+    def test_import_publication_uses_subscriber_filters_for_notices_and_documents(self):
+        navigation_bundle(self.root)
+        with connect(self.url) as conn:
+            subscribers = subscription_fixture(conn)
+            category = conn.execute("SELECT id FROM categories WHERE name='Ostatní'").fetchone()[0]
+            # Imported notice categories and general documents are independent choices.
+            conn.execute('''UPDATE subscribers SET all_notice_categories=FALSE,
+                notice_category_ids=%s,uncategorized_notices=FALSE,documents=FALSE WHERE id=%s''',
+                ([category], subscribers['active'][0]))
+            conn.execute('''UPDATE subscribers SET all_notice_categories=FALSE,
+                uncategorized_notices=FALSE,documents=TRUE WHERE id=%s''',
+                (subscribers['active_other'][0],))
+            import_bundle(conn, self.root, classify_navigation=True, publish_content=True,
+                          archive_notices=True, sync=True)
+            notice = conn.execute('SELECT id FROM notices').fetchone()[0]
+            document = conn.execute('SELECT id FROM documents').fetchone()[0]
+            self.assertEqual(conn.execute('''SELECT notice_id,document_id,subscriber_id,consent_id
+                FROM publication_outbox ORDER BY subscriber_id''').fetchall(), [
+                (notice, None, *subscribers['active']),
+                (None, document, *subscribers['active_other']),
+            ])
+            self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
+
     def test_sync_discovers_new_documents_on_previously_skipped_pages(self):
         data = bundle(self.root)
         with connect(self.url) as conn:

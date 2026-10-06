@@ -81,6 +81,7 @@ pub async fn enqueue_publication(
          JOIN subscription_consents c ON c.subscriber_id=s.id
          WHERE s.verified_at IS NOT NULL AND s.unsubscribed_at IS NULL
            AND c.confirmed_at IS NOT NULL AND c.withdrawn_at IS NULL AND c.superseded_at IS NULL
+           AND subscription_matches_publication(s.id,$1,$2)
          ORDER BY s.id,c.id ON CONFLICT DO NOTHING",
     )
     .bind(notice_id)
@@ -135,8 +136,8 @@ async fn enqueue_recipient(
         .execute(&mut *conn)
         .await?;
     let body = format!(
-        "Dobrý den,\n\nna webu Vyskeř byl zveřejněn nový dokument:\n{title}\n\n{}{path}\n\nOdběr lze odhlásit zde:\n{}/odber/odhlasit?token={secret}\n\n{}",
-        s.config.public_url, s.config.public_url, policy.controller_name
+        "Dobrý den,\n\nna webu Vyskeř byl zveřejněn nový dokument:\n{title}\n\n{}{path}\n\nOdběr lze odhlásit zde:\n{}/odber/odhlasit?token={secret}\n\nKategorie a obecné dokumenty si můžete vybrat zde:\n{}/odber/nastaveni?token={secret}\n\n{}",
+        s.config.public_url, s.config.public_url, s.config.public_url, policy.controller_name
     );
     sqlx::query("INSERT INTO mail_queue(subscriber_id,purpose,deduplication_key,subject,body,next_attempt_at,created_at,consent_id) VALUES ($1,'document',$2,$3,$4,$5,$6,$7)")
             .bind(recipient).bind(key).bind(format!("Vyskeř: {}",title.replace(['\r','\n']," "))).bind(body).bind(created_at).bind(created_at).bind(consent_id).execute(&mut *conn).await?;
@@ -169,6 +170,7 @@ pub async fn prepare_publications(s: &Backend, now: OffsetDateTime) -> Result<bo
             (s.verified_at IS NOT NULL AND s.unsubscribed_at IS NULL
              AND c.subscriber_id=s.id AND c.confirmed_at IS NOT NULL
              AND c.withdrawn_at IS NULL AND c.superseded_at IS NULL
+             AND subscription_matches_publication(s.id,o.notice_id,o.document_id)
              AND (coalesce(n.status IN ('published','archived','withdrawn'),FALSE)
                   OR coalesce(d.status='published',FALSE))) AS allowed
          FROM publication_outbox o
@@ -233,6 +235,44 @@ struct Pending {
     body: Option<String>,
     attempts: i64,
     consent_id: Option<i64>,
+    deduplication_key: Option<String>,
+}
+
+impl Pending {
+    /// Publication keys retain their type and recipient across worker restarts.
+    fn publication_target(&self) -> Option<PublicationTarget> {
+        let mut parts = self.deduplication_key.as_deref()?.split(':');
+        let kind = parts.next()?;
+        let id = parts.next()?.parse::<i64>().ok()?;
+        let recipient = parts.next()?.parse::<i64>().ok()?;
+        if parts.next().is_some() || id <= 0 || recipient != self.subscriber_id {
+            return None;
+        }
+        match kind {
+            "notice" => Some(PublicationTarget::Notice(id)),
+            "document" => Some(PublicationTarget::Document(id)),
+            _ => None,
+        }
+    }
+}
+
+async fn matches_preferences(s: &Backend, message: &Pending) -> anyhow::Result<bool> {
+    if message.purpose != "document" {
+        return Ok(true);
+    }
+    let (notice_id, document_id) = match message.publication_target() {
+        Some(PublicationTarget::Notice(id)) => (Some(id), None),
+        Some(PublicationTarget::Document(id)) => (None, Some(id)),
+        None => return Ok(false),
+    };
+    Ok(
+        sqlx::query_scalar("SELECT subscription_matches_publication($1,$2,$3)")
+            .bind(message.subscriber_id)
+            .bind(notice_id)
+            .bind(document_id)
+            .fetch_one(&s.pool)
+            .await?,
+    )
 }
 
 /// Trvalá fronta s časově omezeným zámkem. Pád procesu zprávu neztratí.
@@ -252,7 +292,7 @@ pub async fn deliver_one(
         .await
         .map_err(|error| anyhow::anyhow!(error.1))?;
     let lease = auth::token();
-    let message:Option<Pending>=sqlx::query_as("UPDATE mail_queue SET lock_token=$1,locked_until=$2,attempts=attempts+1 WHERE id=(SELECT id FROM mail_queue WHERE sent_at IS NULL AND cancelled=FALSE AND next_attempt_at<=$3 AND locked_until<=$4 ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id,subscriber_id,purpose,subject,body,attempts,consent_id")
+    let message:Option<Pending>=sqlx::query_as("UPDATE mail_queue SET lock_token=$1,locked_until=$2,attempts=attempts+1 WHERE id=(SELECT id FROM mail_queue WHERE sent_at IS NULL AND cancelled=FALSE AND next_attempt_at<=$3 AND locked_until<=$4 ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id,subscriber_id,purpose,subject,body,attempts,consent_id,deduplication_key")
         .bind(&lease).bind(now.unix_timestamp()+300).bind(now.unix_timestamp()).bind(now.unix_timestamp()).fetch_optional(&s.pool).await?;
     let Some(message) = message else {
         return Ok(prepared);
@@ -287,7 +327,7 @@ pub async fn deliver_one(
             .bind(message.consent_id).bind(message.subscriber_id).bind(&message.purpose).fetch_one(&s.pool).await?
         && unsubscribed.is_none()
         && if message.purpose == "document" {
-            confirmed.is_some()
+            confirmed.is_some() && matches_preferences(s, &message).await?
         } else {
             confirmed.is_none()
         };

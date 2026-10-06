@@ -92,7 +92,11 @@ pub async fn load_page(_slug: String) -> Result<Option<Page>, ServerFnError> {
 
 #[cfg(not(feature = "demo"))]
 #[server]
-pub async fn subscribe_email(email: String, fingerprint: String) -> Result<(), ServerFnError> {
+pub async fn subscribe_email(
+    email: String,
+    fingerprint: String,
+    preferences: Option<SubscriptionPreferences>,
+) -> Result<(), ServerFnError> {
     let state = use_context::<crate::backend::Backend>()
         .ok_or_else(|| ServerFnError::new("Odběr není dostupný."))?;
     let headers = leptos_axum::extract::<axum::http::HeaderMap>().await?;
@@ -107,20 +111,73 @@ pub async fn subscribe_email(email: String, fingerprint: String) -> Result<(), S
     crate::backend::auth::throttle(&state, &format!("subscribe-ip:{ip}"), 20, 3600, now)
         .await
         .map_err(|e| ServerFnError::new(e.1))?;
-    crate::backend::subscriptions::request_subscription(
+    crate::backend::subscriptions::request_subscription_with_preferences(
         &state,
         &email,
         &crate::backend::subscriptions::ConsentAcceptance { fingerprint },
+        &preferences.unwrap_or_default(),
         now,
     )
     .await
     .map_err(|e| ServerFnError::new(e.1))
 }
 #[cfg(feature = "demo")]
-pub async fn subscribe_email(_email: String, _fingerprint: String) -> Result<(), ServerFnError> {
+pub async fn subscribe_email(
+    _email: String,
+    _fingerprint: String,
+    _preferences: Option<SubscriptionPreferences>,
+) -> Result<(), ServerFnError> {
     Err(ServerFnError::new(
         "Odběr novinek zatím není aktivní. E-mailová adresa se neukládá a zprávy se neposílají.",
     ))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SubscriptionPreferences {
+    pub all_notice_categories: bool,
+    #[serde(default)]
+    pub notice_category_ids: Vec<i64>,
+    pub uncategorized_notices: bool,
+    pub documents: bool,
+}
+
+impl Default for SubscriptionPreferences {
+    fn default() -> Self {
+        Self {
+            all_notice_categories: true,
+            notice_category_ids: Vec::new(),
+            uncategorized_notices: true,
+            documents: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubscriptionCategory {
+    pub id: i64,
+    pub name: String,
+}
+
+#[cfg(not(feature = "demo"))]
+#[server]
+pub async fn load_subscription_categories() -> Result<Vec<SubscriptionCategory>, ServerFnError> {
+    let pool = use_context::<sqlx::PgPool>()
+        .ok_or_else(|| ServerFnError::new("Databáze není dostupná."))?;
+    let rows: Vec<(i64, String)> =
+        sqlx::query_as("SELECT id,name FROM categories ORDER BY sort_order,id")
+            .fetch_all(&pool)
+            .await
+            .map_err(|_| ServerFnError::new("Kategorie odběru nelze načíst."))?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, name)| SubscriptionCategory { id, name })
+        .collect())
+}
+
+#[cfg(feature = "demo")]
+pub async fn load_subscription_categories() -> Result<Vec<SubscriptionCategory>, ServerFnError> {
+    Ok(Vec::new())
 }
 
 #[cfg(not(feature = "demo"))]

@@ -124,6 +124,7 @@ fn operation(value: &str) -> String {
         "logged_in" | "prihlaseni" => "Přihlášení",
         "logged_out" | "unsubscribe" | "odhlaseni" => "Odhlášení",
         "subscription_requested" | "zadost_o_odber" => "Žádost o odběr",
+        "subscription_preferences_updated" => "Změna výběru odběru",
         "verification" | "overeni" => "Ověření odběru",
         "schedule_missed" => "Zmeškané plánované zveřejnění",
         "schedule_cancelled" => "Zrušení plánovaného zveřejnění",

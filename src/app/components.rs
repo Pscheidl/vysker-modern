@@ -235,12 +235,18 @@ pub fn Newsletter() -> impl IntoView {
 fn NewsletterForm(notice: crate::privacy::PrivacyNotice) -> impl IntoView {
     let email = RwSignal::new(String::new());
     let input = NodeRef::<leptos::html::Input>::new();
+    let preference_details = NodeRef::<leptos::html::Details>::new();
     let confirmed = RwSignal::new(false);
+    let preferences = RwSignal::new(crate::catalog::SubscriptionPreferences::default());
+    let selection_error = RwSignal::new(false);
+    let categories = Resource::new(|| (), |_| crate::catalog::load_subscription_categories());
     let fingerprint = StoredValue::new(notice.fingerprint);
-    let request = Action::new(|input: &(String, String)| {
-        let (email, fingerprint) = input.clone();
-        async move { crate::catalog::subscribe_email(email, fingerprint).await }
-    });
+    let request = Action::new(
+        |input: &(String, String, crate::catalog::SubscriptionPreferences)| {
+            let (email, fingerprint, preferences) = input.clone();
+            async move { crate::catalog::subscribe_email(email, fingerprint, Some(preferences)).await }
+        },
+    );
     let ready = RwSignal::new(false);
     Effect::new(move |_| ready.set(true));
     Effect::new(move |_| {
@@ -262,13 +268,63 @@ fn NewsletterForm(notice: crate::privacy::PrivacyNotice) -> impl IntoView {
         }
         if let Some(input) = input.get_untracked() {
             if input.report_validity() {
+                let selected = preferences.get_untracked();
+                if !selected.all_notice_categories && selected.notice_category_ids.is_empty()
+                    && !selected.uncategorized_notices && !selected.documents {
+                    selection_error.set(true);
+                    if let Some(details) = preference_details.get_untracked() {
+                        let _ = details.set_attribute("open", "");
+                    }
+                    return;
+                }
+                selection_error.set(false);
                 request.value().set(None);
-                request.dispatch((input.value().trim().to_owned(),fingerprint.get_value()));
+                request.dispatch((input.value().trim().to_owned(),fingerprint.get_value(),selected));
             }
         }
     }>
         <div class="email-field"><label for="newsletter-email">"E-mailová adresa"</label><input node_ref=input id="newsletter-email" name="email" type="email" autocomplete="email" placeholder="vas@email.cz" required maxlength="254" pattern=r"[^\s@]+@[^\s@]+\.[^\s@]+" title="Zadejte e-mailovou adresu ve tvaru jmeno@domena.cz." prop:value=move ||email.get() disabled=move ||request.pending().get() on:input=move |ev|{email.set(event_target_value(&ev));confirmed.set(false);request.value().set(None);}/></div>
         <button class="button primary" class:newsletter-confirmed=move ||confirmed.get() type="submit" disabled=move ||!ready.get() ||request.pending().get() ||confirmed.get()>{move ||if request.pending().get(){"Odesílám…"}else if confirmed.get(){"Zkontrolujte e-mail"}else{"Přihlásit k odběru"}}</button>
+        <details node_ref=preference_details class="newsletter-preferences">
+            <summary>"Co chcete dostávat"<span>{move ||{
+                let selected = preferences.get();
+                if selected.all_notice_categories && selected.uncategorized_notices && selected.documents {
+                    "Všechny novinky"
+                } else { "Vlastní výběr" }
+            }}</span></summary>
+            <fieldset disabled=move ||request.pending().get() on:change=move |_|selection_error.set(false)>
+                <legend>"Vyberte témata odběru"</legend>
+                <p class="newsletter-preferences-help">"Ve výchozím nastavení dostáváte vše. Pro výběr jednotlivých kategorií zrušte volbu všech kategorií úřední desky."</p>
+                <label class="newsletter-option"><input type="checkbox" name="all_notice_categories" checked prop:checked=move ||preferences.get().all_notice_categories on:change=move |ev|{
+                    let checked = event_target_checked(&ev);
+                    preferences.update(|selected|{
+                        selected.all_notice_categories = checked;
+                        if checked { selected.notice_category_ids.clear(); }
+                    });
+                }/><span>"Všechny kategorie úřední desky (i budoucí)"</span></label>
+                <div class="newsletter-categories">
+                    <Suspense fallback=||view!{<p>"Načítám kategorie…"</p>}>
+                        {move ||categories.get().map(|result|match result {
+                            Ok(categories)=>categories.into_iter().map(|category|{
+                                let id = category.id;
+                                view!{<label class="newsletter-option"><input type="checkbox" name="notice_category_ids" value=id checked=move ||preferences.get().all_notice_categories ||preferences.get().notice_category_ids.contains(&id) prop:checked=move ||preferences.get().all_notice_categories ||preferences.get().notice_category_ids.contains(&id) disabled=move ||preferences.get().all_notice_categories on:change=move |ev|{
+                                    let checked = event_target_checked(&ev);
+                                    preferences.update(|selected|{
+                                        selected.notice_category_ids.retain(|selected_id|*selected_id != id);
+                                        if checked { selected.notice_category_ids.push(id); }
+                                    });
+                                }/><span>{category.name}</span></label>}
+                            }).collect_view().into_any(),
+                            Err(_)=>view!{<p role="alert">"Jednotlivé kategorie se nepodařilo načíst. Můžete odebírat všechny kategorie nebo obecné dokumenty."</p>}.into_any(),
+                        })}
+                    </Suspense>
+                </div>
+                <label class="newsletter-option"><input type="checkbox" name="uncategorized_notices" checked prop:checked=move ||preferences.get().uncategorized_notices on:change=move |ev|preferences.update(|selected|selected.uncategorized_notices = event_target_checked(&ev))/><span>"Úřední deska bez kategorie"</span></label>
+                <label class="newsletter-option"><input type="checkbox" name="documents" checked prop:checked=move ||preferences.get().documents on:change=move |ev|preferences.update(|selected|selected.documents = event_target_checked(&ev))/><span>"Obecné dokumenty"</span></label>
+            </fieldset>
+            <p class="newsletter-preferences-help">"Výběr můžete později změnit odkazem v každém oznámení."</p>
+        </details>
+        {move ||selection_error.get().then(||view!{<p role="alert" class="newsletter-message">"Vyberte alespoň jednu kategorii úřední desky, úřední desku bez kategorie nebo obecné dokumenty."</p>})}
         <p class="newsletter-consent">{notice.consent_text}" "<A href=site_url("/ochrana-udaju")>"Ochrana údajů"</A></p>
         {move ||request.value().get().map(|result|view!{<p role=if result.is_ok(){"status"}else{"alert"} class="newsletter-message">{match &result{Ok(())=>"Pokud je potřeba odběr potvrdit, pošleme vám ověřovací e-mail. Zkontrolujte svou schránku.".to_owned(),Err(error)=>error.to_string()}}</p>})}
         <noscript><p>"Pro odeslání formuláře zapněte JavaScript."</p></noscript>
