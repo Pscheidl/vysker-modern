@@ -15,9 +15,9 @@ pub fn Home() -> impl IntoView {
     view! {
         <Title text="Vyskeř · Obec v Českém ráji"/>
         <div class="page-width">
-            <section class="hero" aria-labelledby="home-title">
+            <section class="hero hero-chapel" aria-labelledby="home-title">
                 <div class="hero-copy"><h1 id="home-title">"Vyskeř"<span>"."</span></h1><p>"Obec v Českém ráji"</p></div>
-                <div class="terrain" aria-hidden="true"><img class="terrain-light" src=super::site_url("/images/relief-vysker-light.png") alt="" width="2172" height="724" fetchpriority="high"/><img class="terrain-dark" src=super::site_url("/images/relief-vysker-dark.png") alt="" width="2172" height="724"/></div>
+                <div class="terrain terrain-chapel" aria-hidden="true"><img class="terrain-light" src=super::site_url("/images/chapel-ceramic-light.png") alt="" width="1536" height="1024" fetchpriority="high"/><img class="terrain-dark" src=super::site_url("/images/chapel-ceramic-dark.png") alt="" width="1536" height="1024"/></div>
                 <div class="hero-date"><Suspense fallback=|| ()>{move || board.get().and_then(Result::ok).map(|b| b.today)}</Suspense></div>
             </section>
             <SearchBox/><Shortcuts/>
@@ -192,7 +192,7 @@ fn MunicipalityPreview() -> impl IntoView {
     view! {
         <Title text="Obec a úřad · Vyskeř"/>
         <div class="page-width interior"><PageHeading title="Obecní úřad" description="Obec v Českém ráji. Informace pro každodenní život i návštěvu úřadu."/>
-            <div class="municipality-intro"><div><h2>"Obec, ve které žijeme"</h2><p>"Na Vyskři se potkává krajina Českého ráje s každodenním životem obce. Tady najdete důležité dokumenty, praktické informace i to, co se u nás právě chystá."</p><A href=super::site_url("/kontakt") attr:class="button primary">"Kontakty na obecní úřad"<Icon/></A></div><div class="mini-terrain" aria-hidden="true"><img class="terrain-light" src=super::site_url("/images/relief-vysker-light.png") alt="" loading="lazy"/><img class="terrain-dark" src=super::site_url("/images/relief-vysker-dark.png") alt="" loading="lazy"/></div></div>
+            <div class="municipality-intro"><div><h2>"Obec, ve které žijeme"</h2><p>"Na Vyskři se potkává krajina Českého ráje s každodenním životem obce. Tady najdete důležité dokumenty, praktické informace i to, co se u nás právě chystá."</p><A href=super::site_url("/kontakt") attr:class="button primary">"Kontakty na obecní úřad"<Icon/></A></div><div class="mini-terrain mini-chapel" aria-hidden="true"><img class="terrain-light" src=super::site_url("/images/chapel-ceramic-light.png") alt="" width="1536" height="1024" loading="lazy"/><img class="terrain-dark" src=super::site_url("/images/chapel-ceramic-dark.png") alt="" width="1536" height="1024" loading="lazy"/></div></div>
             <section id="sluzby" class="services-section"><h2>"Co potřebujete vyřídit?"</h2><div class="service-grid">
                 <article><Icon name="board"/><h3>"Zastupitelstvo"</h3><p>"Pozvánky na veřejná zasedání a zveřejněné dokumenty."</p><A href=super::site_url("/uredni-deska?kategorie=Zastupitelstvo") attr:class="text-link">"Dokumenty zastupitelstva"<Icon/></A></article>
             </div></section><Newsletter/>
