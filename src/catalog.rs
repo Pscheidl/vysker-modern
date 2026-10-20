@@ -199,8 +199,10 @@ pub struct PageLink {
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct NavigationLink {
+    pub id: i64,
     pub label: String,
     pub path: String,
+    pub children: Vec<NavigationLink>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SiteInfo {
@@ -219,18 +221,52 @@ pub async fn load_site_info() -> Result<SiteInfo, ServerFnError> {
     .fetch_all(&state.pool)
     .await
     .map_err(|_| ServerFnError::new("Stránky nelze načíst."))?;
-    let navigation:Vec<(String,String)>=sqlx::query_as("SELECT label,path FROM navigation_items n WHERE visible=TRUE AND (path NOT LIKE '/stranky/%' OR EXISTS(SELECT 1 FROM pages p WHERE n.path='/stranky/'||p.slug AND p.published=TRUE)) ORDER BY sort_order,id LIMIT 20").fetch_all(&state.pool).await.map_err(|_|ServerFnError::new("Navigaci nelze načíst."))?;
     Ok(SiteInfo {
-        navigation: navigation
-            .into_iter()
-            .map(|(label, path)| NavigationLink { label, path })
-            .collect(),
+        navigation: navigation_from_pool(&state.pool).await?,
         production: state.config.production,
         pages: rows
             .into_iter()
             .map(|(slug, title)| PageLink { slug, title })
             .collect(),
     })
+}
+#[cfg(feature = "ssr")]
+pub async fn navigation_from_pool(
+    pool: &sqlx::PgPool,
+) -> Result<Vec<NavigationLink>, ServerFnError> {
+    let rows: Vec<(i64, String, String, Option<i64>)> = sqlx::query_as(
+        "SELECT id,label,path,parent_id FROM navigation_items n
+         WHERE visible=TRUE
+           AND (path NOT LIKE '/stranky/%' OR EXISTS(
+               SELECT 1 FROM pages p WHERE n.path='/stranky/'||p.slug AND p.published=TRUE
+           ))
+         ORDER BY sort_order,id LIMIT 60",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|_| ServerFnError::new("Navigaci nelze načíst."))?;
+    let mut roots = Vec::new();
+    let mut children = Vec::new();
+    for (id, label, path, parent_id) in rows {
+        let link = NavigationLink {
+            id,
+            label,
+            path,
+            children: Vec::new(),
+        };
+        if let Some(parent_id) = parent_id {
+            children.push((parent_id, link));
+        } else {
+            roots.push(link);
+        }
+    }
+    for (parent_id, child) in children {
+        // A hidden or unpublished parent must hide its entire branch.
+        if let Some(parent) = roots.iter_mut().find(|root| root.id == parent_id) {
+            parent.children.push(child);
+        }
+    }
+    Ok(roots)
 }
 #[cfg(feature = "demo")]
 pub async fn load_site_info() -> Result<SiteInfo, ServerFnError> {
@@ -249,9 +285,12 @@ pub fn default_navigation() -> Vec<NavigationLink> {
         ("Obec a úřad", "/obec"),
     ]
     .into_iter()
-    .map(|(label, path)| NavigationLink {
+    .enumerate()
+    .map(|(index, (label, path))| NavigationLink {
+        id: -(index as i64 + 1),
         label: label.into(),
         path: path.into(),
+        children: Vec::new(),
     })
     .collect()
 }

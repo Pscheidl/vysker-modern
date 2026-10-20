@@ -67,11 +67,17 @@ pub fn App() -> impl IntoView {
     provide_meta_context();
     let board = Resource::new(|| (), |_| load_board());
     provide_context(board);
-    provide_context(Resource::new(|| (), |_| crate::catalog::load_site_info()));
+    // Navigation is part of the initial HTML, including when JavaScript is disabled.
+    provide_context(Resource::new_blocking(
+        || (),
+        |_| crate::catalog::load_site_info(),
+    ));
     #[cfg(not(feature = "demo"))]
     let stylesheet = view! { <Stylesheet id="leptos" href="/pkg/obecni-web.css"/> };
     #[cfg(feature = "demo")]
     let stylesheet = ();
+    // InOrder keeps configured navigation available without JavaScript.
+    // leptos_axum 0.8.10 ignores replace_blocks for PartiallyBlocked rendering.
     view! {
         {stylesheet}
         <Title text="Vyskeř · Obec v Českém ráji"/>
@@ -84,22 +90,22 @@ pub fn App() -> impl IntoView {
                 <Routes fallback=NotFound>
                     <Route path=path!("admin") view=admin::Administration/>
                     <Route path=path!("admin/*path") view=admin::Administration/>
-                    <Route path=path!("") view=Home/>
-                    <Route path=path!("uredni-deska") view=NoticeBoard/>
+                    <Route path=path!("") view=Home ssr=leptos_router::SsrMode::InOrder/>
+                    <Route path=path!("uredni-deska") view=NoticeBoard ssr=leptos_router::SsrMode::InOrder/>
                     <Route path=path!("uredni-deska/:id") view=NoticeDetail ssr=leptos_router::SsrMode::Async/>
-                    <Route path=path!("dokumenty") view=Documents/>
+                    <Route path=path!("dokumenty") view=Documents ssr=leptos_router::SsrMode::InOrder/>
                     <Route path=path!("dokumenty/:id") view=catalog::DocumentDetail ssr=leptos_router::SsrMode::Async/>
                     <Route path=path!("stranky/:slug") view=catalog::ContentPage ssr=leptos_router::SsrMode::Async/>
-                    <Route path=path!("hledat") view=SearchResults/>
-                    <Route path=path!("obec") view=Municipality/>
-                    <Route path=path!("povinne-informace") view=RequiredInformation/>
-                    <Route path=path!("stranky") view=PagesIndex/>
-                    <Route path=path!("kontakt") view=Contact/>
-                    <Route path=path!("odber") view=Subscribe/>
-                    <Route path=path!("kalendar") view=Calendar/>
+                    <Route path=path!("hledat") view=SearchResults ssr=leptos_router::SsrMode::InOrder/>
+                    <Route path=path!("obec") view=Municipality ssr=leptos_router::SsrMode::InOrder/>
+                    <Route path=path!("povinne-informace") view=RequiredInformation ssr=leptos_router::SsrMode::InOrder/>
+                    <Route path=path!("stranky") view=PagesIndex ssr=leptos_router::SsrMode::InOrder/>
+                    <Route path=path!("kontakt") view=Contact ssr=leptos_router::SsrMode::InOrder/>
+                    <Route path=path!("odber") view=Subscribe ssr=leptos_router::SsrMode::InOrder/>
+                    <Route path=path!("kalendar") view=Calendar ssr=leptos_router::SsrMode::InOrder/>
                     <Route path=path!("kalendar/:id") view=events::EventDetail ssr=leptos_router::SsrMode::Async/>
-                    <Route path=path!("pristupnost") view=Accessibility/>
-                    <Route path=path!("ochrana-udaju") view=Privacy/>
+                    <Route path=path!("pristupnost") view=Accessibility ssr=leptos_router::SsrMode::InOrder/>
+                    <Route path=path!("ochrana-udaju") view=Privacy ssr=leptos_router::SsrMode::InOrder/>
                 </Routes>
             </main>
             <PublicFooter/>

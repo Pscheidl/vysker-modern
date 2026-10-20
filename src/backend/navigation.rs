@@ -14,6 +14,7 @@ pub struct ItemInput {
     path: String,
     sort_order: i64,
     visible: bool,
+    parent_id: Option<i64>,
     expected_version: Option<i64>,
 }
 #[derive(Serialize, sqlx::FromRow)]
@@ -23,6 +24,7 @@ pub struct Item {
     path: String,
     sort_order: i64,
     visible: bool,
+    parent_id: Option<i64>,
     version: i64,
 }
 pub async fn list(State(s): State<Backend>, _: Admin) -> Result<Json<Vec<Item>>> {
@@ -32,7 +34,11 @@ pub async fn list(State(s): State<Backend>, _: Admin) -> Result<Json<Vec<Item>>>
             .await?,
     ))
 }
-async fn validate(conn: &mut sqlx::PgConnection, input: &ItemInput) -> Result<()> {
+async fn validate(
+    conn: &mut sqlx::PgConnection,
+    input: &ItemInput,
+    item_id: Option<i64>,
+) -> Result<()> {
     text(&input.label, 40)?;
     if !(0..=9999).contains(&input.sort_order) {
         return Err(bad("Pořadí musí být mezi 0 a 9999."));
@@ -59,11 +65,76 @@ async fn validate(conn: &mut sqlx::PgConnection, input: &ItemInput) -> Result<()
         )
         .bind(slug)
         .bind(input.visible)
-        .fetch_one(conn)
+        .fetch_one(&mut *conn)
         .await?;
         if !exists {
             return Err(bad("Stránka neexistuje nebo není zveřejněná."));
         }
+    }
+    if let Some(parent_id) = input.parent_id {
+        if Some(parent_id) == item_id {
+            return Err(bad("Položka nemůže být podřazená sama sobě."));
+        }
+        let parent: Option<(Option<i64>,)> =
+            sqlx::query_as("SELECT parent_id FROM navigation_items WHERE id=$1")
+                .bind(parent_id)
+                .fetch_optional(&mut *conn)
+                .await?;
+        match parent {
+            None => {
+                return Err(bad(
+                    "Nadřazená položka už neexistuje. Načtěte navigaci znovu.",
+                ));
+            }
+            Some((Some(_),)) => {
+                return Err(bad(
+                    "Podmenu může mít jen jednu úroveň. Vyberte hlavní položku navigace.",
+                ));
+            }
+            Some((None,)) => {}
+        }
+        if let Some(id) = item_id {
+            let has_children: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM navigation_items WHERE parent_id=$1)",
+            )
+            .bind(id)
+            .fetch_one(&mut *conn)
+            .await?;
+            if has_children {
+                return Err(bad(
+                    "Tato položka má vlastní podmenu. Nejprve přesuňte nebo odstraňte její podřízené položky.",
+                ));
+            }
+        }
+    } else {
+        let root_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM navigation_items WHERE parent_id IS NULL AND ($1::BIGINT IS NULL OR id<>$1)",
+        )
+        .bind(item_id)
+        .fetch_one(&mut *conn)
+        .await?;
+        if root_count >= 20 {
+            return Err(conflict(
+                "Navigace může mít nejvýše 20 hlavních položek. Další odkazy zařaďte do podmenu.",
+            ));
+        }
+    }
+    Ok(())
+}
+async fn check_version(
+    conn: &mut sqlx::PgConnection,
+    id: i64,
+    expected_version: Option<i64>,
+) -> Result<()> {
+    let current: Option<i64> =
+        sqlx::query_scalar("SELECT version FROM navigation_items WHERE id=$1")
+            .bind(id)
+            .fetch_optional(conn)
+            .await?;
+    if current.is_none() || current != expected_version {
+        return Err(conflict(
+            "Položku mezitím někdo změnil. Načtěte aktuální verzi.",
+        ));
     }
     Ok(())
 }
@@ -73,14 +144,16 @@ pub async fn create(
     Json(input): Json<ItemInput>,
 ) -> Result<(StatusCode, Json<serde_json::Value>)> {
     let mut tx = crate::db::begin_write(&s.pool).await?;
-    validate(&mut tx, &input).await?;
+    validate(&mut tx, &input, None).await?;
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM navigation_items")
         .fetch_one(&mut *tx)
         .await?;
-    if count >= 20 {
-        return Err(conflict("Navigace může mít nejvýše 20 položek."));
+    if count >= 60 {
+        return Err(conflict(
+            "Navigace může mít nejvýše 60 položek včetně podmenu.",
+        ));
     }
-    let id:i64=sqlx::query_scalar("INSERT INTO navigation_items(label,path,sort_order,visible) VALUES ($1,$2,$3,$4) RETURNING id").bind(input.label.trim()).bind(input.path).bind(input.sort_order).bind(input.visible).fetch_one(&mut *tx).await?;
+    let id:i64=sqlx::query_scalar("INSERT INTO navigation_items(label,path,sort_order,visible,parent_id) VALUES ($1,$2,$3,$4,$5) RETURNING id").bind(input.label.trim()).bind(input.path).bind(input.sort_order).bind(input.visible).bind(input.parent_id).fetch_one(&mut *tx).await?;
     audit(
         &mut tx,
         Some(admin.id),
@@ -100,8 +173,9 @@ pub async fn update(
     Json(input): Json<ItemInput>,
 ) -> Result<StatusCode> {
     let mut tx = crate::db::begin_write(&s.pool).await?;
-    validate(&mut tx, &input).await?;
-    let count=sqlx::query("UPDATE navigation_items SET label=$1,path=$2,sort_order=$3,visible=$4,version=version+1 WHERE id=$5 AND version=$6").bind(input.label.trim()).bind(input.path).bind(input.sort_order).bind(input.visible).bind(id).bind(input.expected_version).execute(&mut *tx).await?.rows_affected();
+    check_version(&mut tx, id, input.expected_version).await?;
+    validate(&mut tx, &input, Some(id)).await?;
+    let count=sqlx::query("UPDATE navigation_items SET label=$1,path=$2,sort_order=$3,visible=$4,parent_id=$5,version=version+1 WHERE id=$6 AND version=$7").bind(input.label.trim()).bind(input.path).bind(input.sort_order).bind(input.visible).bind(input.parent_id).bind(id).bind(input.expected_version).execute(&mut *tx).await?.rows_affected();
     if count == 0 {
         return Err(conflict(
             "Položku mezitím někdo změnil. Načtěte aktuální verzi.",
@@ -131,6 +205,17 @@ pub async fn remove(
     Json(input): Json<Version>,
 ) -> Result<StatusCode> {
     let mut tx = crate::db::begin_write(&s.pool).await?;
+    check_version(&mut tx, id, Some(input.expected_version)).await?;
+    let has_children: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM navigation_items WHERE parent_id=$1)")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+    if has_children {
+        return Err(conflict(
+            "Položka má vlastní podmenu. Nejprve přesuňte nebo odstraňte její podřízené položky.",
+        ));
+    }
     let count = sqlx::query("DELETE FROM navigation_items WHERE id=$1 AND version=$2")
         .bind(id)
         .bind(input.expected_version)

@@ -116,16 +116,31 @@ pages cannot be hidden or renamed.
 ## Navigation and categories
 
 **Navigace** manages menu labels, local destinations, visibility and numeric
-order. Smaller order values appear first. Custom destinations must identify an
+order. Use **Přidat podpoložku** beside a main entry, or choose its parent under
+**Umístění v menu** in the editor. One submenu level is supported. Choose
+**Hlavní menu** to move a child back to the top level. The grouped list shows the
+resulting hierarchy. Smaller order values appear first within each group.
+Custom destinations must identify an
 existing page. A visible link requires a published page. Hiding a page hides its
 menu link, and renaming its slug updates matching menu links atomically. The
 site logo, contact access, search, footer and required links remain available
-independently of menu configuration.
+independently of menu configuration. Hiding a parent also hides its children,
+without deleting their settings. Move or remove children before deleting a
+parent or making it a child of another entry.
+
+The public menu keeps each parent title as a link and provides a separate
+arrow button for its submenu. Desktop submenus appear in a panel. Mobile
+submenus expand inline with large touch targets. Enter or Space toggles the
+button, Tab moves through links, and Escape closes the submenu and returns
+focus to its button. Clicking outside or choosing a link closes the submenu.
+Only one submenu opens at a time. The current section and page are highlighted.
+Without JavaScript the navigation links remain expanded and usable.
 
 **Kategorie** manages notice-board categories and their order. Used categories
 cannot be deleted because published and archived notices still refer to them.
 Names and order remain editable. Edits use version checks and all mutations are
-audited. Navigation supports up to 20 entries. Keep the main menu concise.
+audited. Navigation supports up to 20 main entries and 60 entries in total.
+Keep the main menu concise, ideally five to seven main entries.
 
 ## Calendar
 

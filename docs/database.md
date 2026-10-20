@@ -22,7 +22,7 @@ internal `_sqlx_migrations` table are exceptions. Municipal content stays Czech.
 | `pages` | Content pages with optimistic versions |
 | `page_images` | Page-owned image bytes, decoded dimensions, MIME type, SHA-256 and uploader |
 | `page_revisions` | Immutable authored versions and author references |
-| `navigation_items` | Ordered visible links to local pages |
+| `navigation_items` | Ordered links to local pages, with optional `parent_id` for one submenu level |
 | `events` | Structured calendar, publication and cancellation |
 | `password_resets` | Hashed single-use recovery tokens |
 | `recovery_mail` | Durable security mail and 30-day SMTP history |

@@ -213,7 +213,7 @@ test('Markdown preview, edit conflicts, revisions and editable navigation', asyn
   await page.getByLabel('Název', { exact: false }).fill('Spolky browser')
   await page.getByLabel('Adresa odkazu', { exact: false }).fill('/stranky/browser-spolky')
   await page.getByRole('button', { name: 'Uložit položku', exact: true }).click()
-  await expect(page.locator('.admin-table')).toContainText('Spolky browser')
+  await expect(page.locator('.admin-navigation-tree')).toContainText('Spolky browser')
   await page.goto('/stranky/browser-spolky')
   await expect(page.getByRole('heading', { name: 'Činnost', exact: true })).toBeVisible()
   await expect(page.getByRole('navigation', { name: 'Hlavní navigace', exact: true }).getByRole('link', { name: 'Spolky browser' })).toBeVisible()

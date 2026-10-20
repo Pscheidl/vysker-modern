@@ -38,6 +38,7 @@ pub fn Icon(
         "moon" => "M20.9 13.2A9 9 0 0 1 10.8 3.1 9 9 0 1 0 20.9 13.2z",
         "menu" => "M3 6h18M3 12h18M3 18h18",
         "close" => "m6 6 12 12M18 6 6 18",
+        "chevron" => "m6 9 6 6 6-6",
         "external" => "M7 17 17 7M7 7h10v10",
         "back" => "M20 12H4m6-6-6 6 6 6",
         "check" => "m5 12 4 4L19 6",
@@ -70,33 +71,119 @@ pub fn Logo() -> impl IntoView {
     }
 }
 
+#[cfg(any(feature = "hydrate", feature = "demo"))]
+fn navigation_is_mobile() -> bool {
+    window()
+        .match_media("(max-width: 1050px)")
+        .ok()
+        .flatten()
+        .is_some_and(|query| query.matches())
+}
+
 #[component]
 pub fn Header() -> impl IntoView {
     let location = use_location();
     let menu = RwSignal::new(false);
+    let menu_button = NodeRef::<leptos::html::Button>::new();
+    let header = NodeRef::<leptos::html::Header>::new();
     Effect::new(move |_| {
         let _ = location.pathname.get();
         menu.set(false);
     });
+    #[cfg(any(feature = "hydrate", feature = "demo"))]
+    {
+        use leptos::wasm_bindgen::JsCast;
+        let outside = window_event_listener(leptos::ev::pointerdown, move |event| {
+            let target = event
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::Node>().ok());
+            if header.get().is_some_and(|el| !el.contains(target.as_ref())) {
+                menu.set(false);
+            }
+        });
+        let mobile_layout = StoredValue::new(navigation_is_mobile());
+        let resize = window_event_listener(leptos::ev::resize, move |_| {
+            let mobile = navigation_is_mobile();
+            if mobile != mobile_layout.get_value() {
+                mobile_layout.set_value(mobile);
+                menu.set(false);
+            }
+        });
+        on_cleanup(move || {
+            outside.remove();
+            resize.remove();
+        });
+    }
     view! {
-        <header class="site-header">
+        <header class="site-header" node_ref=header on:keydown=move |event| {
+            if event.key()=="Escape" && menu.get_untracked() {
+                event.prevent_default();
+                menu.set(false);
+                if let Some(button)=menu_button.get() { let _=button.focus(); }
+            }
+        }>
             <div class="page-width header-inner">
                 <A href=site_url("/") attr:class="brand" attr:aria-label="Vyskeř, úvodní stránka"><Logo/><span>"Vyskeř"</span></A>
-                <nav class="desktop-nav" aria-label="Hlavní navigace"><Navigation/></nav>
+                <nav class="desktop-nav" aria-label="Hlavní navigace"><Navigation prefix="desktop" menu/></nav>
                 <div class="header-actions"><ThemeSwitch/>
                     <A href=site_url("/kontakt") attr:class="contact-link">"Kontakt"<Icon name="external"/></A>
-                    <button class="menu-toggle icon-button" type="button" aria-label="Hlavní menu" aria-expanded=move || menu.get().to_string() aria-controls="mobile-menu" on:click=move |_| menu.update(|m| *m=!*m)><Icon name="menu"/></button>
+                    <button id="mobile-menu-toggle" node_ref=menu_button class="menu-toggle icon-button" type="button" aria-label="Hlavní menu" aria-expanded=move || menu.get().to_string() aria-controls="mobile-menu" on:click=move |_| menu.update(|m| *m=!*m)>
+                        {move || view!{<Icon name=if menu.get() {"close"} else {"menu"}/>}}
+                        <span>"Menu"</span>
+                    </button>
                 </div>
             </div>
-            <nav id="mobile-menu" class="mobile-nav page-width" aria-label="Mobilní navigace" hidden=move || !menu.get()><Navigation/><A href=site_url("/kontakt")>"Kontakt"</A></nav>
-            <noscript><nav class="noscript-nav page-width" aria-label="Navigace"><a href=site_url("/uredni-deska")>"Úřední deska"</a><a href=site_url("/dokumenty")>"Dokumenty"</a><a href=site_url("/obec")>"Obec a úřad"</a><a href=site_url("/kontakt")>"Kontakt"</a></nav></noscript>
+            <nav id="mobile-menu" class="mobile-nav page-width" aria-label="Mobilní navigace" hidden=move || !menu.get()><Navigation prefix="mobile" menu/><A href=site_url("/kontakt") attr:class="mobile-contact" on:click=move |_|menu.set(false)>"Kontakt"<Icon name="external"/></A></nav>
+            <noscript><style>
+                ".nav-submenu[hidden]{display:block!important;position:static;box-shadow:none}.nav-submenu-toggle,.menu-toggle{display:none!important}.desktop-nav .nav-list{align-items:flex-start}.header-inner{height:auto;min-height:76px}@media(max-width:1050px){.site-header .mobile-nav[hidden]{display:block!important}}"
+            </style></noscript>
         </header>
     }
 }
 
 #[component]
-fn Navigation() -> impl IntoView {
+fn Navigation(prefix: &'static str, menu: RwSignal<bool>) -> impl IntoView {
     let info = expect_context::<super::SiteResource>();
+    let location = use_location();
+    let open = RwSignal::new(None::<i64>);
+    Effect::new(move |_| {
+        let _ = location.pathname.get();
+        let _ = menu.get();
+        open.set(None);
+    });
+    #[cfg(any(feature = "hydrate", feature = "demo"))]
+    {
+        use leptos::wasm_bindgen::JsCast;
+        let dismiss = move |target: Option<web_sys::EventTarget>| {
+            if let Some(id) = open.get_untracked() {
+                let target = target.and_then(|t| t.dyn_into::<web_sys::Node>().ok());
+                if document()
+                    .get_element_by_id(&format!("{prefix}-nav-{id}"))
+                    .is_some_and(|el| !el.contains(target.as_ref()))
+                {
+                    open.set(None);
+                }
+            }
+        };
+        let pointer = window_event_listener(leptos::ev::pointerdown, move |event| {
+            dismiss(event.target())
+        });
+        let focus =
+            window_event_listener(leptos::ev::focusin, move |event| dismiss(event.target()));
+        let mobile_layout = StoredValue::new(navigation_is_mobile());
+        let resize = window_event_listener(leptos::ev::resize, move |_| {
+            let mobile = navigation_is_mobile();
+            if mobile != mobile_layout.get_value() {
+                mobile_layout.set_value(mobile);
+                open.set(None);
+            }
+        });
+        on_cleanup(move || {
+            pointer.remove();
+            focus.remove();
+            resize.remove();
+        });
+    }
     let links = move || {
         info.get()
             .and_then(Result::ok)
@@ -104,8 +191,96 @@ fn Navigation() -> impl IntoView {
             .unwrap_or_else(crate::catalog::default_navigation)
     };
     view! {<Suspense fallback=move||view!{<A href=site_url("/uredni-deska")>"Úřední deska"</A>}>
-        {move||links().into_iter().map(|item|view!{<A href=site_url(&item.path) exact=item.path=="/">{item.label}</A>}).collect_view()}
+        <ul class="nav-list">
+            {move||links().into_iter().map(|item|view!{<NavigationItem item prefix open menu/>}).collect_view()}
+        </ul>
     </Suspense>}
+}
+
+fn navigation_matches(current: &str, target: &str) -> bool {
+    current == target || (target != site_url("/") && current.starts_with(&format!("{target}/")))
+}
+
+#[component]
+fn NavigationItem(
+    item: crate::catalog::NavigationLink,
+    prefix: &'static str,
+    open: RwSignal<Option<i64>>,
+    menu: RwSignal<bool>,
+) -> impl IntoView {
+    let location = use_location();
+    let id = item.id;
+    let has_children = !item.children.is_empty();
+    let toggle = NodeRef::<leptos::html::Button>::new();
+    let group_id = format!("{prefix}-submenu-{id}");
+    let toggle_label = format!("Podmenu: {}", item.label);
+    let controlled_id = group_id.clone();
+    let paths = StoredValue::new(
+        std::iter::once(site_url(&item.path))
+            .chain(item.children.iter().map(|child| site_url(&child.path)))
+            .collect::<Vec<_>>(),
+    );
+    let active = move || {
+        let current = location.pathname.get();
+        paths.with_value(|paths| paths.iter().any(|path| navigation_matches(&current, path)))
+    };
+    let close = move |event: leptos::ev::MouseEvent| {
+        use leptos::wasm_bindgen::JsCast;
+        let same_page = event
+            .target()
+            .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+            .and_then(|target| target.closest("a").ok().flatten())
+            .and_then(|link| link.get_attribute("href"))
+            .is_some_and(|href| href == location.pathname.get_untracked());
+        let was_open = open.get_untracked() == Some(id);
+        open.set(None);
+        menu.set(false);
+        if same_page {
+            if prefix == "mobile" {
+                if let Some(button) = document()
+                    .get_element_by_id("mobile-menu-toggle")
+                    .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
+                {
+                    let _ = button.focus();
+                }
+            } else if was_open && let Some(button) = toggle.get() {
+                let _ = button.focus();
+            }
+        }
+    };
+    view! {
+        <li id=format!("{prefix}-nav-{id}") class="nav-item" class:nav-section-active=active
+            on:keydown=move |event| {
+                if event.key()=="Escape" && open.get_untracked()==Some(id) {
+                    event.prevent_default();
+                    event.stop_propagation();
+                    open.set(None);
+                    if let Some(button)=toggle.get() {let _=button.focus();}
+                }
+            }>
+            <div class="nav-parent">
+                <A href=site_url(&item.path) exact=true on:click=close>{item.label.clone()}</A>
+                {has_children.then(||view!{
+                    <button node_ref=toggle class="nav-submenu-toggle" type="button"
+                        aria-label=toggle_label
+                        aria-expanded=move||(open.get()==Some(id)).to_string()
+                        aria-controls=controlled_id
+                        on:click=move |_|open.update(|value|*value=if *value==Some(id){None}else{Some(id)})>
+                        <Icon name="chevron"/>
+                    </button>
+                })}
+            </div>
+            {has_children.then(||view!{
+                <ul id=group_id class="nav-submenu" hidden=move||open.get()!=Some(id)>
+                    {item.children.into_iter().map(|child|view!{
+                        <li><A href=site_url(&child.path) exact=true on:click=close>
+                            <span>{child.label}</span><Icon name="arrow"/>
+                        </A></li>
+                    }).collect_view()}
+                </ul>
+            })}
+        </li>
+    }
 }
 
 #[component]
