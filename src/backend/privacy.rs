@@ -119,6 +119,8 @@ pub async fn response_headers(
         || request.uri().path().starts_with("/api/")
         || request.uri().path() == "/"
         || request.uri().path() == "/hledat";
+    let frontend_asset =
+        request.uri().path().starts_with("/pkg/") || request.uri().path() == "/theme.js";
     let route = request
         .extensions()
         .get::<axum::extract::MatchedPath>()
@@ -128,8 +130,17 @@ pub async fn response_headers(
     let mut response = next.run(request).await;
     tracing::debug!(%method, %route, status=response.status().as_u16(), elapsed_ms=start.elapsed().as_millis(), "HTTP");
     let headers = response.headers_mut();
-    if protect_documents {
+    let html = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/html"));
+    if protect_documents || html {
         headers.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    } else if frontend_asset {
+        // Revalidate stable asset URLs instead of using Last-Modified heuristics.
+        headers.insert(header::CACHE_CONTROL, "no-cache".parse().unwrap());
+    }
+    if protect_documents {
         headers.insert("x-robots-tag", "noindex, noarchive".parse().unwrap());
     }
     headers.insert(header::REFERRER_POLICY, "no-referrer".parse().unwrap());

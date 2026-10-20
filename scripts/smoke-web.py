@@ -2,15 +2,39 @@
 """Start the full web with disposable data, then verify its production mode."""
 import argparse
 import datetime as dt
+from html.parser import HTMLParser
 import json
 import os
 from pathlib import Path
+import re
 import socket
 from postgres import connect, temporary_database
 import subprocess
 import tempfile
 import time
 import urllib.request
+
+
+class FrontendLinks(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.assets = {}
+
+    def handle_starttag(self, tag, attributes):
+        attributes = dict(attributes)
+        if tag != 'link' or attributes.get('rel') not in ('stylesheet', 'modulepreload', 'preload'):
+            return
+        href = attributes.get('href', '')
+        match = re.fullmatch(r'/pkg/obecni-web\.[A-Za-z0-9_-]+\.(css|js|wasm)', href)
+        if match:
+            self.assets[match[1]] = href
+
+
+def frontend_assets(html):
+    links = FrontendLinks()
+    links.feed(html)
+    assert set(links.assets) == {'css', 'js', 'wasm'}, 'HTML must reference hashed CSS, JS and WASM'
+    return links.assets
 
 
 def start(binary, env):
@@ -71,6 +95,7 @@ def main():
                                    (slug, 'Test: ' + slug, 'Approved content fixture: ' + slug, '2026-09-29T00:00:00Z'))
         process, url = start(binary, env)
         try:
+            assets = {}
             for path in ('/', '/kontakt', '/pristupnost', '/povinne-informace', '/kalendar'):
                 with urllib.request.urlopen(url + path, timeout=10) as response:
                     html = response.read().decode()
@@ -80,11 +105,15 @@ def main():
                     assert 'strict-transport-security' in response.headers
                     if path != '/':
                         assert 'Approved content fixture: ' + path[1:] in html
-            for file in ('obecni-web.js', 'obecni-web.wasm', 'obecni-web.css'):
-                with urllib.request.urlopen(url + '/pkg/' + file, timeout=10) as response:
+                    page_assets = frontend_assets(html)
+                    if assets:
+                        assert page_assets == assets, 'All pages must reference the same frontend release'
+                    assets = page_assets
+            for kind, asset_url in assets.items():
+                with urllib.request.urlopen(url + asset_url, timeout=10) as response:
                     data = response.read()
                     assert response.status == 200 and len(data) > 100
-                    if file.endswith('.wasm'):
+                    if kind == 'wasm':
                         assert data[:4] == b'\x00asm'
             print('Production smoke test: startup gate, real pages, no demo content, headers, JS/WASM/CSS OK')
         finally:

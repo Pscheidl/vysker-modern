@@ -24,7 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && mkdir -p /app/data /app/backups /app/monitor /app/migration \
     && chown obec:obec /app/data /app/backups /app/monitor /app/migration
 WORKDIR /app
-COPY --from=build /app/target/release/obecni-web /app/target/release/obec-admin ./
+COPY --from=build /app/target/release/obecni-web /app/target/release/obec-admin /app/target/release/hash.txt ./
 COPY --from=build /app/target/site ./target/site
 COPY Cargo.toml ./
 COPY scripts/database.py scripts/monitor.py scripts/postgres.py ./scripts/

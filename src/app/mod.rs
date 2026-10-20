@@ -8,9 +8,9 @@ mod search;
 use crate::content::{Board, load_board};
 use components::{Footer, Header, SkipLink};
 use leptos::prelude::*;
-use leptos_meta::{Meta, Title, provide_meta_context};
 #[cfg(not(feature = "demo"))]
-use leptos_meta::{MetaTags, Stylesheet};
+use leptos_meta::{HashedStylesheet, MetaTags};
+use leptos_meta::{Meta, Title, provide_meta_context};
 use leptos_router::{
     components::{Route, Router, Routes},
     path,
@@ -54,6 +54,7 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <link rel="preload" href="/fonts/geist.woff2" r#as="font" type="font/woff2" crossorigin="anonymous"/>
                 <script src="/theme.js"></script>
                 <AutoReload options=options.clone()/>
+                <HashedStylesheet id="leptos" options=options.clone()/>
                 <HydrationScripts options/>
                 <MetaTags/>
             </head>
@@ -72,14 +73,9 @@ pub fn App() -> impl IntoView {
         || (),
         |_| crate::catalog::load_site_info(),
     ));
-    #[cfg(not(feature = "demo"))]
-    let stylesheet = view! { <Stylesheet id="leptos" href="/pkg/obecni-web.css"/> };
-    #[cfg(feature = "demo")]
-    let stylesheet = ();
     // InOrder keeps configured navigation available without JavaScript.
     // leptos_axum 0.8.10 ignores replace_blocks for PartiallyBlocked rendering.
     view! {
-        {stylesheet}
         <Title text="Vyskeř · Obec v Českém ráji"/>
         <Meta name="description" content="Úřední deska, dokumenty a informace obce Vyskeř. Vše důležité na jednom místě."/>
         <SiteRobots/>

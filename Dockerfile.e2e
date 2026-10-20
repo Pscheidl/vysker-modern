@@ -2,7 +2,7 @@
 FROM vysker-web:test AS application
 FROM node:24-bookworm-slim
 WORKDIR /app
-COPY --from=application /app/obecni-web /app/obec-admin ./
+COPY --from=application /app/obecni-web /app/obec-admin /app/hash.txt ./
 COPY --from=application /app/target/site ./target/site
 COPY Cargo.toml package.json pnpm-lock.yaml playwright.config.ts ./
 COPY config/privacy.example.json ./config/privacy.example.json

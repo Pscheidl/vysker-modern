@@ -6,6 +6,8 @@ if [[ -f .env ]]; then
   source .env
   set +a
 fi
+# cargo-leptos 0.3.7 does not regenerate content hashes on incremental watch builds.
+export LEPTOS_HASH_FILES=false
 if command -v cargo-leptos >/dev/null 2>&1; then
   exec cargo-leptos watch "$@"
 elif [ -x target/tools/cargo-leptos-x86_64-unknown-linux-gnu/cargo-leptos ]; then

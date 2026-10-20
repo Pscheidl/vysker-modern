@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && mkdir -p /app/data /app/backups /app/monitor /app/migration \
     && chown obec:obec /app/data /app/backups /app/monitor /app/migration
 WORKDIR /app
-COPY obecni-web obec-admin ./
+COPY obecni-web obec-admin hash.txt ./
 COPY site ./target/site
 COPY Cargo.toml ./
 COPY scripts ./scripts

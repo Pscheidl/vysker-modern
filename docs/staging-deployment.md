@@ -28,6 +28,12 @@ scp "$release_parent/release.tar.gz" obecni-test:release.tar.gz
 vynechat. Výstupní složka balíku musí být nová a mimo checkout. Skript ověří
 kompatibilitu glibc, přibalí pouze potřebné soubory a vypíše tag obrazu odvozený
 z jejich obsahu. Manifest také obsahuje výchozí commit a stav pracovního stromu.
+Leptos přidává do názvů CSS, JavaScriptu a WASM hash jejich obsahu. Balík vyžaduje
+`target/release/hash.txt` a všechny tři soubory, na které odkazuje. Oba Dockerfile
+kopírují `hash.txt` vedle serverového programu, aby HTML načítalo soubory stejného
+vydání i návštěvníkům se staršími styly v cache. Při sestavení vydání nepřepisovat
+`LEPTOS_HASH_FILES` na `false`. Skript `scripts/dev.sh` tuto volbu vypíná pouze
+pro vývojový režim `watch`, který v cargo-leptos 0.3.7 průběžně nepřepočítává hashe.
 Na VPS archiv rozbalit do samostatné složky a v ní sestavit pouze runtime:
 
 ```bash

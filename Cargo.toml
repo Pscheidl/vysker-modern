@@ -85,6 +85,7 @@ panic = "abort"
 [package.metadata.leptos]
 bin-target = "obecni-web"
 output-name = "obecni-web"
+hash-files = true
 site-root = "target/site"
 site-pkg-dir = "pkg"
 style-file = "style/main.css"

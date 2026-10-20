@@ -9,6 +9,29 @@ import shutil
 import subprocess
 
 
+def validate_frontend(root):
+    """Require the cargo-leptos manifest and every referenced frontend artifact."""
+    hash_file = root / 'target/release/hash.txt'
+    if not hash_file.is_file():
+        raise ValueError('Missing target/release/hash.txt. Build the Leptos release with hash-files enabled')
+    hashes = {}
+    for line in hash_file.read_text().splitlines():
+        if not line.strip():
+            continue
+        kind, separator, digest = line.partition(':')
+        kind, digest = kind.strip(), digest.strip()
+        if not separator or not re.fullmatch(r'[A-Za-z0-9_-]+', digest) or kind in hashes:
+            raise ValueError('Invalid cargo-leptos hash manifest')
+        hashes[kind] = digest
+    for kind in ('css', 'js', 'wasm'):
+        if kind not in hashes:
+            raise ValueError(f'Missing {kind} entry in cargo-leptos hash manifest')
+        asset = root / 'target/site/pkg' / f'obecni-web.{hashes[kind]}.{kind}'
+        if not asset.is_file() or asset.stat().st_size == 0:
+            raise ValueError(f'Missing or empty hashed frontend artifact: {asset.name}')
+    return hash_file
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output', type=Path, help='New output directory, outside the checkout')
@@ -25,11 +48,14 @@ def main():
         required = {tuple(map(int, v.split('.'))) for v in re.findall(r'GLIBC_([0-9.]+)', versions)}
         if required and max(required) > (2, 36):
             parser.error(f'{binary.name} needs newer glibc than the Debian bookworm runtime')
-    if not (root / 'target/site/pkg/obecni-web.wasm').is_file():
-        parser.error('Build the Leptos release frontend first')
+    try:
+        hash_file = validate_frontend(root)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
     for binary in binaries:
         shutil.copy2(binary, output / binary.name)
+    shutil.copy2(hash_file, output / hash_file.name)
     shutil.copytree(root / 'target/site', output / 'site')
     shutil.copy2(root / 'Dockerfile.prebuilt', output / 'Dockerfile')
     shutil.copy2(root / 'Cargo.toml', output / 'Cargo.toml')
