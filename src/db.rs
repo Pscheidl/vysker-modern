@@ -11,13 +11,18 @@ use std::{str::FromStr, time::Duration};
 static MIGRATIONS: Migrator = sqlx::migrate!();
 
 pub async fn connect(config: &Config) -> anyhow::Result<PgPool> {
+    let settings = &config.database_pool;
+    settings.validate()?;
     // Never include the connection URL in errors, as it can contain a password.
     let options = PgConnectOptions::from_str(&config.database_url)
         .context("OBEC_DATABAZE must be a PostgreSQL connection URL")?
         .application_name("vysker-web");
     let pool = PgPoolOptions::new()
-        .max_connections(10)
-        .acquire_timeout(Duration::from_secs(10))
+        .max_connections(settings.max_connections)
+        .min_connections(settings.min_connections)
+        .acquire_timeout(Duration::from_secs(settings.acquire_timeout_seconds.into()))
+        .idle_timeout(optional_timeout(settings.idle_timeout_seconds))
+        .max_lifetime(optional_timeout(settings.max_lifetime_seconds))
         .after_connect(|conn, _| {
             Box::pin(async move {
                 sqlx::query("SET TIME ZONE 'UTC'")
@@ -36,7 +41,19 @@ pub async fn connect(config: &Config) -> anyhow::Result<PgPool> {
         .run(&pool)
         .await
         .context("PostgreSQL schema initialization failed")?;
+    tracing::info!(
+        max_connections = settings.max_connections,
+        min_connections = settings.min_connections,
+        acquire_timeout_seconds = settings.acquire_timeout_seconds,
+        idle_timeout_seconds = settings.idle_timeout_seconds,
+        max_lifetime_seconds = settings.max_lifetime_seconds,
+        "PostgreSQL connection pool initialized"
+    );
     Ok(pool)
+}
+
+fn optional_timeout(seconds: u32) -> Option<Duration> {
+    (seconds > 0).then(|| Duration::from_secs(seconds.into()))
 }
 
 /// Serialize multi-step business writes across processes, without blocking readers.

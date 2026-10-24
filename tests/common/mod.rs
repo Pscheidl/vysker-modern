@@ -34,6 +34,7 @@ impl App {
             bind_address: "127.0.0.1:0".parse().unwrap(),
             database_url: std::env::var("TEST_DATABASE_URL")
                 .expect("Run scripts/test.sh or set TEST_DATABASE_URL"),
+            database_pool: Default::default(),
             public_url: "http://localhost:3000".into(),
             seed_demo: false,
             smtp_host: "127.0.0.1".into(),

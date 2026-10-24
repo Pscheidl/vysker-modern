@@ -137,6 +137,50 @@ dc ps
 Kontrola `config -q` nevypisuje interpolovanou konfiguraci. Při každé aktualizaci
 použít tutéž kombinaci souborů, jinak se změní režim pošty nebo přístupu.
 
+## Databázový pool
+
+Obě VPS konfigurace, `compose.staging.yaml` i `compose.production.yaml`, mají
+výchozí maximum 50 spojení na proces aplikace. PostgreSQL má výchozí celkový
+limit 75 spojení. Hodnoty lze změnit v privátním `deploy/.env`:
+
+```dotenv
+DB_POOL_MAX_CONNECTIONS=50
+DB_POOL_MIN_CONNECTIONS=0
+DB_POOL_ACQUIRE_TIMEOUT_SECONDS=10
+DB_POOL_IDLE_TIMEOUT_SECONDS=600
+DB_POOL_MAX_LIFETIME_SECONDS=1800
+POSTGRES_MAX_CONNECTIONS=75
+```
+
+Pool otevírá spojení podle potřeby. Veřejný web, administrace a úlohy aplikace
+na pozadí sdílejí jeden pool. Další proces aplikace má vlastní pool. Celkový
+limit PostgreSQL musí pokrýt všechny pooly, import, monitor, případné zálohy,
+správu i rezervované administrátorské sloty. Maximum 50 není počet návštěvníků
+ani počet spojení otevřených při startu. Vyšší limit není zárukou kapacity VPS,
+při souběžných dotazech ověřit spotřebu paměti v limitu databázového kontejneru.
+
+Čas získání spojení omezuje čekání na dostupné spojení, nikoli trvání SQL dotazu.
+Nula u `DB_POOL_IDLE_TIMEOUT_SECONDS` nebo `DB_POOL_MAX_LIFETIME_SECONDS` vypne
+příslušné pravidlo uzavírání spojení. Maximum musí být alespoň 1, minimum nejvýše
+maximum a čas získání spojení větší než 0. Podrobnosti a výchozí hodnoty při
+spouštění mimo Compose popisuje [databázová konfigurace](database.md#connection-pool-configuration).
+
+Aplikace čte hodnoty při startu. Samotné upravení `deploy/.env` ani
+`docker compose restart` je do prostředí existujícího kontejneru nepřenese.
+Po úpravě použít stejnou funkci `dc` se všemi aktivními Compose soubory:
+
+```bash
+dc config -q
+dc up -d --wait
+dc exec web printenv DB_POOL_MAX_CONNECTIONS DB_POOL_MIN_CONNECTIONS DB_POOL_ACQUIRE_TIMEOUT_SECONDS DB_POOL_IDLE_TIMEOUT_SECONDS DB_POOL_MAX_LIFETIME_SECONDS
+dc exec postgres psql -U postgres -d postgres -Atc 'SHOW max_connections'
+```
+
+Compose podle změněné konfigurace znovu vytvoří dotčené kontejnery.
+Změna `POSTGRES_MAX_CONNECTIONS` mění startovací příkaz PostgreSQL a vyžaduje
+jeho restart s krátkým přerušením databázového přístupu. Trvalý svazek zachovat.
+Po změně ověřit připravenost webu, monitor a logy podle následujícího postupu.
+
 ## První ověření
 
 ```bash

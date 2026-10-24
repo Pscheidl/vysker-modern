@@ -112,6 +112,51 @@ the PostgreSQL port private. Its volume persists independently of application
 containers. Managed PostgreSQL can replace this service by supplying its connection
 URL and operator backup policy.
 
+### Connection pool configuration
+
+The application reads these English-named environment variables at startup.
+Defaults apply when a variable is absent. Invalid values fail startup instead
+of silently falling back to a default.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `DB_POOL_MAX_CONNECTIONS` | `50` with `OBEC_PRODUCTION=true`, otherwise `10` | Maximum open connections per application process, at least `1` |
+| `DB_POOL_MIN_CONNECTIONS` | `0` | Minimum maintained connections, no greater than the maximum |
+| `DB_POOL_ACQUIRE_TIMEOUT_SECONDS` | `10` | Maximum time to obtain a connection, greater than `0` |
+| `DB_POOL_IDLE_TIMEOUT_SECONDS` | `600` | Retire idle connections after this many seconds, `0` disables this rule |
+| `DB_POOL_MAX_LIFETIME_SECONDS` | `1800` | Retire connections after this many seconds, `0` disables this rule |
+
+All values are nonnegative whole numbers. The pool grows on demand, it does not
+open the maximum number of connections at startup. Public requests,
+administration and background jobs share the process's pool. When all connections
+are busy, callers wait for one to become available until the acquisition timeout.
+This timeout does not limit the duration of a SQL query. Idle and lifetime limits
+do not interrupt an in-use connection.
+
+Both `compose.production.yaml` and `compose.staging.yaml` explicitly default to
+`DB_POOL_MAX_CONNECTIONS=50`, including staging's non-production application mode.
+Set the five variables in `deploy/.env` to override these Compose defaults.
+The local `.env.example` explicitly uses `10` for development. A manually started
+server must receive the variables in its environment, it does not load `.env`
+itself.
+
+The bundled PostgreSQL service has a separate server-wide limit controlled by
+`POSTGRES_MAX_CONNECTIONS` in `deploy/.env`, defaulting to `75` in both VPS Compose
+variants. This is a Compose setting, not an application pool setting. Its capacity
+must cover the sum of all application process pools, importers, monitoring,
+backups, other tools and PostgreSQL's reserved administration slots. Adding an
+application instance adds another pool. Raising the pool limit does not raise the
+server limit, and neither setting guarantees that the server has enough memory
+for that many concurrent queries. Measure memory and query load before increasing
+these limits, especially with staging's 512 MiB database container limit.
+
+After changing `deploy/.env`, recreate the web container using the same Compose
+files as the active deployment. `docker compose restart` does not reload container
+environment variables. Changing `POSTGRES_MAX_CONNECTIONS` also requires applying
+the updated PostgreSQL service command and restarting that service, which briefly
+interrupts database access. See [staging-deployment.md](staging-deployment.md#databázový-pool)
+for the deployment and verification commands.
+
 Backups use PostgreSQL `pg_dump` custom archives. Recovery uses `pg_restore` into
 a new database and invalidates subscriptions, sessions, recovery tokens and
 recovery mail before the operator

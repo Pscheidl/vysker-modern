@@ -22,7 +22,7 @@ services:
       - -c
       - maintenance_work_mem=64MB
       - -c
-      - max_connections=30
+      - max_connections=${POSTGRES_MAX_CONNECTIONS:-75}
       - -c
       - max_wal_size=512MB
     secrets: [postgres_password, database_password]
@@ -58,6 +58,11 @@ services:
       OBEC_ADRESA: 0.0.0.0:3000
       OBEC_MIN_PASSWORD_LENGTH: ${OBEC_MIN_PASSWORD_LENGTH:-24}
       OBEC_DATABAZE_FILE: /run/secrets/database_url
+      DB_POOL_MAX_CONNECTIONS: ${DB_POOL_MAX_CONNECTIONS:-50}
+      DB_POOL_MIN_CONNECTIONS: ${DB_POOL_MIN_CONNECTIONS:-0}
+      DB_POOL_ACQUIRE_TIMEOUT_SECONDS: ${DB_POOL_ACQUIRE_TIMEOUT_SECONDS:-10}
+      DB_POOL_IDLE_TIMEOUT_SECONDS: ${DB_POOL_IDLE_TIMEOUT_SECONDS:-600}
+      DB_POOL_MAX_LIFETIME_SECONDS: ${DB_POOL_MAX_LIFETIME_SECONDS:-1800}
       OBEC_VEREJNA_URL: http://127.0.0.1:3000
       OBEC_UKAZKOVA_DATA: "false"
       OBEC_SMTP_CAPTURE_ONLY: "true"

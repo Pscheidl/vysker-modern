@@ -208,8 +208,10 @@ Konkrétní práce v repozitáři:
    o explicitní vypnutí kontrol záloh, při zachování kontrol aplikace,
    databáze, volného místa a pošty. Výchozí produkční kontrolu záloh zachovat.
 4. PostgreSQL začít přibližně s `shared_buffers=128MB`, `work_mem=4MB`,
-   `maintenance_work_mem=64MB` a `max_connections=30`. Aplikace nyní používá
-   nejvýše deset spojení. Jde o výchozí ladění, spotřebu ověřit měřením.
+   `maintenance_work_mem=64MB` a `POSTGRES_MAX_CONNECTIONS=75`. Aplikační pool
+   má v obou VPS Compose konfiguracích výchozí `DB_POOL_MAX_CONNECTIONS=50`
+   na proces. Jde o výchozí ladění, spotřebu ověřit měřením. Podrobnosti jsou
+   v [provozním postupu](staging-deployment.md#databázový-pool).
 5. Zachovat omezení oprávnění webového kontejneru, read-only souborový systém,
    trvalé databázové úložiště a limity logů. Paměťové limity všech služeb
    stanovit s rezervou pro OS a ověřit při importu i nahrávání obrázků.
