@@ -5,8 +5,8 @@ use super::{
 use crate::reports::{
     AdminReport, REPORT_ADDRESS_LIMIT, REPORT_DESCRIPTION_LIMIT, REPORT_MAP_LIMIT,
     REPORT_NAME_LIMIT, REPORT_PHOTO_BYTES, REPORT_RESOLUTION_LIMIT, REPORT_SEARCH_LIMIT,
-    REPORT_UPLOAD_BYTES, Report, ReportMap, ReportMapPoint, ReportSettings, ReportUpdate,
-    report_excerpt,
+    REPORT_UPLOAD_BYTES, Report, ReportMap, ReportMapPoint, ReportSettings, ReportStatusFilter,
+    ReportUpdate, report_excerpt,
 };
 use axum::{
     Json,
@@ -375,7 +375,7 @@ pub async fn create(
     )
     .await
     .map_err(|_| bad("Odesílání trvalo příliš dlouho. Zkuste ho prosím znovu."))??;
-    let description = description.ok_or_else(|| bad("Popište prosím závadu."))?;
+    let description = description.ok_or_else(|| bad("Popište prosím podnět nebo závadu."))?;
     let mut latitude = coordinate(latitude, -90., 90.)?;
     let mut longitude = coordinate(longitude, -180., 180.)?;
     if latitude.is_some() != longitude.is_some() {
@@ -473,7 +473,7 @@ pub async fn create(
     let body = notification_body(&s, &report);
     for recipient in recipients {
         sqlx::query("INSERT INTO report_mail_queue(report_id,recipient,subject,body,next_attempt_at,created_at) VALUES ($1,$2,$3,$4,$5,$5)")
-            .bind(report.id).bind(recipient).bind(format!("Vyskeř: nové hlášení závady č. {}", report.id))
+            .bind(report.id).bind(recipient).bind(format!("Vyskeř: nový podnět nebo závada č. {}", report.id))
             .bind(&body).bind(now.unix_timestamp()).execute(&mut *tx).await?;
     }
     tx.commit().await?;
@@ -482,7 +482,7 @@ pub async fn create(
 
 fn notification_body(s: &Backend, report: &Report) -> String {
     let mut body = format!(
-        "Nové hlášení závady č. {}\nNahlášeno: {}\n\n{}\n\n",
+        "Nový podnět nebo závada č. {}\nNahlášeno: {}\n\n{}\n\n",
         report.id,
         crate::events::date_label(&report.created_at),
         report.description
@@ -514,6 +514,7 @@ pub async fn public_reports_from_pool(
     limit: i64,
     offset: i64,
     q: &str,
+    status: ReportStatusFilter,
 ) -> Result<Vec<Report>> {
     let (limit, offset) = Pagination {
         limit: Some(limit),
@@ -521,8 +522,8 @@ pub async fn public_reports_from_pool(
     }
     .bounds()?;
     let pattern = search_pattern(q)?;
-    Ok(sqlx::query_as("SELECT id,description,address,latitude,longitude,created_at,status,resolution_comment,resolution_updated_at,ARRAY(SELECT id FROM issue_report_resolution_photos WHERE report_id=issue_reports.id ORDER BY id) AS resolution_photo_ids,EXISTS(SELECT 1 FROM issue_report_photos WHERE report_id=issue_reports.id) AS has_photo,(SELECT count(*) FROM issue_report_photos WHERE report_id=issue_reports.id) AS photo_count FROM issue_reports WHERE hidden=FALSE AND (description ILIKE $3 ESCAPE '!' OR address ILIKE $3 ESCAPE '!') ORDER BY id DESC LIMIT $1 OFFSET $2")
-        .bind(limit).bind(offset).bind(pattern).fetch_all(pool).await?)
+    Ok(sqlx::query_as("SELECT id,description,address,latitude,longitude,created_at,status,resolution_comment,resolution_updated_at,ARRAY(SELECT id FROM issue_report_resolution_photos WHERE report_id=issue_reports.id ORDER BY id) AS resolution_photo_ids,EXISTS(SELECT 1 FROM issue_report_photos WHERE report_id=issue_reports.id) AS has_photo,(SELECT count(*) FROM issue_report_photos WHERE report_id=issue_reports.id) AS photo_count FROM issue_reports WHERE hidden=FALSE AND (description ILIKE $3 ESCAPE '!' OR address ILIKE $3 ESCAPE '!') AND status=ANY($4) ORDER BY id DESC LIMIT $1 OFFSET $2")
+        .bind(limit).bind(offset).bind(pattern).bind(status.statuses()).fetch_all(pool).await?)
 }
 
 fn search_pattern(q: &str) -> Result<String> {
@@ -536,7 +537,11 @@ fn search_pattern(q: &str) -> Result<String> {
     ))
 }
 
-pub async fn public_report_map_from_pool(pool: &PgPool, q: &str) -> Result<ReportMap> {
+pub async fn public_report_map_from_pool(
+    pool: &PgPool,
+    q: &str,
+    status: ReportStatusFilter,
+) -> Result<ReportMap> {
     let pattern = search_pattern(q)?;
     // Counts and points share one snapshot even when new reports arrive or an
     // administrator changes visibility while the map is loading.
@@ -544,10 +549,10 @@ pub async fn public_report_map_from_pool(pool: &PgPool, q: &str) -> Result<Repor
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         .execute(&mut *tx)
         .await?;
-    let (located_count, unlocated_count): (i64, i64) = sqlx::query_as("SELECT count(*) FILTER (WHERE latitude IS NOT NULL),count(*) FILTER (WHERE latitude IS NULL) FROM issue_reports WHERE hidden=FALSE AND (description ILIKE $1 ESCAPE '!' OR address ILIKE $1 ESCAPE '!')")
-        .bind(&pattern).fetch_one(&mut *tx).await?;
-    let mut points: Vec<ReportMapPoint> = sqlx::query_as("SELECT id,latitude,longitude,description,address,created_at,status,EXISTS(SELECT 1 FROM issue_report_photos WHERE report_id=issue_reports.id) AS has_photo FROM issue_reports WHERE hidden=FALSE AND latitude IS NOT NULL AND (description ILIKE $1 ESCAPE '!' OR address ILIKE $1 ESCAPE '!') ORDER BY id DESC LIMIT $2")
-        .bind(&pattern).bind(REPORT_MAP_LIMIT).fetch_all(&mut *tx).await?;
+    let (located_count, unlocated_count): (i64, i64) = sqlx::query_as("SELECT count(*) FILTER (WHERE latitude IS NOT NULL),count(*) FILTER (WHERE latitude IS NULL) FROM issue_reports WHERE hidden=FALSE AND (description ILIKE $1 ESCAPE '!' OR address ILIKE $1 ESCAPE '!') AND status=ANY($2)")
+        .bind(&pattern).bind(status.statuses()).fetch_one(&mut *tx).await?;
+    let mut points: Vec<ReportMapPoint> = sqlx::query_as("SELECT id,latitude,longitude,description,address,created_at,status,EXISTS(SELECT 1 FROM issue_report_photos WHERE report_id=issue_reports.id) AS has_photo FROM issue_reports WHERE hidden=FALSE AND latitude IS NOT NULL AND (description ILIKE $1 ESCAPE '!' OR address ILIKE $1 ESCAPE '!') AND status=ANY($3) ORDER BY id DESC LIMIT $2")
+        .bind(&pattern).bind(REPORT_MAP_LIMIT).bind(status.statuses()).fetch_all(&mut *tx).await?;
     tx.commit().await?;
     for point in &mut points {
         point.description = report_excerpt(&point.description);
@@ -575,6 +580,8 @@ pub struct PublicQuery {
     offset: Option<i64>,
     #[serde(default)]
     q: String,
+    #[serde(default)]
+    status: ReportStatusFilter,
 }
 
 pub async fn public_list(
@@ -587,7 +594,7 @@ pub async fn public_list(
     }
     .bounds()?;
     Ok(Json(
-        public_reports_from_pool(&s.pool, limit, offset, &query.q).await?,
+        public_reports_from_pool(&s.pool, limit, offset, &query.q, query.status).await?,
     ))
 }
 
@@ -595,13 +602,17 @@ pub async fn public_list(
 pub struct MapQuery {
     #[serde(default)]
     q: String,
+    #[serde(default)]
+    status: ReportStatusFilter,
 }
 
 pub async fn public_map(
     State(s): State<Backend>,
     Query(query): Query<MapQuery>,
 ) -> Result<Json<ReportMap>> {
-    Ok(Json(public_report_map_from_pool(&s.pool, &query.q).await?))
+    Ok(Json(
+        public_report_map_from_pool(&s.pool, &query.q, query.status).await?,
+    ))
 }
 
 pub async fn detail(State(s): State<Backend>, Path(id): Path<i64>) -> Result<Json<Report>> {

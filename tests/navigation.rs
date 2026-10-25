@@ -340,17 +340,26 @@ async fn issue_reports_have_a_default_menu_link_and_can_be_managed() {
         .iter()
         .find(|link| link.path == "/hlaseni-zavad")
         .expect("new installations expose public issue reports in the menu");
-    assert_eq!(report_link.label, "Hlášení závad");
+    assert_eq!(report_link.label, "Podněty a závady");
     assert!(
         obecni_web::catalog::default_navigation()
             .iter()
-            .any(|link| link.path == "/hlaseni-zavad" && link.label == "Hlášení závad")
+            .any(|link| link.path == "/hlaseni-zavad" && link.label == "Podněty a závady")
     );
 
+    let admin_navigation = body_json(app.call("GET", NAVIGATION, None, true).await).await;
+    let version = admin_navigation
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == report_link.id)
+        .unwrap()["version"]
+        .as_i64()
+        .unwrap();
     let mut input = item("Závady v obci", None, 50);
     input["path"] = json!("/hlaseni-zavad");
     assert_eq!(
-        update(&app, report_link.id, input, 1).await.status(),
+        update(&app, report_link.id, input, version).await.status(),
         StatusCode::NO_CONTENT
     );
     let navigation = navigation_from_pool(&app.state.pool).await.unwrap();

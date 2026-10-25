@@ -1,7 +1,7 @@
 # Fault reports
 
-Residents browse **Nahlášené závady** at `/hlaseni-zavad` and open the separate
-**Nahlásit závadu** form at `/hlaseni-zavad/nove`. Each accepted report immediately has a public detail at
+Residents browse **Podněty a závady** at `/hlaseni-zavad` and open the separate
+**Přidat podnět nebo závadu** form at `/hlaseni-zavad/nove`. Each accepted report immediately has a public detail at
 `/hlaseni-zavad/{id}`. The newest reports appear first. Migration
 `0015_issue_reports.sql` adds the **Hlášení závad** navigation entry and creates
 the report, recipient-settings and notification-queue tables in PostgreSQL.
@@ -13,10 +13,21 @@ separate photograph storage without changing the original report gallery.
 Migration `0018_report_abuse.sql` adds private sender context and persistent
 submission verification. It also removes the private sender line from pending
 notification bodies created by older releases.
+Migration `0019_report_section_name.sql` renames the original navigation entry
+to **Podněty a závady**, preserving custom navigation labels and existing URLs.
+The public form welcomes both repair reports and suggestions for improvements.
+
+The public list and overview map default to **Nevyřešené**, including both
+`reported` and `in_progress`. A **Stav hlášení** filter also offers all reports
+or one specific state. The URL query `status` accepts `unresolved` (the default),
+`all`, `reported`, `in_progress` and `resolved`. Resolved reports remain available
+through their direct detail links regardless of the current list filter.
+
 The list searches descriptions and addresses on the server using `q`, for
 example `/hlaseni-zavad?q=lavička`. Search terms remain in the URL so filtered
-results can be shared and reloaded. Pagination preserves the filter, and
-**Zrušit hledání** returns to the unfiltered list.
+results can be shared and reloaded. Pagination preserves both search and status.
+Applying a different search or status starts at the first page. **Zrušit hledání**
+clears the search text while keeping the selected status.
 List cards show a short excerpt from the first sentence, capped at 120
 characters, with `...` when more text follows. The detail retains the complete
 submitted description, and searching covers the full description.
@@ -64,8 +75,8 @@ in that local time.
 | --- | --- |
 | `POST /api/v1/report-submission-token` | Prepare an invisible same-origin submission proof |
 | `POST /api/v1/reports` | Create a report using multipart form data |
-| `GET /api/v1/reports?limit=21&offset=0&q=lavička` | List public reports, optionally filtering their description or address, newest first |
-| `GET /api/v1/reports/map?q=lavička` | Read matching located reports across all list pages, with map counts |
+| `GET /api/v1/reports?limit=21&offset=0&q=lavička&status=unresolved` | List matching public reports, newest first, with unresolved as the default |
+| `GET /api/v1/reports/map?q=lavička&status=unresolved` | Read matching located reports across all list pages, with counts for the same search and status |
 | `GET /api/v1/reports/{id}` | Read one public report |
 | `GET /api/v1/reports/{id}/photo` | Read its processed JPEG |
 | `GET /api/v1/reports/{id}/photos/{position}` | Read a processed gallery photograph, starting at position 1 |
@@ -100,7 +111,7 @@ not recall copies already viewed, downloaded or emailed.
 
 The administrator can mark a report as resolved without extra information, or
 add one editable public comment of up to 5,000 characters and photographs of
-the repair. The public detail shows these under **Řešení závady**, separately
+the repair. The public detail shows these under **Řešení hlášení**, separately
 from the resident's original text and photographs. Comments and repair photos
 can also document work still in progress. The administration offers **Uložit
 řešení** and **Uložit a označit jako vyřešené**. Hidden reports hide both galleries
@@ -297,9 +308,13 @@ and [OWASP denial-of-service prevention](https://cheatsheetseries.owasp.org/chea
 
 ## Maps and phone location
 
-The overview above the public list uses the same `q` filter across all matching
-reports, independently of the list's current page. It plots at most the 2,000
-newest matching reports with coordinates and explains when that cap is reached.
+The overview above the public list uses the same `q` and `status` filters across
+all matching reports, independently of the list's current page. Filtering happens
+in the database before pagination, map limits and located/unlocated counts.
+Hidden reports remain excluded even with `status=all`. Unknown explicit status
+values return HTTP 400 from the REST API. The administration still lists every
+status independently of the public filter. The overview map plots at most the
+2,000 newest matching reports with coordinates and explains when that cap is reached.
 Counts distinguish reports shown on the map from matches without coordinates,
 which remain available in the list. Opening a marker shows its excerpt, date,
 status and a link to the complete detail. The popup scrolls on small screens.
@@ -382,6 +397,11 @@ restart persistence, shared-network quotas, private optional contacts and the
 new migration to existing report and notification data. Browser checks exercise
 invisible token renewal, failed preparation, native email validation and contact
 preservation in drafts, and verify that contacts appear only in administration.
+Status-filter checks cover the unresolved default, every individual state,
+all states, search, pagination, map counts and map truncation. Browser scenarios
+also cover shared filter URLs, history, mobile layout, pre-hydration edits and
+filtering without JavaScript. The section-name migration is checked for preservation
+of custom navigation titles, visibility, order and hierarchy.
 
 Use the disposable PostgreSQL workflow in [testing.md](testing.md). Run the
 Rust tests before rebuilding the complete web assets for browser checks, because

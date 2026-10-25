@@ -210,7 +210,7 @@ mod workspace {
                         <AdminLink href="/admin/dokumenty" label="Dokumenty" icon="paper"/>
                         <AdminLink href="/admin/stranky" label="Stránky" icon="pages"/>
                         <AdminLink href="/admin/kalendar" label="Kalendář" icon="calendar"/>
-                        <AdminLink href="/admin/hlaseni-zavad" label="Hlášení závad" icon="info"/>
+                        <AdminLink href="/admin/hlaseni-zavad" label="Podněty a závady" icon="info"/>
                         <AdminLink href="/admin/odberatele" label="Odběratelé" icon="mail"/>
                         <AdminLink href="/admin/navigace" label="Navigace" icon="pages"/>
                         <AdminLink href="/admin/kategorie" label="Kategorie" icon="grid"/>

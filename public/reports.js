@@ -345,7 +345,7 @@ export function mount_report_form(root) {
   function markerAt(lat, lng) {
     if (!state.map || !window.L) return
     if (!state.marker) {
-      state.marker = window.L.marker([lat, lng], { draggable: !state.sending, title: 'Místo závady', alt: 'Špendlík místa závady' }).addTo(state.map)
+      state.marker = window.L.marker([lat, lng], { draggable: !state.sending, title: 'Místo hlášení', alt: 'Špendlík místa hlášení' }).addTo(state.map)
       state.marker.on('dragend', () => {
         const point = state.marker.getLatLng().wrap()
         selectPoint(point.lat, point.lng)
@@ -629,7 +629,7 @@ export function mount_report_map(root) {
     if (!state.active) return
     const center = [Number(root.dataset.latitude), Number(root.dataset.longitude)]
     state.map = newMap(L, root, center, 17)
-    L.marker(center, { title: 'Místo závady', alt: 'Špendlík místa závady' }).addTo(state.map)
+    L.marker(center, { title: 'Místo hlášení', alt: 'Špendlík místa hlášení' }).addTo(state.map)
   }).catch(() => {
     if (state.active) root.textContent = 'Mapu se nepodařilo načíst. Použijte odkaz pod mapou.'
   })
@@ -673,7 +673,7 @@ function overviewPopup(point) {
   if (point.has_photo) {
     const photo = document.createElement('img')
     photo.src = `/api/v1/reports/${point.id}/photo`
-    photo.alt = 'Fotografie nahlášené závady'
+    photo.alt = 'Fotografie k hlášení'
     photo.loading = 'lazy'
     photo.width = 220
     photo.height = 120

@@ -5,7 +5,8 @@ use super::{
     site_url,
 };
 use crate::reports::{
-    Report, ReportMap, load_report, load_report_map, load_reports, report_excerpt, status_label,
+    Report, ReportMap, ReportStatusFilter, load_report, load_report_map, load_reports,
+    report_excerpt, status_label,
 };
 use leptos::prelude::*;
 use leptos_meta::{Stylesheet, Title};
@@ -52,11 +53,11 @@ fn ReportForm() -> impl IntoView {
         });
     }
     view! {<div node_ref=root class="report-compose" id="nove-hlaseni">
-        <p class="field-note">"Rozbitá lavička, výmol nebo nefunkční osvětlení? Popište závadu a uveďte místo. Fotografie, jméno i kontakt můžete přidat dobrovolně."</p>
+        <p class="field-note">"Máte tip na místo pro novou lavičku nebo jste si všimli rozbitého osvětlení? Popište svůj podnět nebo závadu a uveďte místo. Fotografie, jméno i kontakt můžete přidat dobrovolně."</p>
         <p id="report-draft-status" class="info-banner" role="status" hidden>"Rozpracované hlášení bylo obnoveno."</p>
         <form id="report-form" method="post" action="/api/v1/reports" enctype="multipart/form-data">
             <fieldset disabled id="report-fields">
-                <label class="report-field" for="report-description"><span>"Popis problému"</span><textarea id="report-description" name="description" required maxlength="5000" rows="4" placeholder="Co je rozbité a kde přesně to najdeme?"></textarea></label>
+                <label class="report-field" for="report-description"><span>"Popis podnětu nebo závady"</span><textarea id="report-description" name="description" required maxlength="5000" rows="4" placeholder="Co by se mělo zlepšit nebo opravit a kde?"></textarea></label>
                 <div class="report-address-search">
                     <label class="report-field" for="report-address"><span>"Adresa nebo upřesnění místa"</span><input id="report-address" name="address" type="text" maxlength="300" placeholder="Vyskeř 50, 512 64 Vyskeř" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="report-address-results" aria-describedby="report-location-help report-address-privacy"/></label>
                     <ul id="report-address-results" class="report-address-results" role="listbox" aria-label="Nalezené adresy" hidden></ul>
@@ -64,7 +65,7 @@ fn ReportForm() -> impl IntoView {
                 <p id="report-address-status" class="field-note" role="status" aria-live="polite"></p>
                 <p id="report-location-help" class="field-note">"Zadejte adresu, GPS souřadnice nebo vlastní popis místa. Výběr adresy z nabídky umístí špendlík do mapy. Při jeho posunu se do pole zapíší přesné souřadnice. GPS zadávejte jako zeměpisnou šířku a délku, například 50.529509, 15.158555."</p>
                 <p id="report-address-privacy" class="report-search-credit">"Našeptávání zajišťuje "<a href="https://photon.komoot.io/" target="_blank" rel="noopener noreferrer">"Photon"</a>" s daty "<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">"OpenStreetMap"</a>". Zadávaná adresa se odesílá vyhledávací službě."</p>
-                <div class="report-map" id="report-map" role="region" aria-label="Mapa pro výběr místa závady" aria-describedby="report-location-help"></div>
+                <div class="report-map" id="report-map" role="region" aria-label="Mapa pro výběr místa" aria-describedby="report-location-help"></div>
                 <input id="report-latitude" name="latitude" type="hidden"/>
                 <input id="report-longitude" name="longitude" type="hidden"/>
                 <div class="report-map-actions">
@@ -84,7 +85,7 @@ fn ReportForm() -> impl IntoView {
                 <label class="report-field" for="report-phone"><span>"Telefon (nepovinné)"</span><input id="report-phone" name="reporter_phone" type="tel" maxlength="40" autocomplete="tel" aria-describedby="report-contact-help" placeholder="Můžete nechat prázdné"/></label>
                 <p id="report-contact-help" class="field-note">"Pokud bude potřeba něco upřesnit, můžeme vás kontaktovat. E-mail a telefon uvidí pouze správci. Obě pole můžete nechat prázdná."</p>
                 <div hidden aria-hidden="true"><label for="report-website">"Webová stránka"</label><input id="report-website" name="website" type="text" tabindex="-1" autocomplete="off" data-lpignore="true"/></div>
-                <p class="report-privacy">"Popis, místo a fotografie budou veřejné. Neuvádějte citlivé údaje a fotografujte samotnou závadu. Pro ochranu před zneužitím zaznamenáváme IP adresu, technické údaje a náhodný identifikátor prohlížeče uložený v bezpečnostní cookie. Jméno, kontaktní údaje a technické údaje uvidí pouze správci. "<A href=site_url("/ochrana-udaju")>"Jak nakládáme s údaji"</A>"."</p>
+                <p class="report-privacy">"Popis, místo a fotografie budou veřejné. Neuvádějte citlivé údaje a fotografujte pouze to, čeho se podnět týká. Pro ochranu před zneužitím zaznamenáváme IP adresu, technické údaje a náhodný identifikátor prohlížeče uložený v bezpečnostní cookie. Jméno, kontaktní údaje a technické údaje uvidí pouze správci. "<A href=site_url("/ochrana-udaju")>"Jak nakládáme s údaji"</A>"."</p>
                 <p id="report-submit-error" class="report-error" role="alert" tabindex="-1" hidden></p>
                 <button class="button primary" id="report-submit" type="submit">"Odeslat hlášení"<Icon/></button>
             </fieldset>
@@ -100,7 +101,7 @@ fn ReportRow(report: Report) -> impl IntoView {
     let date = crate::events::date_label(&report.created_at);
     let status = status_label(&report.status);
     view! {<article class="report-card">
-        {report.has_photo.then(||view!{<A href=href.clone() attr:class="report-card-image" attr:aria-label=format!("Fotografie hlášení č. {}", report.id)><img src=format!("/api/v1/reports/{}/photo", report.id) alt="Fotografie nahlášené závady" loading="lazy"/></A>})}
+        {report.has_photo.then(||view!{<A href=href.clone() attr:class="report-card-image" attr:aria-label=format!("Fotografie hlášení č. {}", report.id)><img src=format!("/api/v1/reports/{}/photo", report.id) alt="Fotografie k hlášení" loading="lazy"/></A>})}
         <div class="report-card-content"><div class="report-card-meta"><time datetime=report.created_at>{date}</time><span class=format!("report-status report-status-{}",report.status)>{status}</span></div>
             <h2><A href=href.clone()>{title}</A></h2>
             <p class="field-note">{report.address.unwrap_or_else(||"Místo označeno na mapě".into())}</p>
@@ -110,7 +111,7 @@ fn ReportRow(report: Report) -> impl IntoView {
 }
 
 #[component]
-fn ReportOverviewMap(data: ReportMap) -> impl IntoView {
+fn ReportOverviewMap(data: ReportMap, status: ReportStatusFilter) -> impl IntoView {
     let root = NodeRef::<leptos::html::Div>::new();
     let displayed = data.points.len();
     #[cfg(feature = "hydrate")]
@@ -138,9 +139,48 @@ fn ReportOverviewMap(data: ReportMap) -> impl IntoView {
         format!("Hlášení na mapě: {}.", data.located_count)
     };
     view! {
-        <div node_ref=root id="reports-overview-map" class="report-map" role="region" aria-label="Mapa nahlášených závad" aria-describedby="reports-map-summary"></div>
+        <div node_ref=root id="reports-overview-map" class="report-map" data-status=status.as_str() role="region" aria-label="Mapa podnětů a závad" aria-describedby="reports-map-summary"></div>
         <p id="reports-map-summary" class="field-note">{summary}{(data.unlocated_count>0).then(||format!(" Bez vyznačené polohy: {}. Tato hlášení najdete v seznamu.", data.unlocated_count))}</p>
         <noscript><p class="field-note">"Pro zobrazení mapy zapněte JavaScript. Hlášení si můžete prohlédnout v seznamu pod mapou."</p></noscript>
+    }
+}
+
+fn reports_href(page: i64, query: &str, status: ReportStatusFilter) -> String {
+    let mut parameters = Vec::new();
+    if page > 1 {
+        parameters.push(format!("strana={page}"));
+    }
+    if !query.is_empty() {
+        let encoded =
+            percent_encoding::utf8_percent_encode(query, percent_encoding::NON_ALPHANUMERIC);
+        parameters.push(format!("q={encoded}"));
+    }
+    if status != ReportStatusFilter::Unresolved {
+        parameters.push(format!("status={}", status.as_str()));
+    }
+    let suffix = if parameters.is_empty() {
+        String::new()
+    } else {
+        format!("?{}", parameters.join("&"))
+    };
+    site_url(&format!("/hlaseni-zavad{suffix}"))
+}
+
+fn reports_empty(page: i64, query: &str, status: ReportStatusFilter) -> &'static str {
+    if page > 1 {
+        "Na této straně nejsou žádná hlášení. Zkuste předchozí stranu."
+    } else if !query.is_empty() {
+        "Hledání neodpovídá žádné hlášení. Zkuste jiný popis, adresu nebo stav hlášení."
+    } else {
+        match status {
+            ReportStatusFilter::Unresolved => {
+                "Nejsou tu žádné nevyřešené podněty ani závady. Vyřešená hlášení najdete po změně filtru."
+            }
+            ReportStatusFilter::All => "Zatím tu nejsou žádná hlášení.",
+            ReportStatusFilter::Reported => "Nejsou tu žádná hlášení ve stavu Nahlášeno.",
+            ReportStatusFilter::InProgress => "Momentálně není žádné hlášení v řešení.",
+            ReportStatusFilter::Resolved => "Zatím tu nejsou žádná vyřešená hlášení.",
+        }
     }
 }
 
@@ -165,74 +205,107 @@ pub fn Reports() -> impl IntoView {
             .take(200)
             .collect::<String>()
     });
+    let status = Memo::new(move |_| {
+        params
+            .get()
+            .get("status")
+            .and_then(|value| ReportStatusFilter::from_query(&value))
+            .unwrap_or_default()
+    });
     let search_input = NodeRef::<leptos::html::Input>::new();
+    let status_input = NodeRef::<leptos::html::Select>::new();
     #[cfg(feature = "hydrate")]
-    Effect::new(move |previous: Option<String>| {
-        let current = query.get();
-        // Preserve text entered into the server-rendered field before hydration.
-        // Only a later URL query change (reset, history or another search) replaces it.
-        if previous.as_ref().is_some_and(|value| value != &current) {
+    Effect::new(move |previous: Option<(i64, String, ReportStatusFilter)>| {
+        let current = (page.get(), query.get(), status.get());
+        // The search form disables browser restoration of departed, unapplied
+        // values. Preserve actual edits made before hydration. Later URL changes synchronize
+        // both controls, including reset links and browser Back or Forward.
+        if previous
+            .as_ref()
+            .is_some_and(|previous| previous != &current)
+        {
             if let Some(input) = search_input.get() {
-                input.set_value(&current);
+                input.set_value(&current.1);
+            }
+            if let Some(input) = status_input.get() {
+                input.set_value(current.2.as_str());
             }
         }
         current
     });
     let reports = Resource::new(
-        move || (page.get(), query.get()),
-        |(page, query)| async move {
-            load_reports(PAGE_SIZE + 1, (page - 1) * PAGE_SIZE, query.clone())
-                .await
-                .map(|items| (page, query, items))
+        move || (page.get(), query.get(), status.get()),
+        |(page, query, status)| async move {
+            let result =
+                load_reports(PAGE_SIZE + 1, (page - 1) * PAGE_SIZE, query.clone(), status).await;
+            (page, query, status, result)
         },
     );
-    let map = Resource::new(move || query.get(), load_report_map);
-    view! {<Title text="Nahlášené závady · Vyskeř"/>
+    let map = Resource::new(
+        move || (query.get(), status.get()),
+        |(query, status)| async move {
+            let result = load_report_map(query.clone(), status).await;
+            (query, status, result)
+        },
+    );
+    view! {<Title text="Podněty a závady · Vyskeř"/>
         <Stylesheet href="/vendor/leaflet-1.9.4/leaflet.css"/>
         <Stylesheet href="/vendor/leaflet-markercluster-1.5.3/MarkerCluster.css"/>
-        <div class="page-width interior reports-page"><PageHeading title="Nahlášené závady" description="Podívejte se, co lidé nahlásili a jak pokračuje řešení." eyebrow="PODNĚTY Z OBCE"/>
-            <div class="reports-toolbar"><p class="field-note">"Nejnovější hlášení jsou nahoře."</p><A href=site_url("/hlaseni-zavad/nove") attr:class="button primary">"Nahlásit závadu"<Icon/></A></div>
-            <form class="reports-search" method="get" action=site_url("/hlaseni-zavad") role="search" aria-label="Vyhledávání hlášení">
-                <label class="report-field" for="reports-query"><span>"Hledat v hlášeních"</span><input node_ref=search_input id="reports-query" type="search" name="q" maxlength="200" placeholder="Popis závady nebo adresa" value=move ||query.get()/></label>
+        <div class="page-width interior reports-page"><PageHeading title="Podněty a závady" description="Sdílejte nápady na zlepšení obce, upozorněte na závady a sledujte jejich řešení." eyebrow="PODNĚTY Z OBCE"/>
+            <div class="reports-toolbar"><p class="field-note">"Nejnovější hlášení jsou nahoře."</p><A href=site_url("/hlaseni-zavad/nove") attr:class="button primary">"Přidat podnět nebo závadu"<Icon/></A></div>
+            <form class="reports-search" autocomplete="off" method="get" action=site_url("/hlaseni-zavad") role="search" aria-label="Vyhledávání hlášení">
+                <label class="report-field" for="reports-query"><span>"Hledat v hlášeních"</span><input node_ref=search_input id="reports-query" type="search" name="q" autocomplete="off" maxlength="200" placeholder="Popis podnětu, závady nebo adresa" value=move ||query.get()/></label>
+                <label class="report-field reports-status-field" for="reports-status"><span>"Stav hlášení"</span><select node_ref=status_input id="reports-status" name="status" autocomplete="off">
+                    {[ReportStatusFilter::Unresolved, ReportStatusFilter::All, ReportStatusFilter::Reported, ReportStatusFilter::InProgress, ReportStatusFilter::Resolved].into_iter().map(|option|view!{<option value=option.as_str() selected=status.get_untracked()==option>{option.label()}</option>}).collect_view()}
+                </select></label>
                 <button class="button secondary" type="submit">"Hledat"</button>
-                {move ||(!query.get().is_empty()).then(||view!{<A href=site_url("/hlaseni-zavad") attr:class="text-link">"Zrušit hledání"</A>})}
+                {move ||(!query.get().is_empty()).then(||view!{<A href=reports_href(1,"",status.get()) attr:class="text-link">"Zrušit hledání"</A>})}
             </form>
             <section class="reports-overview" aria-labelledby="reports-map-title">
-                <h2 id="reports-map-title">"Závady na mapě"</h2>
-                <p class="field-note">"Kliknutím na špendlík zobrazíte náhled hlášení. Číslo označuje více závad blízko sebe, kliknutím je přiblížíte nebo rozbalíte."</p>
+                <h2 id="reports-map-title">"Podněty a závady na mapě"</h2>
+                <p class="field-note">"Mapa i seznam zobrazují hlášení podle zvoleného stavu a hledaného textu. Kliknutím na špendlík zobrazíte náhled. Číslo označuje více hlášení blízko sebe, kliknutím je přiblížíte nebo rozbalíte."</p>
                 <Suspense fallback=move ||view!{<div class="reports-map-loading" role="status">"Načítám mapu hlášení…"</div>}>
-                    {move ||map.get().map(|result|match result {
-                        Ok(data)=>view!{<ReportOverviewMap data/>}.into_any(),
-                        Err(_)=>view!{<div class="reports-map-loading"><p role="alert">"Mapu hlášení se nepodařilo načíst. Hlášení najdete v seznamu níže."</p><button class="button secondary" type="button" on:click=move |_|map.refetch()>"Zkusit mapu znovu"</button></div>}.into_any(),
+                    {move ||map.get().map(|(loaded_query, loaded_status, result)| {
+                        if loaded_query != query.get() || loaded_status != status.get() {
+                            return view!{<div class="reports-map-loading" role="status">"Načítám mapu hlášení…"</div>}.into_any();
+                        }
+                        match result {
+                            Ok(data)=>view!{<ReportOverviewMap data status=loaded_status/>}.into_any(),
+                            Err(_)=>view!{<div class="reports-map-loading"><p role="alert">"Mapu hlášení se nepodařilo načíst. Hlášení najdete v seznamu níže."</p><button class="button secondary" type="button" on:click=move |_|map.refetch()>"Zkusit mapu znovu"</button></div>}.into_any(),
+                        }
                     })}
                 </Suspense>
             </section>
-                <section class="reports-feed" aria-label="Seznam nahlášených závad">
-                    <Suspense fallback=ReportLoading>{move ||reports.get().map(|result|match result {
+            <section class="reports-feed" aria-label="Seznam podnětů a závad">
+                <Suspense fallback=ReportLoading>{move ||reports.get().map(|(loaded_page, loaded_query, loaded_status, result)| {
+                    if (loaded_page, &loaded_query, loaded_status) != (page.get(), &query.get(), status.get()) {
+                        return view!{<ReportLoading/>}.into_any();
+                    }
+                    match result {
                         Err(_)=>view!{<ReportFailure retry=Callback::new(move |_|reports.refetch())/>}.into_any(),
-                        Ok((page,query,items))=>{
+                        Ok(items)=>{
                             let more=items.len()>PAGE_SIZE as usize;
-                            let encoded_query = percent_encoding::utf8_percent_encode(&query, percent_encoding::NON_ALPHANUMERIC).to_string();
                             view!{
-                                {if items.is_empty(){view!{<p class="empty-state">{if query.is_empty(){"Zatím tu nejsou žádná hlášení."}else{"Hledání neodpovídá žádné hlášení. Zkuste jiný popis nebo adresu."}}</p>}.into_any()}else{items.into_iter().take(PAGE_SIZE as usize).map(|report|view!{<ReportRow report/>}).collect_view().into_any()}}
-                                <nav class="public-pager" aria-label="Stránkování hlášení"><span>{format!("Strana {page}")}</span><div>
-                                    {(page>1).then(||view!{<A href=site_url(&format!("/hlaseni-zavad?strana={}&q={}",page-1,encoded_query)) attr:class="button secondary">"Předchozí"</A>})}
-                                    {(more&&page<5001).then(||view!{<A href=site_url(&format!("/hlaseni-zavad?strana={}&q={}",page+1,encoded_query)) attr:class="button secondary">"Další"</A>})}
+                                {if items.is_empty(){view!{<p class="empty-state">{reports_empty(loaded_page, &loaded_query, loaded_status)}</p>}.into_any()}else{items.into_iter().take(PAGE_SIZE as usize).map(|report|view!{<ReportRow report/>}).collect_view().into_any()}}
+                                <nav class="public-pager" aria-label="Stránkování hlášení"><span>{format!("Strana {loaded_page}")}</span><div>
+                                    {(loaded_page>1).then(||view!{<A href=reports_href(loaded_page-1,&loaded_query,loaded_status) attr:class="button secondary">"Předchozí"</A>})}
+                                    {(more&&loaded_page<5001).then(||view!{<A href=reports_href(loaded_page+1,&loaded_query,loaded_status) attr:class="button secondary">"Další"</A>})}
                                 </div></nav>
                             }.into_any()
                         }
-                    })}</Suspense>
-                </section>
+                    }
+                })}</Suspense>
+            </section>
         </div>
     }
 }
 
 #[component]
 pub fn NewReport() -> impl IntoView {
-    view! {<Title text="Nahlásit závadu · Vyskeř"/><Stylesheet href="/vendor/leaflet-1.9.4/leaflet.css"/>
+    view! {<Title text="Přidat podnět nebo závadu · Vyskeř"/><Stylesheet href="/vendor/leaflet-1.9.4/leaflet.css"/>
         <div class="page-width interior report-new-page">
-            <A href=site_url("/hlaseni-zavad") attr:class="back-link"><Icon name="back"/>"Nahlášené závady"</A>
-            <PageHeading title="Nahlásit závadu" description="Dejte nám vědět, co je v obci potřeba opravit." eyebrow="PODNĚTY Z OBCE"/>
+            <A href=site_url("/hlaseni-zavad") attr:class="back-link"><Icon name="back"/>"Podněty a závady"</A>
+            <PageHeading title="Přidat podnět nebo závadu" description="Dejte nám vědět, co v obci zlepšit nebo opravit." eyebrow="PODNĚTY Z OBCE"/>
             <ReportForm/>
         </div>
     }
@@ -254,7 +327,7 @@ fn DetailMap(latitude: f64, longitude: f64) -> impl IntoView {
             }
         });
     }
-    view! {<div node_ref=root class="report-map" id="report-detail-map" data-latitude=latitude.to_string() data-longitude=longitude.to_string() role="region" aria-label="Mapa místa závady"></div>
+    view! {<div node_ref=root class="report-map" id="report-detail-map" data-latitude=latitude.to_string() data-longitude=longitude.to_string() role="region" aria-label="Mapa místa hlášení"></div>
     <p class="field-note">{format!("Souřadnice: {latitude:.6}, {longitude:.6}. ")}<a href=format!("https://www.openstreetmap.org/?mlat={latitude}&mlon={longitude}#map=18/{latitude}/{longitude}") target="_blank" rel="noopener noreferrer">"Otevřít v OpenStreetMap"</a></p>}
 }
 
@@ -279,7 +352,7 @@ pub fn ReportDetail() -> impl IntoView {
         load_report,
     );
     view! {<Stylesheet href="/vendor/leaflet-1.9.4/leaflet.css"/><div class="page-width interior report-detail">
-        <A href=site_url("/hlaseni-zavad") attr:class="back-link"><Icon name="back"/>"Zpět na nahlášené závady"</A>
+        <A href=site_url("/hlaseni-zavad") attr:class="back-link"><Icon name="back"/>"Zpět na podněty a závady"</A>
         <Suspense fallback=ReportLoading>{move ||report.get().map(|result|match result {
             Err(_)=>view!{<ReportFailure retry=Callback::new(move |_|report.refetch())/>}.into_any(),
             Ok(None)=>view!{<NotFound/>}.into_any(),
@@ -291,18 +364,18 @@ pub fn ReportDetail() -> impl IntoView {
                 let has_resolution=resolved || item.resolution_comment.is_some() || !resolution_photos.is_empty();
                 view!{<Title text=format!("Hlášení č. {} · Vyskeř",item.id)/>
                     {move ||submitted.get().then(||view!{<p id="report-submitted" class="info-banner" role="status">"Hlášení bylo odesláno. Děkujeme."</p>})}
-                    <header class="page-heading"><p class="eyebrow">"HLÁŠENÍ ZÁVAD"</p><h1>{format!("Hlášení č. {}", item.id)}</h1></header>
+                    <header class="page-heading"><p class="eyebrow">"PODNĚTY A ZÁVADY"</p><h1>{format!("Hlášení č. {}", item.id)}</h1></header>
                     <div class="report-card-meta"><time datetime=item.created_at>{date}</time><span class=format!("report-status report-status-{}",item.status)>{status_label(&item.status)}</span></div>
                     <p class="report-description">{item.description}</p>
                     {item.address.map(|address|view!{<p><strong>"Místo: "</strong>{address}</p>})}
                     {item.latitude.zip(item.longitude).map(|(latitude,longitude)|view!{<DetailMap latitude longitude/>})}
-                    {(!photos.is_empty()).then(||view!{<section class="report-detail-photos" aria-label="Fotografie závady">{photos.into_iter().enumerate().map(|(index,url)|view!{<a href=url.clone() target="_blank" rel="noopener" class="report-detail-photo"><img src=url.clone() alt=format!("Fotografie nahlášené závady č. {}",index+1) loading="lazy"/></a>}).collect_view()}</section>})}
+                    {(!photos.is_empty()).then(||view!{<section class="report-detail-photos" aria-label="Fotografie k hlášení">{photos.into_iter().enumerate().map(|(index,url)|view!{<a href=url.clone() target="_blank" rel="noopener" class="report-detail-photo"><img src=url.clone() alt=format!("Fotografie k hlášení č. {}",index+1) loading="lazy"/></a>}).collect_view()}</section>})}
                     {has_resolution.then(||view!{<section class="report-resolution" aria-labelledby="report-resolution-title">
-                        <h2 id="report-resolution-title">"Řešení závady"</h2>
-                        {resolved.then(||view!{<p class="field-note">"Závada je označena jako vyřešená."</p>})}
+                        <h2 id="report-resolution-title">"Řešení hlášení"</h2>
+                        {resolved.then(||view!{<p class="field-note">"Hlášení je označeno jako vyřešené."</p>})}
                         {item.resolution_updated_at.map(|updated|{let label=crate::events::date_label(&updated);view!{<p class="field-note">"Aktualizováno "<time datetime=updated>{label}</time></p>}})}
                         {item.resolution_comment.map(|comment|view!{<p class="report-resolution-comment">{comment}</p>})}
-                        {(!resolution_photos.is_empty()).then(||view!{<div class="report-detail-photos" aria-label="Fotografie řešení závady">{resolution_photos.into_iter().enumerate().map(|(index,url)|view!{<a href=url.clone() target="_blank" rel="noopener" class="report-detail-photo"><img src=url.clone() alt=format!("Fotografie řešení závady č. {}",index+1) loading="lazy"/></a>}).collect_view()}</div>})}
+                        {(!resolution_photos.is_empty()).then(||view!{<div class="report-detail-photos" aria-label="Fotografie řešení">{resolution_photos.into_iter().enumerate().map(|(index,url)|view!{<a href=url.clone() target="_blank" rel="noopener" class="report-detail-photo"><img src=url.clone() alt=format!("Fotografie řešení č. {}",index+1) loading="lazy"/></a>}).collect_view()}</div>})}
                     </section>})}
                 }.into_any()
             }

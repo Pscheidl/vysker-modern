@@ -12,7 +12,9 @@ use http_body_util::BodyExt;
 use image::{DynamicImage, ImageFormat};
 use lettre::{AsyncSmtpTransport, Tokio1Executor};
 use obecni_web::backend::{self, reports};
-use obecni_web::reports::{REPORT_MAP_LIMIT, REPORT_PHOTO_BYTES, REPORT_UPLOAD_BYTES, Report};
+use obecni_web::reports::{
+    REPORT_MAP_LIMIT, REPORT_PHOTO_BYTES, REPORT_UPLOAD_BYTES, Report, ReportStatusFilter,
+};
 use serde_json::json;
 use std::{io::Cursor, net::SocketAddr};
 use time::OffsetDateTime;
@@ -1490,6 +1492,13 @@ async fn notification_retries_and_reclaims_expired_leases_without_newsletter_con
             .status(),
         StatusCode::CREATED
     );
+    let queued: (String, String) =
+        sqlx::query_as("SELECT subject,body FROM report_mail_queue ORDER BY id LIMIT 1")
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap();
+    assert_eq!(queued.0, "Vyskeř: nový podnět nebo závada č. 1");
+    assert!(queued.1.starts_with("Nový podnět nebo závada č. 1\n"));
     let now = OffsetDateTime::now_utc();
     let unused = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = unused.local_addr().unwrap().port();
@@ -2394,4 +2403,237 @@ async fn reporter_contacts_are_optional_validated_and_part_of_the_idempotent_pay
         .status(),
         StatusCode::OK
     );
+}
+
+#[tokio::test]
+async fn public_status_selection_defaults_to_unresolved_and_matches_map_search_and_pagination() {
+    let app = App::new().await;
+    sqlx::query("INSERT INTO issue_reports(description,address,latitude,longitude,status,hidden,request_ip,created_at) VALUES ('Lampa sever','Vyskeř',50.5,15.1,'reported',FALSE,'','2026-10-25T12:00:00Z'),('Lampa jih','Vyskeř',50.5,15.1,'in_progress',FALSE,'','2026-10-25T12:00:00Z'),('Lampa u školy','Vyskeř',50.5,15.1,'resolved',FALSE,'','2026-10-25T12:00:00Z'),('Lampa bez polohy','Vyskeř',NULL,NULL,'reported',FALSE,'','2026-10-25T12:00:00Z'),('Lampa bez polohy v řešení','Vyskeř',NULL,NULL,'in_progress',FALSE,'','2026-10-25T12:00:00Z'),('Lampa bez polohy vyřešená','Vyskeř',NULL,NULL,'resolved',FALSE,'','2026-10-25T12:00:00Z'),('Lavička','U lampy',50.5,15.1,'reported',FALSE,'','2026-10-25T12:00:00Z'),('Lavička','Vyskeř',50.5,15.1,'in_progress',FALSE,'','2026-10-25T12:00:00Z'),('Lavička','Vyskeř',50.5,15.1,'resolved',FALSE,'','2026-10-25T12:00:00Z'),('Skrytá lampa','Vyskeř',50.5,15.1,'reported',TRUE,'','2026-10-25T12:00:00Z'),('Skrytá lampa v řešení','Vyskeř',NULL,NULL,'in_progress',TRUE,'','2026-10-25T12:00:00Z'),('Skrytá lampa vyřešená','Vyskeř',50.5,15.1,'resolved',TRUE,'','2026-10-25T12:00:00Z')")
+        .execute(&app.state.pool).await.unwrap();
+    let ids = |rows: &serde_json::Value| {
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].as_i64().unwrap())
+            .collect::<Vec<_>>()
+    };
+    for (query, expected, located, unlocated) in [
+        ("", vec![8, 7, 5, 4, 2, 1], vec![8, 7, 2, 1], 2),
+        (
+            "?status=unresolved",
+            vec![8, 7, 5, 4, 2, 1],
+            vec![8, 7, 2, 1],
+            2,
+        ),
+        (
+            "?status=all",
+            vec![9, 8, 7, 6, 5, 4, 3, 2, 1],
+            vec![9, 8, 7, 3, 2, 1],
+            3,
+        ),
+        ("?status=reported", vec![7, 4, 1], vec![7, 1], 1),
+        ("?status=in_progress", vec![8, 5, 2], vec![8, 2], 1),
+        ("?status=resolved", vec![9, 6, 3], vec![9, 3], 1),
+        ("?q=LAMP", vec![7, 5, 4, 2, 1], vec![7, 2, 1], 2),
+        (
+            "?q=LAMP&status=all",
+            vec![7, 6, 5, 4, 3, 2, 1],
+            vec![7, 3, 2, 1],
+            3,
+        ),
+        ("?q=LAMP&status=resolved", vec![6, 3], vec![3], 1),
+        ("?q=missing&status=all", vec![], vec![], 0),
+    ] {
+        let list = app
+            .call("GET", &format!("/api/v1/reports{query}"), None, false)
+            .await;
+        assert_eq!(list.status(), StatusCode::OK, "{query}");
+        assert_eq!(ids(&body_json(list).await), expected, "{query}");
+        let map = body_json(
+            app.call("GET", &format!("/api/v1/reports/map{query}"), None, false)
+                .await,
+        )
+        .await;
+        assert_eq!(ids(&map["points"]), located, "{query}");
+        assert_eq!(map["located_count"], located.len(), "{query}");
+        assert_eq!(map["unlocated_count"], unlocated, "{query}");
+        assert_eq!(map["truncated"], false, "{query}");
+    }
+    let list = body_json(
+        app.call(
+            "GET",
+            "/api/v1/reports?q=LAMP&limit=2&offset=2",
+            None,
+            false,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        ids(&list),
+        vec![4, 2],
+        "pagination must follow the default status predicate"
+    );
+    let list = body_json(
+        app.call(
+            "GET",
+            "/api/v1/reports?q=LAMP&status=all&limit=2&offset=2",
+            None,
+            false,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(ids(&list), vec![5, 4]);
+    let map = body_json(
+        app.call(
+            "GET",
+            "/api/v1/reports/map?q=LAMP&status=all&limit=2&offset=2",
+            None,
+            false,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(ids(&map["points"]), vec![7, 3, 2, 1]);
+    assert_eq!(map["unlocated_count"], 3);
+    // SSR uses these same pool functions, with an explicitly typed selection.
+    let selected =
+        reports::public_reports_from_pool(&app.state.pool, 20, 0, "", ReportStatusFilter::Resolved)
+            .await
+            .unwrap();
+    assert_eq!(
+        selected.iter().map(|report| report.id).collect::<Vec<_>>(),
+        vec![9, 6, 3]
+    );
+    let selected_map =
+        reports::public_report_map_from_pool(&app.state.pool, "", ReportStatusFilter::Resolved)
+            .await
+            .unwrap();
+    assert_eq!(
+        selected_map
+            .points
+            .iter()
+            .map(|report| report.id)
+            .collect::<Vec<_>>(),
+        vec![9, 3]
+    );
+    assert_eq!(
+        app.call("GET", "/api/v1/reports/3", None, false)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        app.call("GET", "/api/v1/reports/12", None, false)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let admin = body_json(app.call("GET", "/api/v1/admin/reports", None, true).await).await;
+    assert_eq!(
+        ids(&admin),
+        (1..=12).rev().collect::<Vec<_>>(),
+        "administration keeps every status and hidden records"
+    );
+    for invalid in ["", "completed", "ALL", "in-progress", "%27%20OR%201=1--"] {
+        for endpoint in ["/api/v1/reports", "/api/v1/reports/map"] {
+            assert_eq!(
+                app.call("GET", &format!("{endpoint}?status={invalid}"), None, false)
+                    .await
+                    .status(),
+                StatusCode::BAD_REQUEST,
+                "{endpoint}: {invalid}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn report_map_status_selection_applies_before_point_cap_and_all_counts() {
+    let app = App::new().await;
+    sqlx::query("INSERT INTO issue_reports(description,address,latitude,longitude,status,request_ip,created_at) SELECT 'Limit mapy','Vyskeř',50.529,15.158,'resolved','','2026-10-25T12:00:00Z' FROM generate_series(1,$1::bigint)")
+        .bind(REPORT_MAP_LIMIT+1).execute(&app.state.pool).await.unwrap();
+    sqlx::query("INSERT INTO issue_reports(description,address,latitude,longitude,status,request_ip,created_at) VALUES ('Limit mapy','Vyskeř',50.529,15.158,'reported','','2026-10-25T12:00:00Z'),('Limit mapy bez polohy','Vyskeř',NULL,NULL,'reported','','2026-10-25T12:00:00Z')")
+        .execute(&app.state.pool).await.unwrap();
+    for (status, located, unlocated, points, truncated) in [
+        ("unresolved", 1, 1, 1, false),
+        ("reported", 1, 1, 1, false),
+        ("in_progress", 0, 0, 0, false),
+        ("resolved", REPORT_MAP_LIMIT + 1, 0, REPORT_MAP_LIMIT, true),
+        ("all", REPORT_MAP_LIMIT + 2, 1, REPORT_MAP_LIMIT, true),
+    ] {
+        let map = body_json(
+            app.call(
+                "GET",
+                &format!("/api/v1/reports/map?q=limit&status={status}"),
+                None,
+                false,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(map["located_count"], located, "{status}");
+        assert_eq!(map["unlocated_count"], unlocated, "{status}");
+        assert_eq!(
+            map["points"].as_array().unwrap().len(),
+            points as usize,
+            "{status}"
+        );
+        assert_eq!(map["truncated"], truncated, "{status}");
+    }
+    let default = body_json(
+        app.call("GET", "/api/v1/reports/map?q=limit", None, false)
+            .await,
+    )
+    .await;
+    assert_eq!(default["located_count"], 1);
+    assert_eq!(default["unlocated_count"], 1);
+    assert_eq!(default["truncated"], false);
+}
+
+#[tokio::test]
+async fn report_section_rename_only_changes_the_old_default_link_and_preserves_customization() {
+    let pool = common::test_pool().await;
+    let mut tx = pool.begin().await.unwrap();
+    let schema = format!("report_name_upgrade_{}", &backend::auth::token()[..32]);
+    sqlx::QueryBuilder::<sqlx::Postgres>::new("CREATE SCHEMA ")
+        .push(&schema)
+        .build()
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("SELECT set_config('search_path', $1, true)")
+        .bind(&schema)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::raw_sql("CREATE TABLE navigation_items(id BIGINT PRIMARY KEY,label TEXT,path TEXT,sort_order BIGINT,visible BOOLEAN,version BIGINT,parent_id BIGINT)")
+        .execute(&mut *tx).await.unwrap();
+    sqlx::query("INSERT INTO navigation_items(id,label,path,sort_order,visible,version,parent_id) VALUES (1,'Hlášení závad','/hlaseni-zavad',73,FALSE,4,NULL),(2,'Místní podněty','/hlaseni-zavad',80,TRUE,7,1),(3,'Hlášení závad','/jiny-prehled',90,TRUE,8,NULL),(4,'Nahlášené závady','/hlaseni-zavad',100,TRUE,5,NULL),(5,'Podněty a závady','/hlaseni-zavad',110,TRUE,2,NULL),(6,'Hlášení závad','/hlaseni-zavad/nove',120,TRUE,3,1)")
+        .execute(&mut *tx).await.unwrap();
+    type NavigationRow = (i64, String, String, i64, bool, i64, Option<i64>);
+    let before: Vec<NavigationRow> = sqlx::query_as("SELECT id,label,path,sort_order,visible,version,parent_id FROM navigation_items ORDER BY id")
+        .fetch_all(&mut *tx).await.unwrap();
+    sqlx::raw_sql(include_str!("../migrations/0019_report_section_name.sql"))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let renamed: Vec<NavigationRow> = sqlx::query_as("SELECT id,label,path,sort_order,visible,version,parent_id FROM navigation_items ORDER BY id")
+        .fetch_all(&mut *tx).await.unwrap();
+    let mut expected = before;
+    expected[0].1 = "Podněty a závady".into();
+    expected[0].5 += 1;
+    assert_eq!(renamed, expected);
+    sqlx::raw_sql(include_str!("../migrations/0019_report_section_name.sql"))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let repeated: Vec<NavigationRow> = sqlx::query_as("SELECT id,label,path,sort_order,visible,version,parent_id FROM navigation_items ORDER BY id")
+        .fetch_all(&mut *tx).await.unwrap();
+    assert_eq!(
+        repeated, expected,
+        "reapplying a rename must not overwrite custom titles or advance versions again"
+    );
+    tx.rollback().await.unwrap();
 }

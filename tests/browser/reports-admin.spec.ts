@@ -34,8 +34,8 @@ async function openReports(page: Page) {
   await page.getByLabel('Heslo', { exact: true }).fill(PASSWORD)
   await page.getByRole('button', { name: 'Přihlásit se', exact: true }).click()
   await expect(page.getByRole('navigation', { name: 'Administrace' })).toBeVisible()
-  await page.getByRole('link', { name: 'Hlášení závad', exact: true }).click()
-  await expect(page.getByRole('heading', { name: 'Hlášení závad', exact: true })).toBeVisible()
+  await page.getByRole('link', { name: 'Podněty a závady', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Podněty a závady', exact: true })).toBeVisible()
 }
 
 test('report recipients start empty, preserve failed edits, and can be cleared', async ({ page }) => {
@@ -72,7 +72,7 @@ test('report recipients start empty, preserve failed edits, and can be cleared',
   await page.getByRole('link', { name: 'Přehled', exact: true }).click()
   await expect(page).toHaveURL(/\/admin\/hlaseni-zavad$/)
   await save.click()
-  await expect(page.locator('.admin-flash')).toContainText('Příjemci upozornění na závady byli uloženi.')
+  await expect(page.locator('.admin-flash')).toContainText('Příjemci upozornění na podněty a závady byli uloženi.')
   await expect(addresses).toHaveValue('opravy@example.test\nobec@example.test')
   await expect(save).toBeDisabled()
   await addresses.fill('')
@@ -178,7 +178,7 @@ test('an administrator saves a repair comment and photograph, resolves the repor
   const description = `Opravená lavička ${Date.now()}`
   await page.route('**/api/v1/report-addresses?*', route => route.fulfill({ json: [] }))
   await page.goto('/hlaseni-zavad/nove')
-  await page.getByLabel('Popis problému', { exact: false }).fill(description)
+  await page.getByLabel('Popis podnětu nebo závady', { exact: false }).fill(description)
   await page.getByLabel('Adresa nebo upřesnění místa', { exact: false }).fill('Vyskeř 50')
   await page.getByLabel('Kdo nahlásil (nepovinné)', { exact: true }).fill('Soukromé jméno odesílatele')
   await page.getByLabel('Kontaktní e-mail (nepovinné)', { exact: true }).fill('Soukromy.Kontakt@example.test')
@@ -236,7 +236,7 @@ test('an administrator saves a repair comment and photograph, resolves the repor
   expect((await saved).status()).toBe(200)
   await expect(page.locator('.admin-flash')).toContainText('Řešení hlášení bylo uloženo.')
   await expect(page.locator('[data-resolution-photo]')).toHaveCount(0)
-  await expect(resolution.getByRole('img', { name: 'Fotografie provedené opravy', exact: true })).toHaveCount(1)
+  await expect(resolution.getByRole('img', { name: 'Fotografie k řešení hlášení', exact: true })).toHaveCount(1)
   await expect(detail.getByRole('button', { name: 'Označit jako vyřešené', exact: true })).toBeDisabled()
   const persisted = await (await page.request.get(`/api/v1/reports/${id}`)).json()
   expect(persisted.status).toBe('resolved')
@@ -247,7 +247,7 @@ test('an administrator saves a repair comment and photograph, resolves the repor
   const resolutionPhoto = `/api/v1/reports/${id}/resolution-photos/${persisted.resolution_photo_ids[0]}`
   await page.goto(`/hlaseni-zavad/${id}`)
   await expect(page.locator('.report-resolution')).toContainText(comment)
-  await expect(page.locator('.report-resolution')).toContainText('Řešení závady')
+  await expect(page.locator('.report-resolution')).toContainText('Řešení hlášení')
   await expect(page.getByRole('main').locator('.report-status')).toHaveText('Vyřešeno')
   await expect(page.locator('.report-resolution img')).toHaveAttribute('src', resolutionPhoto)
   await expect.poll(() => page.locator('.report-resolution img').evaluate(image => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0)

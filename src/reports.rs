@@ -12,6 +12,62 @@ pub const REPORT_SEARCH_LIMIT: usize = 200;
 pub const REPORT_MAP_LIMIT: i64 = 2_000;
 pub const REPORT_RESOLUTION_LIMIT: usize = 5_000;
 
+/// Public overview selection. Resolved reports remain directly accessible by URL.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportStatusFilter {
+    #[default]
+    Unresolved,
+    All,
+    Reported,
+    InProgress,
+    Resolved,
+}
+
+impl ReportStatusFilter {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unresolved => "unresolved",
+            Self::All => "all",
+            Self::Reported => "reported",
+            Self::InProgress => "in_progress",
+            Self::Resolved => "resolved",
+        }
+    }
+
+    pub fn from_query(value: &str) -> Option<Self> {
+        match value {
+            "unresolved" => Some(Self::Unresolved),
+            "all" => Some(Self::All),
+            "reported" => Some(Self::Reported),
+            "in_progress" => Some(Self::InProgress),
+            "resolved" => Some(Self::Resolved),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unresolved => "Nevyřešené",
+            Self::All => "Všechny",
+            Self::Reported => "Nahlášené",
+            Self::InProgress => "V řešení",
+            Self::Resolved => "Vyřešené",
+        }
+    }
+
+    #[cfg(feature = "ssr")]
+    pub(crate) fn statuses(self) -> &'static [&'static str] {
+        match self {
+            Self::Unresolved => &["reported", "in_progress"],
+            Self::All => &["reported", "in_progress", "resolved"],
+            Self::Reported => &["reported"],
+            Self::InProgress => &["in_progress"],
+            Self::Resolved => &["resolved"],
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ssr", derive(sqlx::FromRow))]
 pub struct Report {
@@ -196,10 +252,11 @@ pub async fn load_reports(
     limit: i64,
     offset: i64,
     q: String,
+    status: ReportStatusFilter,
 ) -> Result<Vec<Report>, ServerFnError> {
     let pool = use_context::<sqlx::PgPool>()
         .ok_or_else(|| ServerFnError::new("Databáze není dostupná."))?;
-    crate::backend::reports::public_reports_from_pool(&pool, limit, offset, &q)
+    crate::backend::reports::public_reports_from_pool(&pool, limit, offset, &q, status)
         .await
         .map_err(|error| ServerFnError::new(error.1))
 }
@@ -216,10 +273,13 @@ pub async fn load_report(id: i64) -> Result<Option<Report>, ServerFnError> {
 
 #[cfg(not(feature = "demo"))]
 #[server]
-pub async fn load_report_map(q: String) -> Result<ReportMap, ServerFnError> {
+pub async fn load_report_map(
+    q: String,
+    status: ReportStatusFilter,
+) -> Result<ReportMap, ServerFnError> {
     let pool = use_context::<sqlx::PgPool>()
         .ok_or_else(|| ServerFnError::new("Databáze není dostupná."))?;
-    crate::backend::reports::public_report_map_from_pool(&pool, &q)
+    crate::backend::reports::public_report_map_from_pool(&pool, &q, status)
         .await
         .map_err(|error| ServerFnError::new(error.1))
 }
@@ -229,6 +289,7 @@ pub async fn load_reports(
     _limit: i64,
     _offset: i64,
     _q: String,
+    _status: ReportStatusFilter,
 ) -> Result<Vec<Report>, ServerFnError> {
     Ok(Vec::new())
 }
@@ -239,7 +300,10 @@ pub async fn load_report(_id: i64) -> Result<Option<Report>, ServerFnError> {
 }
 
 #[cfg(feature = "demo")]
-pub async fn load_report_map(_q: String) -> Result<ReportMap, ServerFnError> {
+pub async fn load_report_map(
+    _q: String,
+    _status: ReportStatusFilter,
+) -> Result<ReportMap, ServerFnError> {
     Ok(ReportMap::default())
 }
 

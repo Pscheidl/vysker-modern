@@ -82,7 +82,7 @@ async function expectDashboard(page: Page) {
 
 test('a resident can cancel leaving a draft through the administration link and then confirm the transition', async ({ page }) => {
   await openPublicPage(page, '/hlaseni-zavad/nove')
-  const description = page.getByLabel('Popis problému', { exact: false })
+  const description = page.getByLabel('Popis podnětu nebo závady', { exact: false })
   await description.fill('Rozpracované hlášení před otevřením správy webu')
   let allowDeparture = false
   let prompts = 0

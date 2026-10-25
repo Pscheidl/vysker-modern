@@ -120,8 +120,8 @@ pub fn Reports() -> impl IntoView {
     });
     on_cleanup(move || ctx.dirty.set(false));
     view! {
-        <Title text="Hlášení závad · Správa Vyskře"/>
-        <Heading title="Hlášení závad" description="Podněty od obyvatel, průběh oprav a příjemci e-mailových upozornění. Nová hlášení se zveřejňují automaticky, nevhodné hlášení můžete skrýt."/>
+        <Title text="Podněty a závady · Správa Vyskře"/>
+        <Heading title="Podněty a závady" description="Návrhy na zlepšení obce, hlášení závad a průběh jejich řešení. Nová hlášení se zveřejňují automaticky, nevhodné hlášení můžete skrýt."/>
         <Suspense fallback=Pending>{move || settings.get().map(|result| match result {
             Ok(initial) => view! { <Recipients initial dirty=settings_dirty/> }.into_any(),
             Err(error) => view! {
@@ -213,7 +213,7 @@ fn Recipients(initial: Settings, dirty: RwSignal<bool>) -> impl IntoView {
                     let current = settings.recipients.join("\n");
                     saved.set(current.clone());
                     recipients.set(current);
-                    ctx.changed("Příjemci upozornění na závady byli uloženi.");
+                    ctx.changed("Příjemci upozornění na podněty a závady byli uloženi.");
                 }
                 Err(failure) => error.set(Some(failure)),
             }
@@ -500,16 +500,16 @@ fn ResolutionEditor(
     view! {
         <section class="admin-form-section" aria-label="Řešení hlášení" style="margin-top: 28px">
             <h3>"Řešení hlášení"</h3>
-            <p class="admin-caption">"Komentář a fotografie opravy budou vidět ve veřejném detailu. Jsou nepovinné a původní hlášení zůstane zachované."</p>
+            <p class="admin-caption">"Komentář a fotografie k řešení budou vidět ve veřejném detailu. Jsou nepovinné a původní hlášení zůstane zachované."</p>
             {move || current.get().resolution_updated_at.map(|date| view! { <p class="admin-caption">"Naposledy upraveno: "<time datetime=date.clone()>{reported_at(&date)}</time></p> })}
             <form on:submit=move |event| { event.prevent_default(); if !updating.get_untracked() && changed.get_untracked() { save.dispatch(false); } }>
                 <fieldset disabled=move || updating.get()>
-                    <label class="admin-field" for="report-resolution-comment"><span>"Komentář k řešení (nepovinné)"</span><textarea id="report-resolution-comment" rows="4" maxlength="5000" prop:value=move || comment.get() on:input=move |event| comment.set(event_target_value(&event)) placeholder="Co bylo opraveno nebo jak pokračuje řešení?"></textarea></label>
+                    <label class="admin-field" for="report-resolution-comment"><span>"Komentář k řešení (nepovinné)"</span><textarea id="report-resolution-comment" rows="4" maxlength="5000" prop:value=move || comment.get() on:input=move |event| comment.set(event_target_value(&event)) placeholder="Popište provedené kroky nebo další postup."></textarea></label>
                     <div class="report-detail-photos" aria-label="Uložené fotografie řešení">{move || {
                         let removed_ids = removed.get();
                         current.get().resolution_photo_ids.into_iter().filter(|photo_id| !removed_ids.contains(photo_id)).map(move |photo_id| view! {
                             <figure class="report-photo-preview-item">
-                                <a class="report-detail-photo" href=format!("/api/v1/admin/reports/{id}/resolution-photos/{photo_id}") target="_blank" rel="noopener noreferrer"><img src=format!("/api/v1/admin/reports/{id}/resolution-photos/{photo_id}") alt="Fotografie provedené opravy" loading="lazy"/></a>
+                                <a class="report-detail-photo" href=format!("/api/v1/admin/reports/{id}/resolution-photos/{photo_id}") target="_blank" rel="noopener noreferrer"><img src=format!("/api/v1/admin/reports/{id}/resolution-photos/{photo_id}") alt="Fotografie k řešení hlášení" loading="lazy"/></a>
                                 <button class="text-link" type="button" aria-label=format!("Odebrat uloženou fotografii řešení {photo_id}") on:click=move |_| removed.update(|items| items.push(photo_id))>"Odebrat fotografii"</button>
                             </figure>
                         }).collect_view()
