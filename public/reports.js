@@ -112,7 +112,7 @@ export function unmount_report(root) {
 
 export function mount_report_form(root) {
   if (mounted.has(root)) return
-  const state = { active: true, listeners: new AbortController(), map: null, marker: null, photos: [], sending: false, submitted: false, discardDraft: false, allowUnload: false, suggestions: [], selectedSuggestion: -1, searchSequence: 0 }
+  const state = { active: true, listeners: new AbortController(), map: null, marker: null, photos: [], sending: false, submitted: false, discardDraft: false, allowUnload: false, suggestions: [], selectedSuggestion: -1, searchSequence: 0, submissionToken: null, tokenRequest: null, tokenSubmitted: false }
   mounted.set(root, state)
   const $ = id => root.querySelector(`#${id}`)
   const listen = (element, type, fn) => element.addEventListener(type, fn, { signal: state.listeners.signal })
@@ -133,7 +133,8 @@ export function mount_report_form(root) {
 
   function hasDraft() {
     return !state.submitted && (state.photos.length > 0 || latitude.value || longitude.value
-      || $('report-description').value.trim() || address.value.trim() || $('report-reporter').value.trim())
+      || $('report-description').value.trim() || address.value.trim() || $('report-reporter').value.trim()
+      || $('report-email').value.trim() || $('report-phone').value.trim())
   }
 
   state.saveDraft = () => {
@@ -144,9 +145,13 @@ export function mount_report_form(root) {
         description: $('report-description').value,
         address: address.value,
         reporter: $('report-reporter').value,
+        email: $('report-email').value,
+        phone: $('report-phone').value,
         latitude: latitude.value,
         longitude: longitude.value,
         photos: state.photos.map(item => item.file),
+        submissionToken: state.submissionToken,
+        tokenSubmitted: state.tokenSubmitted,
       }
     }
   }
@@ -476,6 +481,41 @@ export function mount_report_form(root) {
     renderPhotos()
   })
 
+  async function prepareSubmissionToken(force = false) {
+    // A response may have been lost after saving. Reuse that token even if its
+    // original lifetime ended so a retry can retrieve the existing report.
+    if (!force && state.submissionToken && (state.tokenSubmitted
+      || state.submissionToken.expires_at * 1000 > Date.now() + 5000)) return state.submissionToken.token
+    if (state.tokenRequest) return state.tokenRequest
+    state.submissionToken = null
+    state.tokenSubmitted = false
+    state.tokenRequest = (async () => {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 15000)
+      try {
+        const response = await fetch('/api/v1/report-submission-token', {
+          method: 'POST', credentials: 'same-origin', signal: controller.signal,
+        })
+        const result = await response.json().catch(() => null)
+        if (!response.ok) throw new Error(result?.error || 'Odeslání nyní nelze připravit. Zkuste to prosím znovu. Vyplněné údaje a fotografie zůstávají ve formuláři.')
+        if (typeof result?.token !== 'string' || !result.token || !Number.isFinite(result.expires_at)) {
+          throw new Error('Odeslání nyní nelze připravit. Zkuste to prosím znovu. Vyplněné údaje a fotografie zůstávají ve formuláři.')
+        }
+        state.submissionToken = result
+        return result.token
+      } catch (failure) {
+        if (failure instanceof TypeError || failure.name === 'AbortError') {
+          throw new Error('Nepodařilo se spojit se serverem. Zkuste odeslání znovu. Vyplněné údaje a fotografie zůstávají ve formuláři.')
+        }
+        throw failure
+      } finally {
+        clearTimeout(timeout)
+        state.tokenRequest = null
+      }
+    })()
+    return state.tokenRequest
+  }
+
   listen(form, 'submit', async event => {
     event.preventDefault()
     if (state.sending || !form.reportValidity()) return
@@ -487,20 +527,40 @@ export function mount_report_form(root) {
     }
     cancelSearch()
     closeSuggestions()
-    const body = new FormData(form)
-    body.delete('photo')
+    const body = new FormData()
+    // Place the proof before photographs so the server can reject an invalid
+    // request before it reads or decodes a large upload.
+    body.append('submission_token', 'pending')
+    for (const [key, value] of new FormData(form)) {
+      if (key !== 'photo') body.append(key, value)
+    }
     for (const item of state.photos) body.append('photo', item.file)
     for (const [key, value] of [...body.entries()]) {
       if (typeof value === 'string' && !value.trim()) body.delete(key)
       if (value instanceof File && !value.size && !value.name) body.delete(key)
     }
+    // This comes from the browser's standard locale setting, without any
+    // device probing or access to an operating-system/profile user name.
+    try { body.set('client_timezone', Intl.DateTimeFormat().resolvedOptions().timeZone || '') } catch (_) {}
     state.sending = true
     fields.disabled = true
     state.marker?.dragging?.disable()
     submit.textContent = 'Odesílám…'
     try {
-      const response = await fetch('/api/v1/reports', { method: 'POST', body, credentials: 'same-origin' })
-      const result = await response.json().catch(() => null)
+      body.set('submission_token', await prepareSubmissionToken())
+      let response
+      let result
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        state.tokenSubmitted = true
+        response = await fetch('/api/v1/reports', { method: 'POST', body, credentials: 'same-origin', headers: { 'X-Report-Token': body.get('submission_token') } })
+        result = await response.json().catch(() => null)
+        if (attempt === 0 && response.status === 403 && result?.code === 'report_token_invalid') {
+          // Only this explicit rejection proves that this attempt was not saved.
+          body.set('submission_token', await prepareSubmissionToken(true))
+          continue
+        }
+        break
+      }
       if (!response.ok) throw new Error(result?.error || (response.status === 413 ? 'Upload je příliš velký. Jedna fotografie může mít nejvýše 15 MB a všechny dohromady 50 MB.' : 'Hlášení se nepodařilo odeslat. Zkuste to znovu.'))
       if (!Number.isSafeInteger(result?.id) || result.id < 1) throw new Error('Server vrátil neočekávanou odpověď. Před opakováním zkontrolujte seznam hlášení.')
       state.submitted = true
@@ -512,7 +572,7 @@ export function mount_report_form(root) {
         state.marker?.dragging?.enable()
         submit.textContent = 'Odeslat hlášení'
         state.sending = false
-        showError(failure instanceof TypeError ? 'Spojení se serverem se přerušilo. Před opakováním zkontrolujte seznam hlášení, zda už bylo uloženo.' : failure.message)
+        showError(failure instanceof TypeError ? 'Spojení se serverem se přerušilo. Zkuste odeslání znovu. Vyplněné údaje a fotografie zůstávají ve formuláři a při opakování stejného hlášení během 24 hodin zabráníme duplicitě.' : failure.message)
       }
     }
   })
@@ -522,6 +582,10 @@ export function mount_report_form(root) {
     $('report-description').value = draft.description
     address.value = draft.address
     $('report-reporter').value = draft.reporter
+    $('report-email').value = draft.email || ''
+    $('report-phone').value = draft.phone || ''
+    state.submissionToken = draft.submissionToken || null
+    state.tokenSubmitted = draft.tokenSubmitted || false
     state.photos = draft.photos.map(file => ({ file, url: URL.createObjectURL(file) }))
     renderPhotos()
     if (draft.latitude && draft.longitude) selectPoint(Number(draft.latitude), Number(draft.longitude), false)
@@ -533,6 +597,8 @@ export function mount_report_form(root) {
     $('report-draft-status').hidden = false
   }
   fields.disabled = false
+  // Preparing the token must never delay typing or choosing photographs.
+  prepareSubmissionToken().catch(() => {})
 
   leaflet().then(L => {
     if (!state.active) return

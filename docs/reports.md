@@ -10,6 +10,9 @@ the first position in the new `issue_report_photos` gallery table. Existing
 reports and their photographs are preserved.
 Migration `0017_issue_report_resolutions.sql` adds public repair notes and their
 separate photograph storage without changing the original report gallery.
+Migration `0018_report_abuse.sql` adds private sender context and persistent
+submission verification. It also removes the private sender line from pending
+notification bodies created by older releases.
 The list searches descriptions and addresses on the server using `q`, for
 example `/hlaseni-zavad?q=lavička`. Search terms remain in the URL so filtered
 results can be shared and reloaded. Pagination preserves the filter, and
@@ -19,8 +22,8 @@ characters, with `...` when more text follows. The detail retains the complete
 submitted description, and searching covers the full description.
 
 The form requires a description and either an address or a map position.
-Both can be supplied together. **Kdo nahlásil** and photographs are optional.
-Empty names display as anonymous reports. Address suggestions use Photon
+Both can be supplied together. **Kdo nahlásil**, email, phone and photographs are optional.
+The optional name, email and phone are visible only in administration. The form explains that contacts may be used to clarify or resolve the report. Anonymous submissions are welcome. Address suggestions use Photon
 through the application's server. Selecting a suggestion fills the address
 and places a pin on the map. Clicking the map, moving the pin, selecting the
 map centre or using phone location replaces the address field with the exact
@@ -52,13 +55,14 @@ not survive an actual page reload, browser closure or crash.
 ## Administration and API
 
 Open `/admin/hlaseni-zavad` to configure recipients, inspect reports, view the
-private request IP, change the repair status and hide or restore public visibility.
+private contacts and sender data, change the repair status and hide or restore public visibility.
 Reports use the states `reported`, `in_progress` and `resolved`. Timestamps are
 stored with the Europe/Prague offset applicable when submitted and displayed
 in that local time.
 
 | Endpoint | Purpose |
 | --- | --- |
+| `POST /api/v1/report-submission-token` | Prepare an invisible same-origin submission proof |
 | `POST /api/v1/reports` | Create a report using multipart form data |
 | `GET /api/v1/reports?limit=21&offset=0&q=lavička` | List public reports, optionally filtering their description or address, newest first |
 | `GET /api/v1/reports/map?q=lavička` | Read matching located reports across all list pages, with map counts |
@@ -66,7 +70,7 @@ in that local time.
 | `GET /api/v1/reports/{id}/photo` | Read its processed JPEG |
 | `GET /api/v1/reports/{id}/photos/{position}` | Read a processed gallery photograph, starting at position 1 |
 | `GET /api/v1/report-addresses?q=Vyskeř%2050` | Find address suggestions with labels and coordinates |
-| `GET /api/v1/admin/reports?limit=21&offset=0` | List all reports, including private IP and hidden state |
+| `GET /api/v1/admin/reports?limit=21&offset=0` | List all reports, including private contacts, sender data and hidden state |
 | `PUT /api/v1/admin/reports/{id}` | Change `status`, `hidden`, or both |
 | `PUT /api/v1/admin/reports/{id}/resolution` | Save an optional public repair comment, photographs and status using multipart form data |
 | `GET /api/v1/admin/reports/{id}/photo` | Read a photograph even when its report is hidden |
@@ -136,8 +140,8 @@ Each report and its recipient-specific queue entries are saved in the same
 database transaction. The recipients are a snapshot of the settings at submission.
 Changing or clearing the list affects new reports, not messages already queued.
 Each recipient receives a separate plain-text email containing the description,
-supplied name, location and links to the detail and photographs. The request IP
-is not included. Photographs are linked, not attached.
+location and links to the detail and photographs. Supplied names, email addresses, phone numbers, account
+identities, IP addresses and other technical sender data are not included. Photographs are linked, not attached.
 
 Delivery uses the existing SMTP worker and the sender configured under
 **Rozesílání → Nastavení odesílání**, or the server's SMTP settings. See
@@ -162,6 +166,8 @@ or browser MIME type. Supported input formats are JPEG, PNG and WebP.
 | Description | 5,000 characters |
 | Address or location description | 300 characters |
 | Optional reporter name | 120 characters |
+| Optional reporter email | 254 characters, validated email address |
+| Optional reporter phone | 40 characters, digits and usual phone punctuation |
 | Each input photograph | 15 MB, exactly 15,000,000 bytes |
 | All input photographs together | 50 MB, exactly 50,000,000 bytes |
 | All processed photographs together | 50 MB, to bound memory and stored gallery size |
@@ -190,28 +196,104 @@ Multipart submissions repeat the `photo` field for multiple images. Server
 validation rejects unknown or duplicate text fields, incomplete or
 out-of-range coordinates, missing descriptions and reports without any location.
 The create endpoint requires an Origin matching `OBEC_VEREJNA_URL` exactly.
-Per-IP request counters allow five attempts per 15-minute window and 30 per
-day-long window. Validation failures after origin checking also count.
+The form first obtains a short-lived submission proof as described below.
+Two complete submissions can be processed concurrently per application process,
+with a ten-second queue wait. Upload reads time out after 60 seconds without
+progress, and the complete multipart processing has a 15-minute limit.
 
-## IP addresses and public data
+## Sender data, visibility and retention
 
-Every accepted report stores the request IP in `issue_reports.request_ip`.
-Public API responses, pages and notification emails omit it. The administrator
-can see it in the report detail. Public reports expose the description, location,
-optional supplied name, processed photographs, timestamp and repair status.
+Only administrative report responses expose the optional supplied name, email, phone, request
+IP, User-Agent, Accept-Language, optional time zone, a keyed hash of the random
+browser identifier, a coarse browser fingerprint and capture/expiry timestamps.
+When a valid existing website administrator session is present, the server also
+records its account ID and email. Expired sessions and inactive accounts do not
+identify a sender. This does not require a login and does not authenticate a
+name or contact typed in the form. The browser may offer autofill with
+`autocomplete=name`, `autocomplete=email` and `autocomplete=tel`. Contacts do not
+subscribe a visitor to newsletters or generate a confirmation email.
+
+A website cannot read the browser profile name, operating-system username or
+custom device name through normal browser APIs. No such access is attempted.
+Headers, time zone and the supplied name are unverified. A browser identifier can
+be shared, cleared or replaced. The fingerprint groups browser family/major
+version, OS family, primary language and time zone, and is keyed per site.
+It uses no canvas, audio, fonts or hardware enumeration and is never the sole
+reason to block a submission. These signals are clues about repeat submissions,
+not proof of a real person's identity.
+
+Public API responses, server-rendered pages, map data, server functions and new
+notification emails omit all sender fields, including the optional name, email and phone.
+Public reports expose only the description, location, processed photographs,
+timestamp and repair information. Users should avoid putting private data in
+these public content fields. Already delivered historical emails cannot be recalled.
+
+Technical sender data, including the IP and website account association, is
+removed 30 days after submission. Existing report IPs receive a 30-day grace
+period from migration 0018, without inventing a historical metadata capture time.
+The optional name, email and phone remain private parts of the report. Public content and photos
+are retained. This is an operational retention default, not a statutory period.
+Cleanup runs on the existing maintenance schedule even without a newsletter
+privacy policy. Backup retention remains the operator's separate responsibility.
 
 IP extraction uses the actual TCP peer. It accepts `X-Real-IP` only when that
 peer exactly equals the configured `OBEC_TRUSTED_PROXY` IP. It never trusts
 `X-Forwarded-For`. The trusted proxy must overwrite `X-Real-IP`, and the
 application port must not be exposed as an alternative public entry point.
-See [operations.md](operations.md) for the existing proxy setup. Internal tests
-without peer information use the fallback value `local`.
+See [operations.md](operations.md). Tests without peer information use `local`.
 
-Report records, their request IPs and notification metadata currently have no
-automatic expiry or deletion workflow. Newsletter retention settings do not
-apply to these tables. This behavior must be reflected in the operator's report
-privacy information and retention procedure. Hiding a report does not remove
-its stored personal data or backup copies.
+## Invisible submission protection
+
+`POST /api/v1/report-submission-token` requires the exact configured Origin and
+returns `{token, expires_at}` with `Cache-Control: no-store`. Tokens expire after
+two hours. The endpoint sets `obec_report_browser` only when no valid cookie
+exists. This first-party cookie contains a signed random value, lasts 30 days,
+and uses `HttpOnly`, `SameSite=Strict`, `Path=/` and `Secure` on HTTPS. The per-site
+signing key is stored in PostgreSQL and persists across restarts.
+
+The browser obtains a proof in the background. It places `submission_token`
+before any photographs and sends the same value in `X-Report-Token`. The
+optional `client_timezone` contains the browser time zone. The hidden `website`
+field must stay empty and is excluded from keyboard and assistive-technology
+navigation. There is no CAPTCHA, mandatory interaction or minimum typing time.
+
+With cookies blocked, the random per-form token and matching custom header
+serve as a short-lived proof, bound to the issuing IP for new submissions.
+A network change can renew an unused token without losing the draft. Without
+cookies, there is no persistent browser identity across separate forms.
+
+The token is claimed atomically with the report, photographs and notification
+queue. Repeating an accepted token with the same normalized contents returns
+the existing report without adding photographs or notifications. A completed
+proof is retained for 24 hours, including recovery after a lost response and
+network or cookie changes. A used token with different contents returns 409.
+Identical content from the same browser within 24 hours also returns the existing
+report, even if submitted from a new form. The supplied name, email and phone are included in this comparison. Technical
+headers are excluded from it. Cookie-free separate forms cannot be reliably correlated.
+
+The UI preserves the same token after an ambiguous network failure. It renews
+once only after an explicit 403 with `code: report_token_invalid`, or when an
+unused token is known to have expired. Other errors preserve the draft and
+photographs for retry. Anonymous submission remains possible.
+
+Persistent rolling quotas allow 10 accepted reports per browser per 10 minutes
+and 50 per 24 hours. Shared-IP limits are deliberately broader at 100 per
+10 minutes and 500 per 24 hours. Exact retries consume no additional accepted
+quota. Separate fixed-window attempt limits apply before reading uploads:
+60 per browser per 10 minutes, 300 per IP per 10 minutes and 2,000 per IP per day.
+Token issuance allows 30 per browser per 10 minutes, 120 per IP per 10 minutes,
+1,200 per IP per day and 1,200 globally per minute. Attempt and token counters,
+short-lived proofs and duplicate records are removed after expiry, within the
+maintenance schedule. Their retention does not exceed 24 hours.
+
+These layers limit simple bots, duplicate submissions and bursts. They cannot
+guarantee that content is useful or stop a determined sender who changes both
+browser identity and network. Administrators can hide inappropriate reports.
+No external anti-bot service receives sender metadata.
+
+Design references: [MDN cookies](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie),
+[OWASP session management](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)
+and [OWASP denial-of-service prevention](https://cheatsheetseries.owasp.org/cheatsheets/Denial_of_Service_Cheat_Sheet.html).
 
 ## Maps and phone location
 
@@ -293,6 +375,13 @@ per-file removal and retry, exact upload-size boundaries, recipient edits and
 moderation, including stale admin views. They also cover filtered map markers,
 overlapping reports and mobile popups, plus a real repair save with a comment,
 photograph, resolved status, public detail and hiding of repair photographs.
+Submission security tests cover token binding and expiry, cookie-free use,
+lost-response recovery across network changes, concurrent duplicate submissions,
+restart persistence, shared-network quotas, private optional contacts and the
+30-day cleanup without newsletter configuration. An upgrade test applies the
+new migration to existing report and notification data. Browser checks exercise
+invisible token renewal, failed preparation, native email validation and contact
+preservation in drafts, and verify that contacts appear only in administration.
 
 Use the disposable PostgreSQL workflow in [testing.md](testing.md). Run the
 Rust tests before rebuilding the complete web assets for browser checks, because

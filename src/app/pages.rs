@@ -245,9 +245,15 @@ pub fn Privacy() -> impl IntoView {
             Ok(None)=>view!{<p>"Informace o zpracování osobních údajů nejsou dostupné. Odběr novinek není aktivní."</p>}.into_any(),
             Err(_)=>view!{<p role="alert">"Informace se nepodařilo načíst. Zkuste to později."</p>}.into_any(),
         })}</Suspense>
+        <h2>"Hlášení závad"</h2>
+        <p>"Popis závady, její místo, fotografie, čas nahlášení a informace o řešení jsou veřejné. Do popisu ani fotografií proto nevkládejte osobní údaje, které nechcete zveřejnit. Jméno, e-mail a telefon jsou nepovinné. Uvidí je pouze správci webu, kteří vás mohou kontaktovat kvůli upřesnění nebo řešení závady. Hlášení můžete odeslat i anonymně a bez kontaktu."</p>
+        <p>"Kvůli ochraně před spamem ukládáme u hlášení IP adresu, údaje o prohlížeči a systému, jazyk, časové pásmo a technické identifikátory pro rozpoznání opakovaných hlášení. Pokud jste přihlášeni k účtu tohoto webu, zaznamenáme také tento účet. Tyto údaje vidí pouze správci a automaticky se odstraňují po 30 dnech od odeslání. Dobrovolně uvedené jméno, e-mail a telefon zůstávají neveřejnou součástí hlášení. Technické údaje samy nepotvrzují totožnost člověka."</p>
+        <p>"Ochrana formuláře automaticky omezuje hromadné a opakované odesílání, bez captchy. Krátkodobé ověřovací záznamy a počítadla se uchovávají nejvýše 24 hodin. Rozepsané hlášení a vybrané fotografie zůstávají pouze v paměti otevřené stránky, dokud je neodešlete nebo neopustíte."</p>
+        <p>"Mapové podklady načítá prohlížeč od OpenStreetMap. Tento poskytovatel dostává obvyklé údaje o požadavku a zobrazené oblasti. Text pro našeptávání adres předává náš server službě Photon. Polohu telefonu zjišťujeme pouze po stisknutí tlačítka Použít moji polohu a s vaším svolením."</p>
         <h2>"Cookies a paměť prohlížeče"</h2><p>"Používáme pouze nezbytné technické prostředky. Přihlášení správců používá cookie obec_session s platností nejvýše 8 hodin. Cookie chrání přístup do administrace a při odhlášení se odstraní."</p>
+        <p>"Formulář hlášení závad používá bezpečnostní cookie obec_report_browser s náhodným identifikátorem a platností 30 dní. Pomáhá omezovat spam na tomto webu. Při blokovaných cookies lze hlášení stále odeslat, ověření pak platí jen pro konkrétní formulář."</p>
         <p>"Volbu světlého či tmavého motivu ukládáme pod klíčem vysker-theme v localStorage do její změny nebo vymazání dat webu v prohlížeči."</p>
-        <p>"Web nepoužívá analytické ani reklamní cookies, profilování ani automatizované rozhodování. Písma a obrázky načítáme přímo z tohoto webu."</p>
+        <p>"Web nepoužívá analytické ani reklamní cookies ani sledování napříč weby. Automatické kontroly formuláře slouží k ochraně před zneužitím. Písma a fotografie hlášení načítáme přímo z tohoto webu."</p>
     </div>}
 }
 
@@ -271,7 +277,7 @@ fn PrivacyDetails(policy: crate::privacy::PrivacyPolicy) -> impl IntoView {
         <p>"Důvod uchování dokladu o souhlasu: "{policy.consent_evidence_legal_basis}</p>
         <h2>"Zveřejněné dokumenty"</h2><p>{policy.public_records_legal_basis}</p><p>{format!("Rozsah údajů a dobu zveřejnění určuje typ dokumentu. U položek s evidovaným datem sejmutí uchováváme interní texty a doklady vyvěšení {} dní po sejmutí. Potom zůstane jen minimální evidenční záznam. Na historické položky bez evidovaného data sejmutí se tento automatický výmaz nevztahuje. Úřední originály a spisovou službu spravuje obec odděleně.",r.notice_internal_days)}</p>
         <h2>"Provoz a bezpečnost"</h2><p>{policy.security_legal_basis}</p>
-        <p>{format!("Audit obsahuje identifikátor správce, provedenou operaci, dotčený záznam a čas. Uchovává se {} dní. Provozní logy se průběžně obměňují podle nastavení serveru. Ochrana proti zneužití uchovává otisky technických identifikátorů nejvýše 24 hodin. Aplikace do HTTP logů nezapisuje těla požadavků, e-mailové adresy ani parametry s ověřovacími tokeny.",r.audit_days)}</p>
+        <p>{format!("Audit obsahuje identifikátor správce, provedenou operaci, dotčený záznam a čas. Uchovává se {} dní. Provozní logy se průběžně obměňují podle nastavení serveru. Krátkodobá počítadla ochrany proti zneužití se uchovávají nejvýše 24 hodin. Dobu uchování údajů u hlášení závad uvádíme samostatně níže. Aplikace do HTTP logů nezapisuje těla požadavků, e-mailové adresy ani parametry s ověřovacími tokeny.",r.audit_days)}</p>
         <h2>"Příjemci a předávání údajů"</h2><p>{policy.processors}</p><p>{policy.international_transfers}</p>
         <p>{if r.backup_days == 0 { "Vlastní zálohy databáze odběratelů nyní nevytváříme.".into() } else { format!("Záložní kopie mohou údaje obsahovat nejvýše {} dní. Po obnově se znovu uplatní lhůty uchování. Vyřizování žádostí o výmaz a odvolání souhlasu zahrnuje také postup obnovy ze záloh.",r.backup_days) }}</p>
         <h2>"Vaše práva"</h2><p>{if has_dpo { "U správce nebo pověřence" } else { "U správce" }}" můžete požádat o přístup k údajům, jejich opravu, výmaz či omezení zpracování. Podle právního důvodu zpracování máte také právo na přenositelnost nebo vznést námitku. Souhlas s odběrem lze odvolat kdykoli."</p>

@@ -13,6 +13,7 @@ pub mod page_images;
 pub mod pages;
 pub mod privacy;
 pub mod recovery;
+pub mod report_abuse;
 pub mod report_addresses;
 pub mod reports;
 pub mod search;
@@ -190,6 +191,10 @@ pub fn router(state: Backend) -> Router {
         )
         .route("/api/v1/events", get(events::public_list))
         .route("/api/v1/report-addresses", get(report_addresses::search))
+        .route(
+            "/api/v1/report-submission-token",
+            post(report_abuse::submission_token).layer(DefaultBodyLimit::max(4096)),
+        )
         .route("/api/v1/events/{id}", get(events::detail))
         .route(
             "/api/v1/reports",

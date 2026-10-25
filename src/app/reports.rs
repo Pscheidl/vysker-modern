@@ -52,7 +52,7 @@ fn ReportForm() -> impl IntoView {
         });
     }
     view! {<div node_ref=root class="report-compose" id="nove-hlaseni">
-        <p class="field-note">"Rozbitá lavička, výmol nebo nefunkční osvětlení? Popište závadu a uveďte místo. Fotografie a jméno můžete přidat dobrovolně."</p>
+        <p class="field-note">"Rozbitá lavička, výmol nebo nefunkční osvětlení? Popište závadu a uveďte místo. Fotografie, jméno i kontakt můžete přidat dobrovolně."</p>
         <p id="report-draft-status" class="info-banner" role="status" hidden>"Rozpracované hlášení bylo obnoveno."</p>
         <form id="report-form" method="post" action="/api/v1/reports" enctype="multipart/form-data">
             <fieldset disabled id="report-fields">
@@ -78,8 +78,13 @@ fn ReportForm() -> impl IntoView {
                 <p id="report-photo-error" class="report-error" role="alert" hidden></p>
                 <p id="report-photo-status" class="field-note" role="status" aria-live="polite"></p>
                 <div id="report-photo-preview" class="report-photo-previews" hidden></div>
-                <label class="report-field" for="report-reporter"><span>"Kdo nahlásil (nepovinné)"</span><input id="report-reporter" name="reporter_name" type="text" maxlength="120" autocomplete="name" placeholder="Můžete nechat prázdné"/></label>
-                <p class="report-privacy">"Hlášení včetně místa, fotografií a vyplněného jména bude veřejné. Neuvádějte citlivé údaje a fotografujte samotnou závadu. IP adresu požadavku zaznamenáme pro ochranu před zneužitím, veřejně se nezobrazuje."</p>
+                <label class="report-field" for="report-reporter"><span>"Kdo nahlásil (nepovinné)"</span><input id="report-reporter" name="reporter_name" type="text" maxlength="120" autocomplete="name" aria-describedby="report-reporter-help" placeholder="Můžete nechat prázdné"/></label>
+                <p id="report-reporter-help" class="field-note">"Jméno uvidí pouze správci. Hlášení můžete odeslat i anonymně."</p>
+                <label class="report-field" for="report-email"><span>"Kontaktní e-mail (nepovinné)"</span><input id="report-email" name="reporter_email" type="email" maxlength="254" autocomplete="email" aria-describedby="report-contact-help" placeholder="Můžete nechat prázdné"/></label>
+                <label class="report-field" for="report-phone"><span>"Telefon (nepovinné)"</span><input id="report-phone" name="reporter_phone" type="tel" maxlength="40" autocomplete="tel" aria-describedby="report-contact-help" placeholder="Můžete nechat prázdné"/></label>
+                <p id="report-contact-help" class="field-note">"Pokud bude potřeba něco upřesnit, můžeme vás kontaktovat. E-mail a telefon uvidí pouze správci. Obě pole můžete nechat prázdná."</p>
+                <div hidden aria-hidden="true"><label for="report-website">"Webová stránka"</label><input id="report-website" name="website" type="text" tabindex="-1" autocomplete="off" data-lpignore="true"/></div>
+                <p class="report-privacy">"Popis, místo a fotografie budou veřejné. Neuvádějte citlivé údaje a fotografujte samotnou závadu. Pro ochranu před zneužitím zaznamenáváme IP adresu, technické údaje a náhodný identifikátor prohlížeče uložený v bezpečnostní cookie. Jméno, kontaktní údaje a technické údaje uvidí pouze správci. "<A href=site_url("/ochrana-udaju")>"Jak nakládáme s údaji"</A>"."</p>
                 <p id="report-submit-error" class="report-error" role="alert" tabindex="-1" hidden></p>
                 <button class="button primary" id="report-submit" type="submit">"Odeslat hlášení"<Icon/></button>
             </fieldset>
@@ -99,7 +104,6 @@ fn ReportRow(report: Report) -> impl IntoView {
         <div class="report-card-content"><div class="report-card-meta"><time datetime=report.created_at>{date}</time><span class=format!("report-status report-status-{}",report.status)>{status}</span></div>
             <h2><A href=href.clone()>{title}</A></h2>
             <p class="field-note">{report.address.unwrap_or_else(||"Místo označeno na mapě".into())}</p>
-            <p class="field-note">"Nahlásil: "{report.reporter_name.unwrap_or_else(||"Anonymně".into())}</p>
             <A href attr:class="text-link">"Zobrazit detail"<Icon/></A>
         </div>
     </article>}
@@ -290,7 +294,6 @@ pub fn ReportDetail() -> impl IntoView {
                     <header class="page-heading"><p class="eyebrow">"HLÁŠENÍ ZÁVAD"</p><h1>{format!("Hlášení č. {}", item.id)}</h1></header>
                     <div class="report-card-meta"><time datetime=item.created_at>{date}</time><span class=format!("report-status report-status-{}",item.status)>{status_label(&item.status)}</span></div>
                     <p class="report-description">{item.description}</p>
-                    <p><strong>"Nahlásil: "</strong>{item.reporter_name.unwrap_or_else(||"Anonymně".into())}</p>
                     {item.address.map(|address|view!{<p><strong>"Místo: "</strong>{address}</p>})}
                     {item.latitude.zip(item.longitude).map(|(latitude,longitude)|view!{<DetailMap latitude longitude/>})}
                     {(!photos.is_empty()).then(||view!{<section class="report-detail-photos" aria-label="Fotografie závady">{photos.into_iter().enumerate().map(|(index,url)|view!{<a href=url.clone() target="_blank" rel="noopener" class="report-detail-photo"><img src=url.clone() alt=format!("Fotografie nahlášené závady č. {}",index+1) loading="lazy"/></a>}).collect_view()}</section>})}

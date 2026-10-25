@@ -9,11 +9,22 @@ const report = {
   latitude: 50.532,
   longitude: 15.161,
   reporter_name: null,
+  reporter_email: "kontakt@example.test",
+  reporter_phone: "+420 777 123 456",
   created_at: '2026-10-25T10:20:00+01:00',
   status: 'reported',
   has_photo: true,
   photo_count: 3,
   request_ip: '192.0.2.15',
+  request_user_agent: 'Mozilla/5.0 Test Browser/130.0',
+  request_accept_language: 'cs-CZ,cs;q=0.9',
+  client_timezone: 'Europe/Prague',
+  browser_id_hash: 'a'.repeat(64),
+  browser_fingerprint_hash: 'b'.repeat(64),
+  authenticated_admin_id: 7,
+  authenticated_admin_email: 'urednik@example.test',
+  metadata_recorded_at: Date.parse('2026-10-25T10:20:00+01:00') / 1000,
+  metadata_expires_at: Date.parse('2027-01-23T10:20:00+01:00') / 1000,
   hidden: false,
 }
 
@@ -103,6 +114,17 @@ test('administrators see private report details and can update status and visibi
   const detail = page.getByRole('region', { name: 'Detail hlášení', exact: true })
   await expect(detail).toContainText('Anonymní hlášení')
   await expect(detail).toContainText('192.0.2.15')
+  const sender = detail.getByRole('region', { name: 'Údaje odesílatele', exact: true })
+  await expect(sender).toContainText('Viditelné pouze v administraci')
+  await expect(sender).toContainText('samy o sobě neprokazují totožnost člověka')
+  await expect(sender).toContainText(report.browser_id_hash)
+  await expect(sender).toContainText(report.browser_fingerprint_hash)
+  await expect(sender).toContainText(report.request_user_agent)
+  await expect(sender).toContainText(report.request_accept_language)
+  await expect(sender).toContainText(report.client_timezone)
+  await expect(sender).toContainText('urednik@example.test (ID 7)')
+  await expect(sender).toContainText(report.reporter_email)
+  await expect(sender).toContainText(report.reporter_phone)
   await expect(detail).toContainText('25. 10. 2026 v 10:20')
   await expect(detail.getByRole('img')).toHaveCount(3)
   for (const position of [1, 2, 3]) {
@@ -154,15 +176,34 @@ test('an administrator saves a repair comment and photograph, resolves the repor
   page.on('pageerror', error => errors.push(error.message))
   await page.route('https://tile.openstreetmap.org/**', route => route.fulfill({ contentType: 'image/png', body: photograph }))
   const description = `Opravená lavička ${Date.now()}`
-  const created = await page.request.post('/api/v1/reports', {
-    headers: { Origin: 'http://127.0.0.1:3107' },
-    multipart: { description, address: 'Vyskeř 50', photo: { name: 'puvodni.png', mimeType: 'image/png', buffer: photograph } },
-  })
-  expect(created.status()).toBe(201)
-  const { id } = await created.json()
+  await page.route('**/api/v1/report-addresses?*', route => route.fulfill({ json: [] }))
+  await page.goto('/hlaseni-zavad/nove')
+  await page.getByLabel('Popis problému', { exact: false }).fill(description)
+  await page.getByLabel('Adresa nebo upřesnění místa', { exact: false }).fill('Vyskeř 50')
+  await page.getByLabel('Kdo nahlásil (nepovinné)', { exact: true }).fill('Soukromé jméno odesílatele')
+  await page.getByLabel('Kontaktní e-mail (nepovinné)', { exact: true }).fill('Soukromy.Kontakt@example.test')
+  await page.getByLabel('Telefon (nepovinné)', { exact: true }).fill('+420 777 123 456')
+  await page.getByLabel('Fotografie (nepovinné)', { exact: true }).setInputFiles({ name: 'puvodni.png', mimeType: 'image/png', buffer: photograph })
+  const submitted = page.waitForResponse(response => new URL(response.url()).pathname === '/api/v1/reports' && response.request().method() === 'POST')
+  await page.getByRole('button', { name: 'Odeslat hlášení', exact: true }).click()
+  expect((await submitted).status()).toBe(201)
+  await expect(page).toHaveURL(/\/hlaseni-zavad\/\d+\?odeslano=1$/)
+  const id = Number(new URL(page.url()).pathname.split('/').pop())
+  const privateValues = ['Soukromé jméno odesílatele', 'soukromy.kontakt@example.test', '+420 777 123 456']
+  for (const value of privateValues) await expect(page.getByRole('main')).not.toContainText(value)
   await openReports(page)
   await page.getByRole('button', { name: `Detail #${id}`, exact: true }).click()
   const detail = page.getByRole('region', { name: 'Detail hlášení', exact: true })
+  const sender = detail.getByRole('region', { name: 'Údaje odesílatele', exact: true })
+  await expect(sender).toContainText('Soukromé jméno odesílatele')
+  await expect(sender).toContainText('soukromy.kontakt@example.test')
+  await expect(sender).toContainText('+420 777 123 456')
+  const publicResponse = await page.request.get(`/api/v1/reports/${id}`)
+  const publicRecord = await publicResponse.json()
+  for (const field of ['reporter_name', 'reporter_email', 'reporter_phone']) expect(publicRecord).not.toHaveProperty(field)
+  const publicHtml = await page.request.get(`/hlaseni-zavad/${id}`)
+  const html = await publicHtml.text()
+  for (const value of privateValues) expect(html).not.toContain(value)
   const resolution = page.getByRole('region', { name: 'Řešení hlášení', exact: true })
   const comment = 'Uvolněná prkna jsme vyměnili a lavičku znovu natřeli.'
   await resolution.getByLabel('Komentář k řešení (nepovinné)', { exact: true }).fill(comment)

@@ -40,7 +40,10 @@ async fn submit_photos(
     origin: Option<&str>,
     ip: &str,
 ) -> Response {
-    let bytes = multipart_body(fields, photos);
+    let (token, cookie) = issue_token(app, None, ip).await;
+    let mut fields_with_token = vec![("submission_token", token.as_str())];
+    fields_with_token.extend_from_slice(fields);
+    let bytes = multipart_body(&fields_with_token, photos);
     let mut request = Request::builder()
         .method("POST")
         .uri("/api/v1/reports")
@@ -48,12 +51,90 @@ async fn submit_photos(
             "content-type",
             "multipart/form-data; boundary=report-boundary",
         )
+        .header("cookie", cookie)
         .header("x-real-ip", "198.51.100.200")
         .header("x-forwarded-for", "198.51.100.201");
     if let Some(origin) = origin {
         request = request.header("origin", origin)
     }
     let mut request = request.body(Body::from(bytes)).unwrap();
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::new(ip.parse().unwrap(), 12345)));
+    app.router.clone().oneshot(request).await.unwrap()
+}
+
+async fn issue_token(app: &App, cookie: Option<&str>, ip: &str) -> (String, String) {
+    let mut request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/report-submission-token")
+        .header("origin", ORIGIN);
+    if let Some(cookie) = cookie {
+        request = request.header("cookie", cookie);
+    }
+    let mut request = request.body(Body::empty()).unwrap();
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::new(ip.parse().unwrap(), 12345)));
+    let response = app.router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let cookie = response
+        .headers()
+        .get("set-cookie")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.split(';').next().unwrap().to_owned())
+        .unwrap_or_else(|| cookie.unwrap_or_default().to_owned());
+    let result = body_json(response).await;
+    (result["token"].as_str().unwrap().to_owned(), cookie)
+}
+
+async fn submit_proof(
+    app: &App,
+    token: &str,
+    cookie: Option<&str>,
+    fields: &[(&str, &str)],
+    ip: &str,
+    authenticated: bool,
+) -> Response {
+    submit_proof_photos(app, token, cookie, fields, &[], ip, authenticated).await
+}
+
+async fn submit_proof_photos(
+    app: &App,
+    token: &str,
+    cookie: Option<&str>,
+    fields: &[(&str, &str)],
+    photos: &[&[u8]],
+    ip: &str,
+    authenticated: bool,
+) -> Response {
+    let mut all_fields = vec![("submission_token", token)];
+    all_fields.extend_from_slice(fields);
+    let mut request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/reports")
+        .header("origin", ORIGIN)
+        .header("x-report-token", token)
+        .header(
+            "user-agent",
+            "Mozilla/5.0 (Windows NT 10.0) Chrome/141.0.0.0",
+        )
+        .header("accept-language", "cs-CZ,cs;q=0.9")
+        .header(
+            "content-type",
+            "multipart/form-data; boundary=report-boundary",
+        );
+    let mut cookies = cookie.unwrap_or_default().to_owned();
+    if authenticated {
+        cookies.push_str(&format!("; {}", app.cookie));
+    }
+    if !cookies.is_empty() {
+        request = request.header("cookie", cookies);
+    }
+    let mut request = request
+        .body(Body::from(multipart_body(&all_fields, photos)))
+        .unwrap();
     request
         .extensions_mut()
         .insert(ConnectInfo(SocketAddr::new(ip.parse().unwrap(), 12345)));
@@ -892,7 +973,7 @@ async fn anonymous_reports_are_public_but_ip_and_hidden_reports_are_private() {
     assert_eq!(response.status(), StatusCode::CREATED);
     let report = body_json(response).await;
     let id = report["id"].as_i64().unwrap();
-    assert!(report["reporter_name"].is_null());
+    assert!(report.get("reporter_name").is_none());
     assert!(report.get("request_ip").is_none());
     assert!(report.get("hidden").is_none());
     assert_eq!(report["status"], "reported");
@@ -1195,7 +1276,14 @@ async fn validates_locations_text_origins_files_and_admin_permissions() {
         assert_eq!(response.status(), StatusCode::CREATED);
         let report = body_json(response).await;
         assert_eq!(report["latitude"], 50.532);
-        assert_eq!(report["reporter_name"], "Jana");
+        assert!(report.get("reporter_name").is_none());
+        let name: Option<String> =
+            sqlx::query_scalar("SELECT reporter_name FROM issue_reports WHERE id=$1")
+                .bind(report["id"].as_i64().unwrap())
+                .fetch_one(&app.state.pool)
+                .await
+                .unwrap();
+        assert_eq!(name.as_deref(), Some("Jana"));
         assert!(report["address"].is_null());
     }
     assert_eq!(
@@ -1252,7 +1340,7 @@ async fn validates_locations_text_origins_files_and_admin_permissions() {
 }
 
 #[tokio::test]
-async fn submission_rate_limit_uses_request_peer_and_recipient_snapshots_are_atomic() {
+async fn submission_uses_trusted_request_peer_and_recipient_snapshots_are_atomic() {
     let mut app = App::new().await;
     let settings = app.call("PUT", "/api/v1/admin/report-settings", Some(json!({"recipients":[" Second@Example.test ","first@example.test","FIRST@example.test"]})), true).await;
     assert_eq!(settings.status(), StatusCode::OK);
@@ -1268,12 +1356,6 @@ async fn submission_rate_limit_uses_request_peer_and_recipient_snapshots_are_ato
             StatusCode::CREATED
         );
     }
-    assert_eq!(
-        submit(&app, VALID, None, Some(ORIGIN), "192.0.2.1")
-            .await
-            .status(),
-        StatusCode::TOO_MANY_REQUESTS
-    );
     assert_eq!(
         submit(&app, VALID, None, Some(ORIGIN), "192.0.2.2")
             .await
@@ -1299,7 +1381,7 @@ async fn submission_rate_limit_uses_request_peer_and_recipient_snapshots_are_ato
             .await
             .unwrap();
     assert_eq!(pending.len(), 12);
-    assert!(pending[0].1.contains("Anonymně"));
+    assert!(!pending[0].1.contains("Kdo nahlásil"));
     assert!(pending[0].1.contains("Rozbitá lavička"));
     assert!(pending[0].1.contains("Vyskeř 1"));
     assert!(
@@ -1460,4 +1542,856 @@ async fn notification_retries_and_reclaims_expired_leases_without_newsletter_con
     }
     let sent: i64 = sqlx::query_scalar("SELECT count(*) FROM report_mail_queue WHERE sent_at IS NOT NULL AND body IS NULL AND lock_token IS NULL AND locked_until=0").fetch_one(&app.state.pool).await.unwrap();
     assert_eq!(sent, 2);
+}
+
+#[tokio::test]
+async fn report_proofs_are_bound_expiring_atomic_and_idempotent_across_restart() {
+    let mut app = App::new().await;
+    let (token, cookie) = issue_token(&app, None, "192.0.2.1").await;
+    let (_, other_cookie) = issue_token(&app, None, "192.0.2.1").await;
+    let response = submit_proof(&app, &token, Some(&other_cookie), VALID, "192.0.2.1", false).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(body_json(response).await["code"], "report_token_invalid");
+    let changed_last = if cookie.ends_with('0') { '1' } else { '0' };
+    let forged = format!("{}{changed_last}", &cookie[..cookie.len() - 1]);
+    let response = submit_proof(&app, &token, Some(&forged), VALID, "192.0.2.1", false).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    // A changed network does not invalidate a browser's pending form.
+    let (first, second) = tokio::join!(
+        submit_proof(&app, &token, Some(&cookie), VALID, "192.0.2.2", false),
+        submit_proof(&app, &token, Some(&cookie), VALID, "192.0.2.2", false),
+    );
+    let statuses = [first.status(), second.status()];
+    assert!(statuses.contains(&StatusCode::CREATED));
+    assert!(statuses.contains(&StatusCode::OK));
+    let first = body_json(first).await;
+    assert_eq!(first, body_json(second).await);
+    app.state = backend::Backend::new(app.state.pool.clone(), (*app.state.config).clone());
+    app.router = backend::router(app.state.clone());
+    let retry = submit_proof(&app, &token, Some(&cookie), VALID, "192.0.2.3", false).await;
+    assert_eq!(retry.status(), StatusCode::OK);
+    assert_eq!(body_json(retry).await, first);
+    let recovered =
+        submit_proof(&app, &token, Some(&other_cookie), VALID, "192.0.2.4", false).await;
+    assert_eq!(recovered.status(), StatusCode::OK);
+    assert_eq!(body_json(recovered).await, first);
+    let changed = submit_proof(
+        &app,
+        &token,
+        Some(&cookie),
+        &[("description", "Jiné hlášení"), ("address", "Vyskeř 2")],
+        "192.0.2.1",
+        false,
+    )
+    .await;
+    assert_eq!(changed.status(), StatusCode::CONFLICT);
+    assert!(body_json(changed).await.get("code").is_none());
+    let (fresh, _) = issue_token(&app, Some(&cookie), "192.0.2.1").await;
+    assert_eq!(
+        submit_proof(&app, &fresh, Some(&cookie), VALID, "192.0.2.1", false)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let (expired, _) = issue_token(&app, Some(&cookie), "192.0.2.1").await;
+    sqlx::query("UPDATE report_submission_tokens SET expires_at=0 WHERE token_hash=$1")
+        .bind(backend::auth::hash(&expired))
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    let response = submit_proof(&app, &expired, Some(&cookie), VALID, "192.0.2.1", false).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(body_json(response).await["code"], "report_token_invalid");
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM issue_reports")
+        .fetch_one(&app.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[tokio::test]
+async fn sender_context_is_private_and_browser_fields_do_not_claim_identity() {
+    let app = App::new().await;
+    app.call(
+        "PUT",
+        "/api/v1/admin/report-settings",
+        Some(json!({"recipients":["test@example.test"]})),
+        true,
+    )
+    .await;
+    let (token, cookie) = issue_token(&app, None, "192.0.2.1").await;
+    let response = submit_proof(
+        &app,
+        &token,
+        Some(&cookie),
+        &[
+            ("description", "Rozbitá lampa"),
+            ("address", "Vyskeř 50"),
+            ("reporter_name", "Soukromé jméno"),
+            ("reporter_email", "Kontakt@Example.test"),
+            ("reporter_phone", "+420 123  456 789"),
+            ("client_timezone", "Europe/Prague"),
+        ],
+        "192.0.2.1",
+        true,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let public = body_json(response).await;
+    let id = public["id"].as_i64().unwrap();
+    let private_fields = [
+        "reporter_name",
+        "reporter_email",
+        "reporter_phone",
+        "request_ip",
+        "request_user_agent",
+        "request_accept_language",
+        "client_timezone",
+        "browser_id_hash",
+        "browser_fingerprint_hash",
+        "authenticated_admin_id",
+        "authenticated_admin_email",
+        "metadata_recorded_at",
+    ];
+    for field in private_fields {
+        assert!(public.get(field).is_none(), "{field}");
+    }
+    for url in [
+        format!("/api/v1/reports/{id}"),
+        "/api/v1/reports".to_owned(),
+        "/api/v1/reports/map".to_owned(),
+    ] {
+        let response = body_json(app.call("GET", &url, None, false).await)
+            .await
+            .to_string();
+        for value in [
+            "Soukromé jméno",
+            "kontakt@example.test",
+            "+420 123 456 789",
+            "192.0.2.1",
+            "Chrome/141",
+            "Europe/Prague",
+            "admin@vysker.test",
+        ] {
+            assert!(!response.contains(value), "{url} leaked {value}");
+        }
+    }
+    let report =
+        body_json(app.call("GET", "/api/v1/admin/reports", None, true).await).await[0].clone();
+    assert_eq!(report["reporter_name"], "Soukromé jméno");
+    assert_eq!(report["reporter_email"], "kontakt@example.test");
+    assert_eq!(report["reporter_phone"], "+420 123 456 789");
+    assert_eq!(report["authenticated_admin_id"], app.admin_id);
+    assert_eq!(report["authenticated_admin_email"], "admin@vysker.test");
+    assert_eq!(report["client_timezone"], "Europe/Prague");
+    assert_eq!(report["request_ip"], "192.0.2.1");
+    assert_eq!(report["browser_id_hash"].as_str().unwrap().len(), 64);
+    assert_eq!(
+        report["browser_fingerprint_hash"].as_str().unwrap().len(),
+        64
+    );
+    let mail: String = sqlx::query_scalar("SELECT body FROM report_mail_queue WHERE report_id=$1")
+        .bind(id)
+        .fetch_one(&app.state.pool)
+        .await
+        .unwrap();
+    for private in [
+        "Soukromé jméno",
+        "kontakt@example.test",
+        "+420 123 456 789",
+        "192.0.2.1",
+        "Chrome/141",
+        "Europe/Prague",
+        "admin@vysker.test",
+    ] {
+        assert!(!mail.contains(private));
+    }
+    let (token, cookie) = issue_token(&app, None, "192.0.2.1").await;
+    let invalid_session = format!("{cookie}; obec_session={}", "f".repeat(64));
+    let response = submit_proof(
+        &app,
+        &token,
+        Some(&invalid_session),
+        VALID,
+        "192.0.2.1",
+        false,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let report =
+        body_json(app.call("GET", "/api/v1/admin/reports", None, true).await).await[0].clone();
+    assert!(report["authenticated_admin_id"].is_null());
+    assert!(report["reporter_name"].is_null());
+}
+
+#[tokio::test]
+async fn report_quotas_target_browser_and_allow_neighbours_on_shared_ip() {
+    let mut app = App::new().await;
+    let (mut token, cookie) = issue_token(&app, None, "192.0.2.1").await;
+    for index in 0..10 {
+        if index > 0 {
+            token = issue_token(&app, Some(&cookie), "192.0.2.1").await.0;
+        }
+        let description = format!("Různá závada {index}");
+        let response = submit_proof(
+            &app,
+            &token,
+            Some(&cookie),
+            &[("description", &description), ("address", "Vyskeř")],
+            "192.0.2.1",
+            false,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+    }
+    let (token, _) = issue_token(&app, Some(&cookie), "192.0.2.1").await;
+    app.state = backend::Backend::new(app.state.pool.clone(), (*app.state.config).clone());
+    app.router = backend::router(app.state.clone());
+    assert_eq!(
+        submit_proof(&app, &token, Some(&cookie), VALID, "192.0.2.1", false)
+            .await
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    let (other_token, other_cookie) = issue_token(&app, None, "192.0.2.1").await;
+    // Identical headers and coarse fingerprint never block a different browser.
+    assert_eq!(
+        submit_proof(
+            &app,
+            &other_token,
+            Some(&other_cookie),
+            VALID,
+            "192.0.2.1",
+            false
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    let (token, other_cookie) = issue_token(&app, None, "192.0.2.1").await;
+    let response = submit_proof(
+        &app,
+        &token,
+        Some(&other_cookie),
+        &[
+            ("description", "Závada"),
+            ("address", "Vyskeř"),
+            ("website", "https://spam.example"),
+        ],
+        "192.0.2.1",
+        false,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    // Validation does not consume the one-time proof.
+    assert_eq!(
+        submit_proof(&app, &token, Some(&other_cookie), VALID, "192.0.2.1", false)
+            .await
+            .status(),
+        StatusCode::CREATED
+    );
+}
+
+#[tokio::test]
+async fn cookieless_submission_uses_same_origin_header_and_short_lived_network_bound_proof() {
+    let app = App::new().await;
+    let (token, _) = issue_token(&app, None, "192.0.2.1").await;
+    let mut no_header = Request::builder()
+        .method("POST")
+        .uri("/api/v1/reports")
+        .header("origin", ORIGIN)
+        .header(
+            "content-type",
+            "multipart/form-data; boundary=report-boundary",
+        )
+        .body(Body::from(multipart_body(
+            &[
+                ("submission_token", &token),
+                ("description", "Lavička"),
+                ("address", "Vyskeř"),
+            ],
+            &[],
+        )))
+        .unwrap();
+    no_header.extensions_mut().insert(ConnectInfo(
+        "192.0.2.1:12345".parse::<SocketAddr>().unwrap(),
+    ));
+    assert_eq!(
+        app.router
+            .clone()
+            .oneshot(no_header)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        submit_proof(&app, &token, None, VALID, "192.0.2.2", false)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    let response = submit_proof(&app, &token, None, VALID, "192.0.2.1", false).await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let created = body_json(response).await;
+    let retry = submit_proof(&app, &token, None, VALID, "192.0.2.2", false).await;
+    assert_eq!(retry.status(), StatusCode::OK);
+    assert_eq!(body_json(retry).await, created);
+    let report =
+        body_json(app.call("GET", "/api/v1/admin/reports", None, true).await).await[0].clone();
+    assert!(report["browser_id_hash"].is_null());
+    assert!(report["browser_fingerprint_hash"].is_string());
+}
+
+#[tokio::test]
+async fn report_abuse_cleanup_expires_metadata_without_changing_report_or_name() {
+    let app = App::new().await;
+    let (token, cookie) = issue_token(&app, None, "192.0.2.1").await;
+    let response = submit_proof(
+        &app,
+        &token,
+        Some(&cookie),
+        &[
+            ("description", "Závada"),
+            ("address", "Vyskeř"),
+            ("reporter_name", "Nepovinné jméno"),
+            ("reporter_email", "kontakt@example.test"),
+            ("reporter_phone", "123 456 789"),
+        ],
+        "192.0.2.1",
+        true,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let report = body_json(response).await;
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+    let expires: i64 =
+        sqlx::query_scalar("SELECT metadata_expires_at FROM issue_reports WHERE id=$1")
+            .bind(report["id"].as_i64().unwrap())
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap();
+    assert!(expires >= now + 29 * 86400 && expires <= now + 30 * 86400);
+    backend::report_abuse::maintenance(&app.state.pool, now + 31 * 86400)
+        .await
+        .unwrap();
+    let private =
+        body_json(app.call("GET", "/api/v1/admin/reports", None, true).await).await[0].clone();
+    assert_eq!(private["request_ip"], "");
+    assert_eq!(private["reporter_name"], "Nepovinné jméno");
+    assert_eq!(private["reporter_email"], "kontakt@example.test");
+    assert_eq!(private["reporter_phone"], "123 456 789");
+    for field in [
+        "request_user_agent",
+        "request_accept_language",
+        "client_timezone",
+        "browser_id_hash",
+        "browser_fingerprint_hash",
+        "authenticated_admin_id",
+        "authenticated_admin_email",
+    ] {
+        assert!(private[field].is_null(), "{field}");
+    }
+    assert_eq!(
+        body_json(
+            app.call(
+                "GET",
+                &format!("/api/v1/reports/{}", report["id"]),
+                None,
+                false
+            )
+            .await
+        )
+        .await,
+        report
+    );
+    for query in [
+        "SELECT count(*) FROM report_submission_tokens",
+        "SELECT count(*) FROM report_submission_duplicates",
+        "SELECT count(*) FROM report_abuse_rates",
+        "SELECT count(*) FROM report_abuse_events",
+    ] {
+        let count: i64 = sqlx::query_scalar(query)
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "{query}");
+    }
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM report_abuse_settings")
+        .fetch_one(&app.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1, "site key must survive maintenance");
+}
+
+#[tokio::test]
+async fn token_issuance_is_same_origin_rate_limited_and_expired_rows_are_collected() {
+    let app = App::new().await;
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/report-submission-token")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.router.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
+    let (token, cookie) = issue_token(&app, None, "192.0.2.1").await;
+    sqlx::query("UPDATE report_submission_tokens SET retain_until=0 WHERE token_hash=$1")
+        .bind(backend::auth::hash(&token))
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    issue_token(&app, Some(&cookie), "192.0.2.1").await;
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM report_submission_tokens")
+        .fetch_one(&app.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+    sqlx::query("UPDATE report_abuse_rates SET hits=120 WHERE scope='token-ip'")
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    let mut request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/report-submission-token")
+        .header("origin", ORIGIN)
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(
+        "192.0.2.1:12345".parse::<SocketAddr>().unwrap(),
+    ));
+    assert_eq!(
+        app.router.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM report_submission_tokens")
+        .fetch_one(&app.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1, "limited request must not create a challenge row");
+}
+
+#[tokio::test]
+async fn parallel_identical_forms_save_one_gallery_and_notification_and_failed_insert_keeps_proof()
+{
+    let app = App::new().await;
+    app.call(
+        "PUT",
+        "/api/v1/admin/report-settings",
+        Some(json!({"recipients":["test@example.test"]})),
+        true,
+    )
+    .await;
+    let (first_token, cookie) = issue_token(&app, None, "192.0.2.1").await;
+    let (second_token, _) = issue_token(&app, Some(&cookie), "192.0.2.1").await;
+    let photo = picture(ImageFormat::Jpeg, 4);
+    let photos = [photo.as_slice()];
+    let (first, second) = tokio::join!(
+        submit_proof_photos(
+            &app,
+            &first_token,
+            Some(&cookie),
+            VALID,
+            &photos,
+            "192.0.2.1",
+            false
+        ),
+        submit_proof_photos(
+            &app,
+            &second_token,
+            Some(&cookie),
+            VALID,
+            &photos,
+            "192.0.2.1",
+            false
+        ),
+    );
+    let statuses = [first.status(), second.status()];
+    assert!(statuses.contains(&StatusCode::CREATED));
+    assert!(statuses.contains(&StatusCode::OK));
+    assert_eq!(body_json(first).await, body_json(second).await);
+    for query in [
+        "SELECT count(*) FROM issue_reports",
+        "SELECT count(*) FROM issue_report_photos",
+        "SELECT count(*) FROM report_mail_queue",
+        "SELECT count(*) FROM report_abuse_events",
+    ] {
+        let count: i64 = sqlx::query_scalar(query)
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1, "{query}");
+    }
+    let (token, _) = issue_token(&app, Some(&cookie), "192.0.2.1").await;
+    sqlx::query(
+        "ALTER TABLE report_mail_queue ADD CONSTRAINT test_reject_report_mail CHECK (report_id=1)",
+    )
+    .execute(&app.state.pool)
+    .await
+    .unwrap();
+    let fields = [("description", "Jiná závada"), ("address", "Vyskeř")];
+    assert_eq!(
+        submit_proof_photos(
+            &app,
+            &token,
+            Some(&cookie),
+            &fields,
+            &photos,
+            "192.0.2.1",
+            false
+        )
+        .await
+        .status(),
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+    let (claimed, payload): (Option<i64>, Option<String>) = sqlx::query_as(
+        "SELECT report_id,payload_hash FROM report_submission_tokens WHERE token_hash=$1",
+    )
+    .bind(backend::auth::hash(&token))
+    .fetch_one(&app.state.pool)
+    .await
+    .unwrap();
+    assert!(claimed.is_none() && payload.is_none());
+    sqlx::query("ALTER TABLE report_mail_queue DROP CONSTRAINT test_reject_report_mail")
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        submit_proof_photos(
+            &app,
+            &token,
+            Some(&cookie),
+            &fields,
+            &photos,
+            "192.0.2.1",
+            false
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    for query in [
+        "SELECT count(*) FROM issue_reports",
+        "SELECT count(*) FROM issue_report_photos",
+        "SELECT count(*) FROM report_mail_queue",
+        "SELECT count(*) FROM report_abuse_events",
+    ] {
+        let count: i64 = sqlx::query_scalar(query)
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 2, "{query}");
+    }
+}
+
+async fn seed_quota_events(app: &App, count: i64, browser: &str, ip: &str, created_at: i64) {
+    sqlx::query("WITH added AS (INSERT INTO issue_reports(description,address,request_ip,created_at) SELECT 'Quota fixture','Vyskeř','','2026-10-25T12:00:00Z' FROM generate_series(1,$1::bigint) RETURNING id) INSERT INTO report_abuse_events(report_id,browser_hash,ip_hash,created_at) SELECT id,$2,$3,$4 FROM added")
+        .bind(count).bind(browser).bind(ip).bind(created_at).execute(&app.state.pool).await.unwrap();
+}
+
+#[tokio::test]
+async fn rolling_day_and_shared_ip_quotas_are_enforced_independently() {
+    let app = App::new().await;
+    let (token, cookie) = issue_token(&app, None, "192.0.2.1").await;
+    assert_eq!(
+        submit_proof(&app, &token, Some(&cookie), VALID, "192.0.2.1", false)
+            .await
+            .status(),
+        StatusCode::CREATED
+    );
+    let (browser, ip): (String, String) =
+        sqlx::query_as("SELECT browser_hash,ip_hash FROM report_abuse_events LIMIT 1")
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap();
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+    seed_quota_events(&app, 49, &browser, "other-network", now - 3600).await;
+    let fields = [("description", "Nová závada"), ("address", "Vyskeř")];
+    let (token, _) = issue_token(&app, Some(&cookie), "192.0.2.1").await;
+    assert_eq!(
+        submit_proof(&app, &token, Some(&cookie), &fields, "192.0.2.1", false)
+            .await
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    sqlx::query("UPDATE report_abuse_events SET created_at=$1")
+        .bind(now - 86401)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        submit_proof(&app, &token, Some(&cookie), &fields, "192.0.2.1", false)
+            .await
+            .status(),
+        StatusCode::CREATED
+    );
+    sqlx::query("DELETE FROM report_abuse_events")
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    seed_quota_events(&app, 100, "other-browser", &ip, now).await;
+    let (token, other_cookie) = issue_token(&app, None, "192.0.2.1").await;
+    assert_eq!(
+        submit_proof(&app, &token, Some(&other_cookie), VALID, "192.0.2.1", false)
+            .await
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    sqlx::query("UPDATE report_abuse_events SET created_at=$1")
+        .bind(now - 601)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        submit_proof(&app, &token, Some(&other_cookie), VALID, "192.0.2.1", false)
+            .await
+            .status(),
+        StatusCode::CREATED
+    );
+    seed_quota_events(&app, 399, "yet-another-browser", &ip, now - 3600).await;
+    let (token, third_cookie) = issue_token(&app, None, "192.0.2.1").await;
+    assert_eq!(
+        submit_proof(&app, &token, Some(&third_cookie), VALID, "192.0.2.1", false)
+            .await
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // The rolling day window expires without a restart or resetting the whole application.
+    sqlx::query("UPDATE report_abuse_events SET created_at=$1")
+        .bind(now - 86401)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        submit_proof(&app, &token, Some(&third_cookie), VALID, "192.0.2.1", false)
+            .await
+            .status(),
+        StatusCode::CREATED
+    );
+}
+
+#[tokio::test]
+async fn abuse_migration_preserves_legacy_reports_with_thirty_day_grace_and_cleans_pending_mail() {
+    let pool = common::test_pool().await;
+    let mut tx = pool.begin().await.unwrap();
+    let before = OffsetDateTime::now_utc().unix_timestamp();
+    let schema = format!("report_abuse_upgrade_{}", &backend::auth::token()[..32]);
+    sqlx::QueryBuilder::<sqlx::Postgres>::new("CREATE SCHEMA ")
+        .push(&schema)
+        .build()
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("SELECT set_config('search_path', $1, true)")
+        .bind(&schema)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::raw_sql("CREATE TABLE navigation_items(label TEXT,path TEXT,sort_order BIGINT,visible BOOLEAN); CREATE TABLE administrators(id BIGINT PRIMARY KEY)")
+        .execute(&mut *tx).await.unwrap();
+    sqlx::raw_sql(include_str!("../migrations/0015_issue_reports.sql"))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::raw_sql(include_str!("../migrations/0016_issue_report_photos.sql"))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../migrations/0017_issue_report_resolutions.sql"
+    ))
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    let description =
+        "Poškozená tabulka s nápisem:\nKdo nahlásil: tento text patří do popisu.\nOpravit prosím.";
+    sqlx::query("INSERT INTO issue_reports(description,address,reporter_name,request_ip,created_at,resolution_comment) VALUES($1,'Vyskeř 50','Soukromé jméno','192.0.2.1','2026-10-25T12:00:00Z','Čeká na opravu')")
+        .bind(description).execute(&mut *tx).await.unwrap();
+    let old_body = format!(
+        "Nové hlášení závady č. 1\nNahlášeno: 25. 10. 2026\nKdo nahlásil: Soukromé jméno\n\n{description}\n\nDetail hlášení: https://example.test/hlaseni-zavad/1\n"
+    );
+    sqlx::query("INSERT INTO report_mail_queue(report_id,recipient,subject,body,next_attempt_at,created_at) VALUES(1,'test@example.test','Nové hlášení',$1,0,0)")
+        .bind(&old_body).execute(&mut *tx).await.unwrap();
+    sqlx::raw_sql(include_str!("../migrations/0018_report_abuse.sql"))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let (stored_description,name,ip,recorded,expires,resolution): (String,Option<String>,String,Option<i64>,i64,Option<String>) = sqlx::query_as("SELECT description,reporter_name,request_ip,metadata_recorded_at,metadata_expires_at,resolution_comment FROM issue_reports WHERE id=1")
+        .fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(stored_description, description);
+    assert_eq!(name.as_deref(), Some("Soukromé jméno"));
+    assert_eq!(ip, "192.0.2.1");
+    assert!(
+        recorded.is_none(),
+        "an upgrade must not invent a metadata capture date"
+    );
+    assert!(
+        expires >= before + 30 * 86400 - 5
+            && expires <= OffsetDateTime::now_utc().unix_timestamp() + 30 * 86400 + 1
+    );
+    assert_eq!(resolution.as_deref(), Some("Čeká na opravu"));
+    let cleaned: String =
+        sqlx::query_scalar("SELECT body FROM report_mail_queue WHERE report_id=1")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(
+        cleaned,
+        format!(
+            "Nové hlášení závady č. 1\nNahlášeno: 25. 10. 2026\n\n{description}\n\nDetail hlášení: https://example.test/hlaseni-zavad/1\n"
+        )
+    );
+    assert!(!cleaned.contains("Soukromé jméno"));
+    assert!(cleaned.contains("Kdo nahlásil: tento text patří do popisu."));
+    let contacts: (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT reporter_email,reporter_phone FROM issue_reports WHERE id=1")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(contacts, (None, None));
+    tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn reporter_contacts_are_optional_validated_and_part_of_the_idempotent_payload() {
+    let app = App::new().await;
+    let (token, cookie) = issue_token(&app, None, "192.0.2.1").await;
+    for (field, value) in [
+        ("reporter_email", "neni-adresa".to_owned()),
+        (
+            "reporter_email",
+            "kontakt@example.test\nCc: jiny@example.test".to_owned(),
+        ),
+        (
+            "reporter_email",
+            format!("{}@example.test", "x".repeat(255)),
+        ),
+        ("reporter_phone", "volejte starostovi".to_owned()),
+        ("reporter_phone", "12".to_owned()),
+        ("reporter_phone", "123456789012345678901".to_owned()),
+        ("reporter_phone", "123\n456".to_owned()),
+    ] {
+        let fields = [
+            ("description", "Rozbitá lavička"),
+            ("address", "Vyskeř"),
+            (field, value.as_str()),
+        ];
+        assert_eq!(
+            submit_proof(&app, &token, Some(&cookie), &fields, "192.0.2.1", false)
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "{field}: {value:?}"
+        );
+    }
+    let first_fields = [
+        ("description", "Rozbitá lavička"),
+        ("address", "Vyskeř"),
+        ("reporter_email", " Kontakt@Example.test "),
+        ("reporter_phone", "(+420) 123 456 789"),
+    ];
+    assert_eq!(
+        submit_proof(
+            &app,
+            &token,
+            Some(&cookie),
+            &first_fields,
+            "192.0.2.1",
+            false
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    let changed_fields = [
+        ("description", "Rozbitá lavička"),
+        ("address", "Vyskeř"),
+        ("reporter_email", "jiny@example.test"),
+        ("reporter_phone", "(+420) 123 456 789"),
+    ];
+    assert_eq!(
+        submit_proof(
+            &app,
+            &token,
+            Some(&cookie),
+            &changed_fields,
+            "192.0.2.1",
+            false
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    let (second_token, _) = issue_token(&app, Some(&cookie), "192.0.2.1").await;
+    assert_eq!(
+        submit_proof(
+            &app,
+            &second_token,
+            Some(&cookie),
+            &changed_fields,
+            "192.0.2.1",
+            false
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    let phone_changed = [
+        ("description", "Rozbitá lavička"),
+        ("address", "Vyskeř"),
+        ("reporter_email", "jiny@example.test"),
+        ("reporter_phone", "123 456 780"),
+    ];
+    assert_eq!(
+        submit_proof(
+            &app,
+            &second_token,
+            Some(&cookie),
+            &phone_changed,
+            "192.0.2.1",
+            false
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    let (empty_token, _) = issue_token(&app, Some(&cookie), "192.0.2.1").await;
+    let response = submit_proof(
+        &app,
+        &empty_token,
+        Some(&cookie),
+        &[
+            ("description", "Rozbitá lavička"),
+            ("address", "Vyskeř"),
+            ("reporter_email", "  "),
+            ("reporter_phone", ""),
+        ],
+        "192.0.2.1",
+        false,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let id = body_json(response).await["id"].as_i64().unwrap();
+    let contacts: (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT reporter_email,reporter_phone FROM issue_reports WHERE id=$1")
+            .bind(id)
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap();
+    assert_eq!(contacts, (None, None));
+    let (blank_retry, _) = issue_token(&app, Some(&cookie), "192.0.2.1").await;
+    assert_eq!(
+        submit_proof(
+            &app,
+            &blank_retry,
+            Some(&cookie),
+            &[("description", "Rozbitá lavička"), ("address", "Vyskeř")],
+            "192.0.2.1",
+            false
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
 }

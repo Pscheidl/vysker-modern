@@ -20,7 +20,6 @@ pub struct Report {
     pub address: Option<String>,
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
-    pub reporter_name: Option<String>,
     pub created_at: String,
     pub status: String,
     pub has_photo: bool,
@@ -163,6 +162,18 @@ pub struct AdminReport {
     #[cfg_attr(feature = "ssr", sqlx(flatten))]
     pub report: Report,
     pub request_ip: String,
+    pub reporter_name: Option<String>,
+    pub reporter_email: Option<String>,
+    pub reporter_phone: Option<String>,
+    pub request_user_agent: Option<String>,
+    pub request_accept_language: Option<String>,
+    pub client_timezone: Option<String>,
+    pub browser_id_hash: Option<String>,
+    pub browser_fingerprint_hash: Option<String>,
+    pub authenticated_admin_id: Option<i64>,
+    pub authenticated_admin_email: Option<String>,
+    pub metadata_recorded_at: Option<i64>,
+    pub metadata_expires_at: Option<i64>,
     pub hidden: bool,
 }
 

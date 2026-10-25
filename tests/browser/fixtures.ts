@@ -14,6 +14,8 @@ export const test = base.extend<{ isolatedRateLimits: void }>({
       '    if not name.startswith("vysker_test_"):',
       '        raise RuntimeError("Expected a disposable browser-test database")',
       '    connection.execute("DELETE FROM rate_limits")',
+      '    connection.execute("DELETE FROM report_abuse_rates")',
+      '    connection.execute("DELETE FROM report_abuse_events")',
     ].join('\n'), database])
     await use()
   }, { auto: true }],

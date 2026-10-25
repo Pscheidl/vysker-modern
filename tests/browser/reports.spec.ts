@@ -28,12 +28,12 @@ async function countLocationRequests(page: Page) {
   })
 }
 
-async function submitReport(page: Page) {
+async function submitReport(page: Page, expectedStatus = 201) {
   const submitted = page.waitForResponse(response =>
     new URL(response.url()).pathname === '/api/v1/reports' && response.request().method() === 'POST')
   await page.getByRole('button', { name: 'Odeslat hlášení', exact: true }).click()
   const response = await submitted
-  expect(response.status()).toBe(201)
+  expect(response.status()).toBe(expectedStatus)
   // The completed POST navigates immediately, which can release its DevTools body.
   // Read the persisted public record after navigation instead of racing that body.
   await expect(page).toHaveURL(/\/hlaseni-zavad\/\d+\?odeslano=1$/)
@@ -60,6 +60,155 @@ async function selectSizedPhotos(page: Page, files: { name: string, size: number
     input.dispatchEvent(new Event('change', { bubbles: true }))
   }, { files, png: photograph.toString('base64') })
 }
+
+test('token preparation does not block editing and a temporary failure preserves the complete draft', async ({ page }) => {
+  await prepareMap(page)
+  let tokenRequests = 0
+  let submissions = 0
+  page.on('request', request => {
+    if (new URL(request.url()).pathname === '/api/v1/reports' && request.method() === 'POST') submissions += 1
+  })
+  await page.route('**/api/v1/report-submission-token', async route => {
+    tokenRequests += 1
+    if (tokenRequests <= 2) await route.abort('failed')
+    else await route.continue()
+  })
+  await page.goto('/hlaseni-zavad/nove')
+  await expect.poll(() => tokenRequests).toBe(1)
+  await page.getByLabel('Popis problému', { exact: false }).fill(`Příprava hlášení bez spojení ${Date.now()}`)
+  await page.getByLabel('Adresa nebo upřesnění místa', { exact: false }).fill('Vyskeř 50')
+  await page.getByLabel('Fotografie (nepovinné)', { exact: true }).setInputFiles({ name: 'zachovana.png', mimeType: 'image/png', buffer: photograph })
+  await expect(page.locator('#report-website')).toBeHidden()
+  await expect(page.locator('#report-website')).toHaveAttribute('tabindex', '-1')
+  await expect(page.locator('#report-website')).toHaveAttribute('autocomplete', 'off')
+  await expect(page.getByRole('textbox', { name: 'Webová stránka', exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Odeslat hlášení', exact: true }).click()
+  await expect(page.locator('#report-submit-error')).toContainText('Vyplněné údaje a fotografie zůstávají ve formuláři')
+  await expect(page.getByLabel('Popis problému', { exact: false })).toBeEnabled()
+  await expect(page.locator('[data-report-photo]')).toHaveCount(1)
+  expect(submissions).toBe(0)
+  const report = await submitReport(page)
+  expect(report.photo_count).toBe(1)
+  expect(tokenRequests).toBe(3)
+  expect(submissions).toBe(1)
+})
+
+test('a rejected stale token refreshes once without asking the resident or losing photographs', async ({ page }) => {
+  await prepareMap(page)
+  let tokenRequests = 0
+  const submittedTokens: string[] = []
+  page.on('request', request => {
+    if (new URL(request.url()).pathname === '/api/v1/report-submission-token') tokenRequests += 1
+  })
+  await page.route('**/api/v1/reports', async route => {
+    if (route.request().method() !== 'POST') return route.continue()
+    const body = route.request().postData() || ''
+    submittedTokens.push(body.match(/name="submission_token"\r\n\r\n([^\r\n]+)/)?.[1] || '')
+    expect(body.indexOf('name="submission_token"')).toBeLessThan(body.indexOf('name="photo"'))
+    if (submittedTokens.length === 1) {
+      await route.fulfill({ status: 403, json: { error: 'Ověření vypršelo.', code: 'report_token_invalid' } })
+    } else await route.continue()
+  })
+  await page.goto('/hlaseni-zavad/nove')
+  await page.getByLabel('Popis problému', { exact: false }).fill(`Vypršené ověření ${Date.now()}`)
+  await page.getByLabel('Adresa nebo upřesnění místa', { exact: false }).fill('Vyskeř 50')
+  await page.getByLabel('Fotografie (nepovinné)', { exact: true }).setInputFiles({ name: 'obnova.png', mimeType: 'image/png', buffer: photograph })
+  await page.getByRole('button', { name: 'Odeslat hlášení', exact: true }).click()
+  await expect(page).toHaveURL(/\/hlaseni-zavad\/\d+\?odeslano=1$/)
+  expect(tokenRequests).toBe(2)
+  expect(submittedTokens).toHaveLength(2)
+  expect(submittedTokens[0]).toBeTruthy()
+  expect(submittedTokens[1]).not.toBe(submittedTokens[0])
+  await expect(page.getByRole('region', { name: 'Fotografie závady', exact: true }).getByRole('img')).toHaveCount(1)
+})
+
+test('a form left open refreshes an expired unused token before uploading its report', async ({ page }) => {
+  await prepareMap(page)
+  let tokenRequests = 0
+  let submissions = 0
+  page.on('request', request => {
+    if (new URL(request.url()).pathname === '/api/v1/reports' && request.method() === 'POST') submissions += 1
+  })
+  await page.route('**/api/v1/report-submission-token', async route => {
+    tokenRequests += 1
+    if (tokenRequests === 1) {
+      const response = await route.fetch()
+      const token = await response.json()
+      await route.fulfill({ response, json: { ...token, expires_at: Math.floor(Date.now() / 1000) - 1 } })
+    } else await route.continue()
+  })
+  await page.goto('/hlaseni-zavad/nove')
+  await page.getByLabel('Popis problému', { exact: false }).fill(`Dlouho otevřený formulář ${Date.now()}`)
+  await page.getByLabel('Adresa nebo upřesnění místa', { exact: false }).fill('Vyskeř 50')
+  await submitReport(page)
+  expect(tokenRequests).toBe(2)
+  expect(submissions).toBe(1)
+})
+
+test('a resident who blocks the security cookie can still submit without extra interaction', async ({ page }) => {
+  await prepareMap(page)
+  let cookieBlocked = false
+  await page.route('**/api/v1/report-submission-token', async route => {
+    const response = await route.fetch()
+    const headers = { ...response.headers() }
+    delete headers['set-cookie']
+    await route.fulfill({ response, headers })
+    // route.fetch may apply Set-Cookie to Playwright's shared request context.
+    await page.context().clearCookies({ name: 'obec_report_browser' })
+    cookieBlocked = true
+  })
+  await page.goto('/hlaseni-zavad/nove')
+  await expect.poll(() => cookieBlocked).toBe(true)
+  await page.getByLabel('Popis problému', { exact: false }).fill(`Bez bezpečnostní cookie ${Date.now()}`)
+  await page.getByLabel('Adresa nebo upřesnění místa', { exact: false }).fill('Vyskeř 50')
+  expect((await page.context().cookies()).some(cookie => cookie.name === 'obec_report_browser')).toBe(false)
+  await submitReport(page)
+})
+
+test('a lost successful response and repeated submit reuse the same token and saved report', async ({ page }) => {
+  await prepareMap(page)
+  let tokenRequests = 0
+  let savedId = 0
+  const submittedTokens: string[] = []
+  page.on('request', request => {
+    if (new URL(request.url()).pathname === '/api/v1/report-submission-token') tokenRequests += 1
+  })
+  let releaseResponse!: () => void
+  const heldResponse = new Promise<void>(resolve => { releaseResponse = resolve })
+  await page.route('**/api/v1/reports', async route => {
+    if (route.request().method() !== 'POST') return route.continue()
+    const body = route.request().postData() || ''
+    submittedTokens.push(body.match(/name="submission_token"\r\n\r\n([^\r\n]+)/)?.[1] || '')
+    if (submittedTokens.length === 1) {
+      const saved = await route.fetch()
+      expect(saved.status()).toBe(201)
+      savedId = (await saved.json()).id
+      await heldResponse
+      await route.abort('failed')
+    } else await route.continue()
+  })
+  await page.goto('/hlaseni-zavad/nove')
+  const description = `Ztracená odpověď ${Date.now()}`
+  await page.getByLabel('Popis problému', { exact: false }).fill(description)
+  await page.getByLabel('Adresa nebo upřesnění místa', { exact: false }).fill('Vyskeř 50')
+  await page.getByLabel('Fotografie (nepovinné)', { exact: true }).setInputFiles({ name: 'jednou.png', mimeType: 'image/png', buffer: photograph })
+  await page.getByRole('button', { name: 'Odeslat hlášení', exact: true }).click()
+  await expect.poll(() => savedId).toBeGreaterThan(0)
+  await page.locator('#report-form').evaluate(form => (form as HTMLFormElement).requestSubmit())
+  expect(submittedTokens).toHaveLength(1)
+  releaseResponse()
+  await expect(page.locator('#report-submit-error')).toContainText('Spojení se serverem se přerušilo')
+  await expect(page.locator('[data-report-photo]')).toHaveCount(1)
+  const persisted = await submitReport(page, 200)
+  expect(persisted.id).toBe(savedId)
+  expect(persisted.photo_count).toBe(1)
+  expect(submittedTokens).toHaveLength(2)
+  expect(submittedTokens[0]).toBeTruthy()
+  expect(submittedTokens[1]).toBe(submittedTokens[0])
+  expect(tokenRequests).toBe(1)
+  const list = await page.request.get(`/api/v1/reports?q=${encodeURIComponent(description)}`)
+  expect((await list.json()).filter((report: { description: string }) => report.description === description)).toHaveLength(1)
+})
 
 test('an anonymous resident opens the separate form and submits a public report with a gallery and date', async ({ page }, testInfo) => {
   const errors: string[] = []
@@ -89,12 +238,16 @@ test('an anonymous resident opens the separate form and submits a public report 
   ])
   await expect(page.locator('[data-report-photo]')).toHaveCount(2)
   const report = await submitReport(page)
-  expect(report.reporter_name).toBeNull()
+  expect(report).not.toHaveProperty('reporter_name')
+  expect(report).not.toHaveProperty('reporter_email')
+  expect(report).not.toHaveProperty('reporter_phone')
   expect(report.latitude).toBeNull()
   expect(report.longitude).toBeNull()
   expect(report.has_photo).toBe(true)
   expect(report.photo_count).toBe(2)
-  expect(report).not.toHaveProperty('request_ip')
+  for (const key of ['request_ip', 'request_user_agent', 'request_accept_language', 'client_timezone', 'browser_id_hash', 'browser_fingerprint_hash', 'authenticated_admin_id', 'authenticated_admin_email', 'metadata_recorded_at', 'metadata_expires_at']) {
+    expect(report).not.toHaveProperty(key)
+  }
   expect(report).not.toHaveProperty('recipients')
   expect(Number.isNaN(Date.parse(report.created_at))).toBe(false)
   await expect(page.getByRole('main')).toContainText(description)
@@ -156,7 +309,8 @@ test('desktop pin selection fills exact coordinates and a narrow desktop does no
   await page.getByLabel('Kdo nahlásil (nepovinné)', { exact: true }).fill('Jan')
   const report = await submitReport(page)
   expect(report.address).toBe(`${selectedLatitude.toFixed(6)}, ${selectedLongitude.toFixed(6)}`)
-  expect(report.reporter_name).toBe('Jan')
+  expect(report).not.toHaveProperty('reporter_name')
+  await expect(page.getByRole('main')).not.toContainText('Nahlásil:')
   expect(report.latitude).toBeCloseTo(selectedLatitude, 6)
   expect(report.longitude).toBeCloseTo(selectedLongitude, 6)
   expect(report.has_photo).toBe(false)
@@ -196,7 +350,7 @@ test('a phone requests its location only after the resident presses the location
     const report = await submitReport(page)
     expect(report.latitude).toBe(50.534123)
     expect(report.longitude).toBe(15.162456)
-    expect(report.reporter_name).toBeNull()
+    expect(report).not.toHaveProperty('reporter_name')
     expect(report.address).toBe('50.534123, 15.162456')
     expect(errors).toEqual([])
   } finally {
@@ -251,6 +405,8 @@ test('individual photos can be removed and a failed submission retains every rem
   await page.getByLabel('Popis problému', { exact: false }).fill(description)
   await page.getByLabel('Adresa nebo upřesnění místa', { exact: false }).fill('Před domem č. p. 12')
   await page.getByLabel('Kdo nahlásil (nepovinné)', { exact: true }).fill('Alena')
+  await page.getByLabel('Kontaktní e-mail (nepovinné)', { exact: true }).fill('alena@example.test')
+  await page.getByLabel('Telefon (nepovinné)', { exact: true }).fill('+420 777 123 456')
   await page.getByLabel('Fotografie (nepovinné)', { exact: true }).setInputFiles({
     name: 'nepodporovany.svg', mimeType: 'image/svg+xml', buffer: Buffer.from('<svg/>'),
   })
@@ -288,6 +444,8 @@ test('individual photos can be removed and a failed submission retains every rem
   await expect(page.getByLabel('Popis problému', { exact: false })).toHaveValue(description)
   await expect(page.getByLabel('Adresa nebo upřesnění místa', { exact: false })).toHaveValue(`${latitude}, ${longitude}`)
   await expect(page.getByLabel('Kdo nahlásil (nepovinné)', { exact: true })).toHaveValue('Alena')
+  await expect(page.getByLabel('Kontaktní e-mail (nepovinné)', { exact: true })).toHaveValue('alena@example.test')
+  await expect(page.getByLabel('Telefon (nepovinné)', { exact: true })).toHaveValue('+420 777 123 456')
   await expect(page.locator('#report-latitude')).toHaveValue(latitude)
   await expect(page.locator('#report-longitude')).toHaveValue(longitude)
   await expect(page.locator('#report-photo-preview')).toBeVisible()
@@ -298,7 +456,7 @@ test('individual photos can be removed and a failed submission retains every rem
   await expect(page.locator('#report-map .leaflet-marker-icon')).toHaveClass(/leaflet-marker-draggable/)
   const report = await submitReport(page)
   expect(report.description).toBe(description)
-  expect(report.reporter_name).toBe('Alena')
+  expect(report).not.toHaveProperty('reporter_name')
   expect(report.has_photo).toBe(true)
   expect(report.photo_count).toBe(2)
   expect(report.latitude).toBeCloseTo(Number(latitude), 6)
@@ -450,7 +608,44 @@ test('cancelling departure preserves a draft and leaving an empty form needs no 
   await expect(page.locator('[data-report-photo]')).toHaveCount(0)
 })
 
-test('a draft survives browser Back and Forward within the application including its pin and photographs', async ({ page }) => {
+test('entering only an optional contact protects the draft and an empty contact remains optional', async ({ page }) => {
+  await prepareMap(page)
+  let dialogs = 0
+  page.on('dialog', async dialog => {
+    expect(dialog.type()).toBe('confirm')
+    dialogs += 1
+    await dialog.dismiss()
+  })
+  await page.goto('/hlaseni-zavad/nove')
+  const email = page.getByLabel('Kontaktní e-mail (nepovinné)', { exact: true })
+  const phone = page.getByLabel('Telefon (nepovinné)', { exact: true })
+  await expect(email).toHaveAttribute('type', 'email')
+  await expect(email).toHaveAttribute('autocomplete', 'email')
+  await expect(phone).toHaveAttribute('type', 'tel')
+  await expect(phone).toHaveAttribute('autocomplete', 'tel')
+  expect(await email.evaluate(input => (input as HTMLInputElement).required)).toBe(false)
+  expect(await phone.evaluate(input => (input as HTMLInputElement).required)).toBe(false)
+  await email.fill('chybna-adresa')
+  expect(await email.evaluate(input => (input as HTMLInputElement).validity.typeMismatch)).toBe(true)
+  await email.fill('kontakt@example.test')
+  const back = page.getByRole('main').getByRole('link', { name: 'Nahlášené závady', exact: true })
+  await back.click()
+  expect(dialogs).toBe(1)
+  await expect(page).toHaveURL(/\/hlaseni-zavad\/nove$/)
+  await expect(email).toHaveValue('kontakt@example.test')
+  await email.fill('')
+  await phone.fill('+420 777 123 456')
+  await back.click()
+  expect(dialogs).toBe(2)
+  await expect(page).toHaveURL(/\/hlaseni-zavad\/nove$/)
+  await expect(phone).toHaveValue('+420 777 123 456')
+  await phone.fill('')
+  await back.click()
+  await expect(page).toHaveURL(/\/hlaseni-zavad$/)
+  expect(dialogs).toBe(2)
+})
+
+test('a draft survives browser Back and Forward within the application including contacts, pin and photographs', async ({ page }) => {
   await prepareMap(page)
   const dialogs: string[] = []
   page.on('dialog', async dialog => {
@@ -465,6 +660,8 @@ test('a draft survives browser Back and Forward within the application including
   await page.getByRole('main').getByRole('link', { name: 'Nahlásit závadu', exact: true }).click()
   await page.getByLabel('Popis problému', { exact: false }).fill('Nedokončené hlášení po návratu')
   await page.getByLabel('Kdo nahlásil (nepovinné)', { exact: true }).fill('Eva')
+  await page.getByLabel('Kontaktní e-mail (nepovinné)', { exact: true }).fill('eva@example.test')
+  await page.getByLabel('Telefon (nepovinné)', { exact: true }).fill('+420 606 111 222')
   await page.getByLabel('Fotografie (nepovinné)', { exact: true }).setInputFiles({ name: 'zachovana.png', mimeType: 'image/png', buffer: photograph })
   await page.getByRole('button', { name: 'Umístit špendlík do středu mapy', exact: true }).click()
   const latitude = await page.locator('#report-latitude').inputValue()
@@ -479,6 +676,8 @@ test('a draft survives browser Back and Forward within the application including
   await expect(page.locator('#report-draft-status')).toBeVisible()
   await expect(page.getByLabel('Popis problému', { exact: false })).toHaveValue('Nedokončené hlášení po návratu')
   await expect(page.getByLabel('Kdo nahlásil (nepovinné)', { exact: true })).toHaveValue('Eva')
+  await expect(page.getByLabel('Kontaktní e-mail (nepovinné)', { exact: true })).toHaveValue('eva@example.test')
+  await expect(page.getByLabel('Telefon (nepovinné)', { exact: true })).toHaveValue('+420 606 111 222')
   await expect(page.locator('#report-address')).toHaveValue(`${latitude}, ${longitude}`)
   await expect(page.locator('#report-latitude')).toHaveValue(latitude)
   await expect(page.locator('#report-longitude')).toHaveValue(longitude)
@@ -585,9 +784,12 @@ test('the overview map follows the list query and overlapping reports open separ
   const token = `Mapa${Date.now()}`
   const created = []
   for (const [description, located] of [[`${token} první závada s uvolněnými prkny a dalším poškozením kolem lavičky u obecního úřadu.`, true], [`${token} druhá závada`, true], [`${token} bez polohy`, false], [`MimoFiltr${Date.now()}`, true]] as const) {
+    const tokenResponse = await page.request.post('/api/v1/report-submission-token', { headers: { Origin: 'http://127.0.0.1:3107' } })
+    expect(tokenResponse.status()).toBe(200)
+    const { token: submission_token } = await tokenResponse.json()
     const response = await page.request.post('/api/v1/reports', {
       headers: { Origin: 'http://127.0.0.1:3107' },
-      multipart: { description, address: 'Vyskeř 50', ...(located ? { latitude: '50.529509', longitude: '15.158555' } : {}), ...(created.length === 0 ? { photo: { name: 'mapa.png', mimeType: 'image/png', buffer: photograph } } : {}) },
+      multipart: { submission_token, description, address: 'Vyskeř 50', ...(located ? { latitude: '50.529509', longitude: '15.158555' } : {}), ...(created.length === 0 ? { photo: { name: 'mapa.png', mimeType: 'image/png', buffer: photograph } } : {}) },
     })
     expect(response.status()).toBe(201)
     created.push(await response.json())

@@ -1,4 +1,4 @@
-# Newsletter subscriptions and privacy
+# Subscriptions, fault reports and privacy
 
 ## Subscribe and unsubscribe
 
@@ -77,6 +77,28 @@ After restoring an older backup, mail must remain stopped until subsequent
 withdrawals and erasure requests have been accounted for. The provided recovery
 tool discards subscriptions from the restored copy. A backup does not extend
 the right to contact subscribers. See [operations.md](operations.md).
+
+## Fault reports
+
+Fault reporting works independently of newsletter subscriptions. Description,
+location, photographs and repair information are public. The optional name, email and phone are
+private and anonymous submissions without contacts are permitted. The form
+explains that administrators may use contacts to clarify or resolve the report. Sender IP, browser headers,
+time zone, keyed browser identifiers and an existing authenticated website
+account are visible only in administration and are erased after 30 days.
+Existing IPs receive a 30-day grace period from migration 0018. The optional
+supplied name, email and phone remain private report content. No browser profile name,
+operating-system username or custom device name is collected.
+
+The form uses a 30-day first-party security cookie and short-lived submission
+proofs, rate limits and duplicate detection without a CAPTCHA. Blocked cookies
+fall back to a per-form proof. Short-lived anti-abuse records expire within
+24 hours. Cleanup runs even if newsletter privacy configuration is absent.
+These are operational defaults, not claims about statutory retention periods.
+Public report content and backup copies have separate retention rules.
+The public privacy page explains this processing, the cookie, map providers and
+that technical correlation does not prove a person's identity. See
+[reports.md](reports.md) for the exact protocol, limits and private fields.
 
 ## Security and visitor information
 

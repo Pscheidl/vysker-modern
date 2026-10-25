@@ -1,5 +1,7 @@
 //! Public fault reports with private request metadata and durable notifications.
-use super::{Backend, Error, Pagination, Result, audit, auth, bad, missing, timestamp};
+use super::{
+    Backend, Error, Pagination, Result, audit, auth, bad, missing, report_abuse, timestamp,
+};
 use crate::reports::{
     AdminReport, REPORT_ADDRESS_LIMIT, REPORT_DESCRIPTION_LIMIT, REPORT_MAP_LIMIT,
     REPORT_NAME_LIMIT, REPORT_PHOTO_BYTES, REPORT_RESOLUTION_LIMIT, REPORT_SEARCH_LIMIT,
@@ -34,6 +36,30 @@ fn optional_text(value: String, max: usize, multiline: bool) -> Result<Option<St
         return Err(bad("Text je příliš dlouhý nebo obsahuje nepovolené znaky."));
     }
     Ok((!value.is_empty()).then(|| value.to_owned()))
+}
+
+fn reporter_email(value: String) -> Result<Option<String>> {
+    optional_text(value, 254, false)?
+        .map(|value| auth::email(&value))
+        .transpose()
+}
+
+fn reporter_phone(value: String) -> Result<Option<String>> {
+    let Some(value) = optional_text(value, 40, false)? else {
+        return Ok(None);
+    };
+    let digits = value.chars().filter(char::is_ascii_digit).count();
+    if !(3..=20).contains(&digits)
+        || value.chars().filter(|c| *c == '+').count() > 1
+        || !value
+            .chars()
+            .all(|c| c.is_ascii_digit() || c.is_whitespace() || "+()-./".contains(c))
+    {
+        return Err(bad(
+            "Zadejte platné telefonní číslo, například +420 123 456 789.",
+        ));
+    }
+    Ok(Some(value.split_whitespace().collect::<Vec<_>>().join(" ")))
 }
 
 fn coordinate(value: Option<String>, min: f64, max: f64) -> Result<Option<f64>> {
@@ -146,9 +172,9 @@ async fn read_photo(
 ) -> Result<Option<Vec<u8>>> {
     let empty_file = field.file_name().is_none_or(str::is_empty);
     let mut bytes = Vec::new();
-    while let Some(chunk) = field
-        .chunk()
+    while let Some(chunk) = tokio::time::timeout(std::time::Duration::from_secs(60), field.chunk())
         .await
+        .map_err(|_| bad("Přenos dat se přerušil. Zkuste odeslání znovu."))?
         .map_err(|_| bad("Fotografie nelze přečíst nebo celková velikost překračuje 50 MB."))?
     {
         if chunk.len() > REPORT_PHOTO_BYTES - bytes.len() {
@@ -190,9 +216,9 @@ async fn read_text_field(
     limit: usize,
 ) -> Result<String> {
     let mut value = Vec::new();
-    while let Some(chunk) = field
-        .chunk()
+    while let Some(chunk) = tokio::time::timeout(std::time::Duration::from_secs(60), field.chunk())
         .await
+        .map_err(|_| bad("Přenos dat se přerušil. Zkuste odeslání znovu."))?
         .map_err(|_| bad("Pole hlášení nelze přečíst."))?
     {
         if chunk.len() > limit * 4 - value.len() {
@@ -203,38 +229,50 @@ async fn read_text_field(
     String::from_utf8(value).map_err(|_| bad("Neplatný text hlášení."))
 }
 
-pub async fn create(
-    State(s): State<Backend>,
-    auth::ClientIp(ip): auth::ClientIp,
-    headers: HeaderMap,
-    mut multipart: Multipart,
-) -> Result<(StatusCode, Json<Report>)> {
-    // An explicit Origin is present on browser multipart POSTs. Requiring it also
-    // rejects cross-site forms and opaque origins before reading the upload.
-    if headers.get(header::ORIGIN).and_then(|v| v.to_str().ok())
-        != Some(s.config.public_url.as_str())
-    {
-        return Err(Error(
-            StatusCode::FORBIDDEN,
-            "Požadavek musí pocházet z tohoto webu.",
-        ));
-    }
-    let now = OffsetDateTime::now_utc();
-    auth::throttle(&s, &format!("report-quarter:{ip}"), 5, 900, now).await?;
-    auth::throttle(&s, &format!("report-day:{ip}"), 30, 86400, now).await?;
+struct SubmittedReport {
+    submission_token: Option<String>,
+    client_timezone: Option<String>,
+    description: Option<String>,
+    address: Option<String>,
+    name: Option<String>,
+    email: Option<String>,
+    phone: Option<String>,
+    latitude: Option<String>,
+    longitude: Option<String>,
+    photos: Vec<Vec<u8>>,
+}
+
+async fn read_submission(
+    multipart: &mut Multipart,
+    s: &Backend,
+    context: &report_abuse::SubmissionContext,
+) -> report_abuse::SubmissionResult<SubmittedReport> {
+    let (mut submission_token, mut client_timezone) = (None, None);
     let mut seen = BTreeSet::new();
     let (mut description, mut address, mut name, mut latitude, mut longitude) =
         (None, None, None, None, None);
+    let (mut email, mut phone) = (None, None);
     let mut photos = Vec::new();
     let mut upload_bytes = 0;
     let mut processed_bytes = 0;
-    while let Some(mut field) = multipart
-        .next_field()
-        .await
-        .map_err(|_| bad("Hlášení nelze přečíst nebo překračuje povolenou velikost."))?
+    while let Some(mut field) =
+        tokio::time::timeout(std::time::Duration::from_secs(60), multipart.next_field())
+            .await
+            .map_err(|_| bad("Přenos dat se přerušil. Zkuste odeslání znovu."))?
+            .map_err(|_| bad("Hlášení nelze přečíst nebo překračuje povolenou velikost."))?
     {
         let key = field.name().unwrap_or("").to_owned();
         if key == "photo" {
+            let token = submission_token
+                .as_deref()
+                .ok_or(report_abuse::SubmissionError::InvalidToken)?;
+            report_abuse::token_valid(
+                &s.pool,
+                &context,
+                token,
+                OffsetDateTime::now_utc().unix_timestamp(),
+            )
+            .await?;
             if let Some(photo) =
                 read_photo(&mut field, &mut upload_bytes, &mut processed_bytes).await?
             {
@@ -243,30 +281,105 @@ pub async fn create(
             continue;
         }
         if !seen.insert(key.clone()) {
-            return Err(bad("Každé textové pole může být v hlášení jen jednou."));
+            return Err(bad("Každé textové pole může být v hlášení jen jednou.").into());
         }
         let limit = match key.as_str() {
             "description" => REPORT_DESCRIPTION_LIMIT,
             "address" => REPORT_ADDRESS_LIMIT,
             "reporter_name" => REPORT_NAME_LIMIT,
+            "reporter_email" => 254,
+            "reporter_phone" => 40,
             "latitude" | "longitude" => 32,
-            _ => return Err(bad("Hlášení obsahuje neznámé pole.")),
+            "submission_token" => 64,
+            "client_timezone" => 128,
+            "website" => 300,
+            _ => return Err(bad("Hlášení obsahuje neznámé pole.").into()),
         };
         let value = read_text_field(&mut field, limit).await?;
         match key.as_str() {
             "description" => description = optional_text(value, limit, true)?,
             "address" => address = optional_text(value, limit, false)?,
             "reporter_name" => name = optional_text(value, limit, false)?,
+            "reporter_email" => email = reporter_email(value)?,
+            "reporter_phone" => phone = reporter_phone(value)?,
             "latitude" => latitude = Some(value),
             "longitude" => longitude = Some(value),
+            "submission_token" => {
+                report_abuse::token_valid(
+                    &s.pool,
+                    &context,
+                    &value,
+                    OffsetDateTime::now_utc().unix_timestamp(),
+                )
+                .await?;
+                submission_token = Some(value);
+            }
+            "client_timezone" => client_timezone = report_abuse::timezone(&value)?,
+            "website" => {
+                if !value.trim().is_empty() {
+                    return Err(bad("Hlášení bylo vyhodnoceno jako automatické vyplnění. Nechte pomocné pole prázdné.").into());
+                }
+            }
             _ => unreachable!(),
         }
     }
+    Ok(SubmittedReport {
+        submission_token,
+        client_timezone,
+        description,
+        address,
+        name,
+        email,
+        phone,
+        latitude,
+        longitude,
+        photos,
+    })
+}
+
+pub async fn create(
+    State(s): State<Backend>,
+    auth::ClientIp(ip): auth::ClientIp,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> report_abuse::SubmissionResult<(StatusCode, Json<Report>)> {
+    let now = OffsetDateTime::now_utc();
+    let context = report_abuse::begin(&s, &headers, &ip, now.unix_timestamp()).await?;
+    // Acquire before reading any uploads. A bounded wait prevents a request backlog.
+    let _submission_permit = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        report_abuse::SUBMISSION_SLOTS.acquire(),
+    )
+    .await
+    .map_err(|_| {
+        Error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Právě se zpracovávají jiná hlášení. Zkuste odeslání za chvíli.",
+        )
+    })?
+    .map_err(|_| bad("Hlášení nyní nelze zpracovat."))?;
+    let SubmittedReport {
+        submission_token,
+        client_timezone,
+        description,
+        mut address,
+        name,
+        email,
+        phone,
+        latitude,
+        longitude,
+        photos,
+    } = tokio::time::timeout(
+        std::time::Duration::from_secs(15 * 60),
+        read_submission(&mut multipart, &s, &context),
+    )
+    .await
+    .map_err(|_| bad("Odesílání trvalo příliš dlouho. Zkuste ho prosím znovu."))??;
     let description = description.ok_or_else(|| bad("Popište prosím závadu."))?;
     let mut latitude = coordinate(latitude, -90., 90.)?;
     let mut longitude = coordinate(longitude, -180., 180.)?;
     if latitude.is_some() != longitude.is_some() {
-        return Err(bad("Poloha musí obsahovat obě souřadnice."));
+        return Err(bad("Poloha musí obsahovat obě souřadnice.").into());
     }
     if let Some((address_latitude, address_longitude)) = address
         .as_deref()
@@ -281,22 +394,70 @@ pub async fn create(
         if latitude.is_some_and(|value| differs(value, address_latitude))
             || longitude.is_some_and(|value| differs(value, address_longitude))
         {
-            return Err(bad(
-                "GPS souřadnice v adrese se neshodují s vybranou polohou.",
-            ));
+            return Err(bad("GPS souřadnice v adrese se neshodují s vybranou polohou.").into());
         }
         latitude = Some(address_latitude);
         longitude = Some(address_longitude);
         address = Some(format!("{address_latitude:.6}, {address_longitude:.6}"));
     }
     if address.is_none() && latitude.is_none() {
-        return Err(bad("Vyplňte adresu nebo vyberte místo na mapě."));
+        return Err(bad("Vyplňte adresu nebo vyberte místo na mapě.").into());
     }
+    let now = OffsetDateTime::now_utc();
+    let token = submission_token.ok_or(report_abuse::SubmissionError::InvalidToken)?;
+    let user_agent = report_abuse::bounded_header(&headers, "user-agent", 512);
+    let language = report_abuse::bounded_header(&headers, "accept-language", 256);
+    let fingerprint = report_abuse::fingerprint(
+        &context,
+        user_agent.as_deref(),
+        language.as_deref(),
+        client_timezone.as_deref(),
+    );
+    let authenticated =
+        report_abuse::authenticated_sender(&s.pool, &headers, now.unix_timestamp()).await?;
+    let photo_hashes: Vec<String> = photos.iter().map(auth::hash).collect();
+    let payload = auth::hash(
+        serde_json::json!([
+            description,
+            address,
+            latitude,
+            longitude,
+            name,
+            email,
+            phone,
+            photo_hashes
+        ])
+        .to_string(),
+    );
     let mut tx = crate::db::begin_write(&s.pool).await?;
-    let report: Report = sqlx::query_as("INSERT INTO issue_reports(description,address,latitude,longitude,reporter_name,request_ip,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id,description,address,latitude,longitude,reporter_name,created_at,status,resolution_comment,resolution_updated_at,ARRAY(SELECT id FROM issue_report_resolution_photos WHERE report_id=issue_reports.id ORDER BY id) AS resolution_photo_ids,$8::bigint > 0 AS has_photo,$8::bigint AS photo_count")
+    if let Some(id) =
+        report_abuse::claim(&mut tx, &context, &token, &payload, now.unix_timestamp()).await?
+    {
+        let report = sqlx::query_as(PUBLIC_REPORT_BY_ID)
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| {
+                super::conflict("Toto hlášení už bylo přijato a nyní není veřejně dostupné.")
+            })?;
+        tx.commit().await?;
+        return Ok((StatusCode::OK, Json(report)));
+    }
+    let report: Report = sqlx::query_as("INSERT INTO issue_reports(description,address,latitude,longitude,reporter_name,request_ip,created_at,request_user_agent,request_accept_language,client_timezone,browser_id_hash,browser_fingerprint_hash,authenticated_admin_id,authenticated_admin_email,metadata_recorded_at,metadata_expires_at,reporter_email,reporter_phone) VALUES ($1,$2,$3,$4,$5,$6,$7,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id,description,address,latitude,longitude,created_at,status,resolution_comment,resolution_updated_at,ARRAY(SELECT id FROM issue_report_resolution_photos WHERE report_id=issue_reports.id ORDER BY id) AS resolution_photo_ids,$8::bigint > 0 AS has_photo,$8::bigint AS photo_count")
         .bind(description).bind(address).bind(latitude).bind(longitude).bind(name).bind(ip)
         .bind(timestamp(now.to_timezone(time_tz::timezones::db::europe::PRAGUE))).bind(photos.len() as i64)
+        .bind(user_agent).bind(language).bind(client_timezone).bind(context.persistent_browser.then_some(&context.browser_hash)).bind(fingerprint)
+        .bind(authenticated.as_ref().map(|(id,_)| *id)).bind(authenticated.as_ref().map(|(_,email)| email.as_str())).bind(now.unix_timestamp()).bind(now.unix_timestamp()+30*86400).bind(email).bind(phone)
         .fetch_one(&mut *tx).await?;
+    report_abuse::record(
+        &mut tx,
+        &context,
+        &token,
+        &payload,
+        report.id,
+        now.unix_timestamp(),
+    )
+    .await?;
     for (position, photo) in photos.into_iter().enumerate() {
         sqlx::query("INSERT INTO issue_report_photos(report_id,position,photo) VALUES ($1,$2,$3)")
             .bind(report.id)
@@ -321,10 +482,9 @@ pub async fn create(
 
 fn notification_body(s: &Backend, report: &Report) -> String {
     let mut body = format!(
-        "Nové hlášení závady č. {}\nNahlášeno: {}\nKdo nahlásil: {}\n\n{}\n\n",
+        "Nové hlášení závady č. {}\nNahlášeno: {}\n\n{}\n\n",
         report.id,
         crate::events::date_label(&report.created_at),
-        report.reporter_name.as_deref().unwrap_or("Anonymně"),
         report.description
     );
     if let Some(address) = &report.address {
@@ -361,7 +521,7 @@ pub async fn public_reports_from_pool(
     }
     .bounds()?;
     let pattern = search_pattern(q)?;
-    Ok(sqlx::query_as("SELECT id,description,address,latitude,longitude,reporter_name,created_at,status,resolution_comment,resolution_updated_at,ARRAY(SELECT id FROM issue_report_resolution_photos WHERE report_id=issue_reports.id ORDER BY id) AS resolution_photo_ids,EXISTS(SELECT 1 FROM issue_report_photos WHERE report_id=issue_reports.id) AS has_photo,(SELECT count(*) FROM issue_report_photos WHERE report_id=issue_reports.id) AS photo_count FROM issue_reports WHERE hidden=FALSE AND (description ILIKE $3 ESCAPE '!' OR address ILIKE $3 ESCAPE '!') ORDER BY id DESC LIMIT $1 OFFSET $2")
+    Ok(sqlx::query_as("SELECT id,description,address,latitude,longitude,created_at,status,resolution_comment,resolution_updated_at,ARRAY(SELECT id FROM issue_report_resolution_photos WHERE report_id=issue_reports.id ORDER BY id) AS resolution_photo_ids,EXISTS(SELECT 1 FROM issue_report_photos WHERE report_id=issue_reports.id) AS has_photo,(SELECT count(*) FROM issue_report_photos WHERE report_id=issue_reports.id) AS photo_count FROM issue_reports WHERE hidden=FALSE AND (description ILIKE $3 ESCAPE '!' OR address ILIKE $3 ESCAPE '!') ORDER BY id DESC LIMIT $1 OFFSET $2")
         .bind(limit).bind(offset).bind(pattern).fetch_all(pool).await?)
 }
 
@@ -400,13 +560,13 @@ pub async fn public_report_map_from_pool(pool: &PgPool, q: &str) -> Result<Repor
     })
 }
 
+const PUBLIC_REPORT_BY_ID: &str = "SELECT id,description,address,latitude,longitude,created_at,status,resolution_comment,resolution_updated_at,ARRAY(SELECT id FROM issue_report_resolution_photos WHERE report_id=issue_reports.id ORDER BY id) AS resolution_photo_ids,EXISTS(SELECT 1 FROM issue_report_photos WHERE report_id=issue_reports.id) AS has_photo,(SELECT count(*) FROM issue_report_photos WHERE report_id=issue_reports.id) AS photo_count FROM issue_reports WHERE id=$1 AND hidden=FALSE";
+
 pub async fn public_report_from_pool(pool: &PgPool, id: i64) -> Result<Option<Report>> {
-    Ok(sqlx::query_as(
-        "SELECT id,description,address,latitude,longitude,reporter_name,created_at,status,resolution_comment,resolution_updated_at,ARRAY(SELECT id FROM issue_report_resolution_photos WHERE report_id=issue_reports.id ORDER BY id) AS resolution_photo_ids,EXISTS(SELECT 1 FROM issue_report_photos WHERE report_id=issue_reports.id) AS has_photo,(SELECT count(*) FROM issue_report_photos WHERE report_id=issue_reports.id) AS photo_count FROM issue_reports WHERE id=$1 AND hidden=FALSE"
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await?)
+    Ok(sqlx::query_as(PUBLIC_REPORT_BY_ID)
+        .bind(id)
+        .fetch_optional(pool)
+        .await?)
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -458,7 +618,7 @@ pub async fn list(
     Query(p): Query<Pagination>,
 ) -> Result<Json<Vec<AdminReport>>> {
     let (limit, offset) = p.bounds()?;
-    Ok(Json(sqlx::query_as("SELECT id,description,address,latitude,longitude,reporter_name,created_at,status,resolution_comment,resolution_updated_at,ARRAY(SELECT id FROM issue_report_resolution_photos WHERE report_id=issue_reports.id ORDER BY id) AS resolution_photo_ids,EXISTS(SELECT 1 FROM issue_report_photos WHERE report_id=issue_reports.id) AS has_photo,(SELECT count(*) FROM issue_report_photos WHERE report_id=issue_reports.id) AS photo_count,request_ip,hidden FROM issue_reports ORDER BY id DESC LIMIT $1 OFFSET $2")
+    Ok(Json(sqlx::query_as("SELECT id,description,address,latitude,longitude,created_at,status,resolution_comment,resolution_updated_at,ARRAY(SELECT id FROM issue_report_resolution_photos WHERE report_id=issue_reports.id ORDER BY id) AS resolution_photo_ids,EXISTS(SELECT 1 FROM issue_report_photos WHERE report_id=issue_reports.id) AS has_photo,(SELECT count(*) FROM issue_report_photos WHERE report_id=issue_reports.id) AS photo_count,request_ip,hidden,reporter_name,reporter_email,reporter_phone,request_user_agent,request_accept_language,client_timezone,browser_id_hash,browser_fingerprint_hash,authenticated_admin_id,authenticated_admin_email,metadata_recorded_at,metadata_expires_at FROM issue_reports ORDER BY id DESC LIMIT $1 OFFSET $2")
         .bind(limit).bind(offset).fetch_all(&s.pool).await?))
 }
 
@@ -479,7 +639,7 @@ pub async fn update(
         return Err(bad("Neplatný stav hlášení."));
     }
     let mut tx = crate::db::begin_write(&s.pool).await?;
-    let report: AdminReport = sqlx::query_as("UPDATE issue_reports SET status=COALESCE($1,status),hidden=COALESCE($2,hidden),resolution_updated_at=CASE WHEN $1 IS NOT NULL AND $1<>status THEN $4 ELSE resolution_updated_at END WHERE id=$3 RETURNING id,description,address,latitude,longitude,reporter_name,created_at,status,resolution_comment,resolution_updated_at,ARRAY(SELECT id FROM issue_report_resolution_photos WHERE report_id=issue_reports.id ORDER BY id) AS resolution_photo_ids,EXISTS(SELECT 1 FROM issue_report_photos WHERE report_id=issue_reports.id) AS has_photo,(SELECT count(*) FROM issue_report_photos WHERE report_id=issue_reports.id) AS photo_count,request_ip,hidden")
+    let report: AdminReport = sqlx::query_as("UPDATE issue_reports SET status=COALESCE($1,status),hidden=COALESCE($2,hidden),resolution_updated_at=CASE WHEN $1 IS NOT NULL AND $1<>status THEN $4 ELSE resolution_updated_at END WHERE id=$3 RETURNING id,description,address,latitude,longitude,created_at,status,resolution_comment,resolution_updated_at,ARRAY(SELECT id FROM issue_report_resolution_photos WHERE report_id=issue_reports.id ORDER BY id) AS resolution_photo_ids,EXISTS(SELECT 1 FROM issue_report_photos WHERE report_id=issue_reports.id) AS has_photo,(SELECT count(*) FROM issue_report_photos WHERE report_id=issue_reports.id) AS photo_count,request_ip,hidden,reporter_name,reporter_email,reporter_phone,request_user_agent,request_accept_language,client_timezone,browser_id_hash,browser_fingerprint_hash,authenticated_admin_id,authenticated_admin_email,metadata_recorded_at,metadata_expires_at")
         .bind(input.status).bind(input.hidden).bind(id).bind(timestamp(OffsetDateTime::now_utc().to_timezone(time_tz::timezones::db::europe::PRAGUE))).fetch_optional(&mut *tx).await?.ok_or_else(missing)?;
     audit(
         &mut tx,
@@ -494,7 +654,7 @@ pub async fn update(
     Ok(Json(report))
 }
 
-const ADMIN_REPORT_BY_ID: &str = "SELECT id,description,address,latitude,longitude,reporter_name,created_at,status,resolution_comment,resolution_updated_at,ARRAY(SELECT id FROM issue_report_resolution_photos WHERE report_id=issue_reports.id ORDER BY id) AS resolution_photo_ids,EXISTS(SELECT 1 FROM issue_report_photos WHERE report_id=issue_reports.id) AS has_photo,(SELECT count(*) FROM issue_report_photos WHERE report_id=issue_reports.id) AS photo_count,request_ip,hidden FROM issue_reports WHERE id=$1";
+const ADMIN_REPORT_BY_ID: &str = "SELECT id,description,address,latitude,longitude,created_at,status,resolution_comment,resolution_updated_at,ARRAY(SELECT id FROM issue_report_resolution_photos WHERE report_id=issue_reports.id ORDER BY id) AS resolution_photo_ids,EXISTS(SELECT 1 FROM issue_report_photos WHERE report_id=issue_reports.id) AS has_photo,(SELECT count(*) FROM issue_report_photos WHERE report_id=issue_reports.id) AS photo_count,request_ip,hidden,reporter_name,reporter_email,reporter_phone,request_user_agent,request_accept_language,client_timezone,browser_id_hash,browser_fingerprint_hash,authenticated_admin_id,authenticated_admin_email,metadata_recorded_at,metadata_expires_at FROM issue_reports WHERE id=$1";
 
 pub async fn update_resolution(
     State(s): State<Backend>,
@@ -509,10 +669,11 @@ pub async fn update_resolution(
     let mut photos = Vec::new();
     let mut upload_bytes = 0;
     let mut processed_bytes = 0;
-    while let Some(mut field) = multipart
-        .next_field()
-        .await
-        .map_err(|_| bad("Řešení nelze přečíst nebo překračuje povolenou velikost."))?
+    while let Some(mut field) =
+        tokio::time::timeout(std::time::Duration::from_secs(60), multipart.next_field())
+            .await
+            .map_err(|_| bad("Přenos dat se přerušil. Zkuste odeslání znovu."))?
+            .map_err(|_| bad("Řešení nelze přečíst nebo překračuje povolenou velikost."))?
     {
         let key = field.name().unwrap_or("").to_owned();
         if key == "photo" {

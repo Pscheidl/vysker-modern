@@ -44,6 +44,7 @@ pub async fn evidence(
 
 pub async fn maintenance(s: &Backend, now: OffsetDateTime) -> Result<()> {
     super::recovery::maintenance(s, now).await?;
+    super::report_abuse::maintenance(&s.pool, now.unix_timestamp()).await?;
     let Some(policy) = &s.config.privacy else {
         return Ok(());
     };
