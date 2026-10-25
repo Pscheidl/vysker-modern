@@ -153,6 +153,8 @@ fn object(value: &str) -> &str {
         "document" | "dokument" => "Dokument",
         "page" | "stranka" => "Stránka",
         "event" => "Akce",
+        "issue_report" => "Hlášení závady",
+        "report_settings" => "Příjemci hlášení závad",
         "navigation" => "Navigace",
         "category" => "Kategorie",
         "attachment" | "soubor" => "Příloha",

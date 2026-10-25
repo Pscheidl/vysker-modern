@@ -32,6 +32,7 @@ async fn update(app: &App, id: i64, mut input: Value, version: i64) -> axum::res
 #[tokio::test]
 async fn public_navigation_groups_and_orders_children_and_hides_whole_branches() {
     let app = App::new().await;
+    let default_count = navigation_from_pool(&app.state.pool).await.unwrap().len();
     let root = create(&app, item("Obec", None, 0)).await;
     let late = create(&app, item("Později", Some(root), 20)).await;
     let early = create(&app, item("Nejdříve", Some(root), 0)).await;
@@ -51,7 +52,7 @@ async fn public_navigation_groups_and_orders_children_and_hides_whole_branches()
         [early, tied, late]
     );
     assert!(navigation.iter().all(|link| link.id != early));
-    assert_eq!(navigation.len(), 5);
+    assert_eq!(navigation.len(), default_count + 1);
 
     let listed = body_json(app.call("GET", NAVIGATION, None, true).await).await;
     let child = listed
@@ -69,7 +70,7 @@ async fn public_navigation_groups_and_orders_children_and_hides_whole_branches()
         StatusCode::NO_CONTENT
     );
     let navigation = navigation_from_pool(&app.state.pool).await.unwrap();
-    assert_eq!(navigation.len(), 4);
+    assert_eq!(navigation.len(), default_count);
     assert!(navigation.iter().all(|link| link.id != root));
 
     root_input["visible"] = json!(true);
@@ -272,7 +273,8 @@ async fn navigation_keeps_existing_root_capacity_and_limits_total_size() {
     let app = App::new().await;
     sqlx::query(
         "INSERT INTO navigation_items(label,path,sort_order)
-         SELECT 'Hlavní položka '||i,'/kontakt',i FROM generate_series(1,16) AS i",
+         SELECT 'Hlavní položka '||i,'/kontakt',i
+         FROM generate_series(1,20-(SELECT count(*) FROM navigation_items WHERE parent_id IS NULL)) AS i",
     )
     .execute(&app.state.pool)
     .await
@@ -327,5 +329,34 @@ async fn navigation_keeps_existing_root_capacity_and_limits_total_size() {
             .map(|link| link.children.len())
             .sum::<usize>(),
         40
+    );
+}
+
+#[tokio::test]
+async fn issue_reports_have_a_default_menu_link_and_can_be_managed() {
+    let app = App::new().await;
+    let navigation = navigation_from_pool(&app.state.pool).await.unwrap();
+    let report_link = navigation
+        .iter()
+        .find(|link| link.path == "/hlaseni-zavad")
+        .expect("new installations expose public issue reports in the menu");
+    assert_eq!(report_link.label, "Hlášení závad");
+    assert!(
+        obecni_web::catalog::default_navigation()
+            .iter()
+            .any(|link| link.path == "/hlaseni-zavad" && link.label == "Hlášení závad")
+    );
+
+    let mut input = item("Závady v obci", None, 50);
+    input["path"] = json!("/hlaseni-zavad");
+    assert_eq!(
+        update(&app, report_link.id, input, 1).await.status(),
+        StatusCode::NO_CONTENT
+    );
+    let navigation = navigation_from_pool(&app.state.pool).await.unwrap();
+    assert!(
+        navigation
+            .iter()
+            .any(|link| { link.path == "/hlaseni-zavad" && link.label == "Závady v obci" })
     );
 }

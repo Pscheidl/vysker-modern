@@ -50,6 +50,8 @@ async fn validate(
             | "/obec"
             | "/kontakt"
             | "/kalendar"
+            | "/hlaseni-zavad"
+            | "/hlaseni-zavad/nove"
             | "/odber"
             | "/stranky"
             | "/pristupnost"

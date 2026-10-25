@@ -86,10 +86,13 @@ pub fn Header() -> impl IntoView {
     let menu = RwSignal::new(false);
     let menu_button = NodeRef::<leptos::html::Button>::new();
     let header = NodeRef::<leptos::html::Header>::new();
+    let interactive = RwSignal::new(false);
     Effect::new(move |_| {
         let _ = location.pathname.get();
         menu.set(false);
     });
+    // Server-rendered controls must not accept clicks before their handlers exist.
+    Effect::new(move |_| interactive.set(true));
     #[cfg(any(feature = "hydrate", feature = "demo"))]
     {
         use leptos::wasm_bindgen::JsCast;
@@ -127,7 +130,7 @@ pub fn Header() -> impl IntoView {
                 <nav class="desktop-nav" aria-label="Hlavní navigace"><Navigation prefix="desktop" menu/></nav>
                 <div class="header-actions"><ThemeSwitch/>
                     <A href=site_url("/kontakt") attr:class="contact-link">"Kontakt"<Icon name="external"/></A>
-                    <button id="mobile-menu-toggle" node_ref=menu_button class="menu-toggle icon-button" type="button" aria-label="Hlavní menu" aria-expanded=move || menu.get().to_string() aria-controls="mobile-menu" on:click=move |_| menu.update(|m| *m=!*m)>
+                    <button id="mobile-menu-toggle" node_ref=menu_button class="menu-toggle icon-button" type="button" aria-label="Hlavní menu" disabled=move || !interactive.get() aria-expanded=move || menu.get().to_string() aria-controls="mobile-menu" on:click=move |_| menu.update(|m| *m=!*m)>
                         {move || view!{<Icon name=if menu.get() {"close"} else {"menu"}/>}}
                         <span>"Menu"</span>
                     </button>
@@ -212,17 +215,19 @@ fn NavigationItem(
     let id = item.id;
     let has_children = !item.children.is_empty();
     let toggle = NodeRef::<leptos::html::Button>::new();
+    let interactive = RwSignal::new(false);
+    Effect::new(move |_| interactive.set(true));
     let group_id = format!("{prefix}-submenu-{id}");
     let toggle_label = format!("Podmenu: {}", item.label);
     let controlled_id = group_id.clone();
-    let paths = StoredValue::new(
-        std::iter::once(site_url(&item.path))
-            .chain(item.children.iter().map(|child| site_url(&child.path)))
-            .collect::<Vec<_>>(),
-    );
+    // The class update can still run while the public header is being unmounted.
+    // Keep these immutable paths in the closure rather than owner-disposed storage.
+    let paths = std::iter::once(site_url(&item.path))
+        .chain(item.children.iter().map(|child| site_url(&child.path)))
+        .collect::<Vec<_>>();
     let active = move || {
         let current = location.pathname.get();
-        paths.with_value(|paths| paths.iter().any(|path| navigation_matches(&current, path)))
+        paths.iter().any(|path| navigation_matches(&current, path))
     };
     let close = move |event: leptos::ev::MouseEvent| {
         use leptos::wasm_bindgen::JsCast;
@@ -263,6 +268,7 @@ fn NavigationItem(
                 {has_children.then(||view!{
                     <button node_ref=toggle class="nav-submenu-toggle" type="button"
                         aria-label=toggle_label
+                        disabled=move || !interactive.get()
                         aria-expanded=move||(open.get()==Some(id)).to_string()
                         aria-controls=controlled_id
                         on:click=move |_|open.update(|value|*value=if *value==Some(id){None}else{Some(id)})>

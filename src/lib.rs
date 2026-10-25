@@ -18,6 +18,7 @@ pub mod markdown;
 #[cfg(feature = "ssr")]
 pub mod model;
 pub mod privacy;
+pub mod reports;
 
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen::prelude::wasm_bindgen]

@@ -323,7 +323,7 @@ fn ItemEditor(
                                 "Zvolte hlavní menu nebo položku, pod kterou se má odkaz zobrazit. Podmenu může mít jednu úroveň."
                             }}</small>
                         </label>
-                        <Field id="setting-path" label="Adresa odkazu" value=path required=true maxlength="100" help="Například /uredni-deska, /kalendar nebo /stranky/spolky. Stránka musí být zveřejněná."/>
+                        <Field id="setting-path" label="Adresa odkazu" value=path required=true maxlength="100" help="Například /uredni-deska, /hlaseni-zavad, /kalendar nebo /stranky/spolky. Stránka musí být zveřejněná."/>
                         <label class="admin-check"><input type="checkbox" prop:checked=move || visible.get() on:change=move |ev| { visible.set(event_target_checked(&ev)); ctx.dirty.set(true); }/>
                             <span><strong>"Zobrazit v menu"</strong><small>"Skrytím hlavní položky se skryjí i její podpoložky. Samotné stránky zůstávají dostupné."</small></span>
                         </label>

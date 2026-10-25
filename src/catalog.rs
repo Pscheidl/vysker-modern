@@ -283,6 +283,7 @@ pub fn default_navigation() -> Vec<NavigationLink> {
         ("Úřední deska", "/uredni-deska"),
         ("Dokumenty", "/dokumenty"),
         ("Obec a úřad", "/obec"),
+        ("Hlášení závad", "/hlaseni-zavad"),
     ]
     .into_iter()
     .enumerate()

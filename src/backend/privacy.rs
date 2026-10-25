@@ -153,7 +153,9 @@ pub async fn response_headers(
     );
     headers.insert(
         "permissions-policy",
-        "camera=(), microphone=(), geolocation=()".parse().unwrap(),
+        "camera=(), microphone=(), geolocation=(self)"
+            .parse()
+            .unwrap(),
     );
     if config.production {
         headers.insert(

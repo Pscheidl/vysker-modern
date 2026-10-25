@@ -13,6 +13,8 @@ pub mod page_images;
 pub mod pages;
 pub mod privacy;
 pub mod recovery;
+pub mod report_addresses;
+pub mod reports;
 pub mod search;
 pub mod server;
 pub mod subscriber_admin;
@@ -187,7 +189,54 @@ pub fn router(state: Backend) -> Router {
             get(events::get).put(events::update).delete(events::delete),
         )
         .route("/api/v1/events", get(events::public_list))
+        .route("/api/v1/report-addresses", get(report_addresses::search))
         .route("/api/v1/events/{id}", get(events::detail))
+        .route(
+            "/api/v1/reports",
+            get(reports::public_list)
+                .post(reports::create)
+                .layer(DefaultBodyLimit::max(
+                    crate::reports::REPORT_UPLOAD_BYTES + 64 * 1024,
+                )),
+        )
+        .route("/api/v1/reports/map", get(reports::public_map))
+        .route("/api/v1/reports/{id}", get(reports::detail))
+        .route("/api/v1/reports/{id}/photo", get(reports::photo))
+        .route(
+            "/api/v1/reports/{id}/photos/{position}",
+            get(reports::gallery_photo),
+        )
+        .route(
+            "/api/v1/reports/{id}/resolution-photos/{photo_id}",
+            get(reports::resolution_photo),
+        )
+        .route("/api/v1/admin/reports", get(reports::list))
+        .route(
+            "/api/v1/admin/reports/{id}",
+            axum::routing::put(reports::update),
+        )
+        .route(
+            "/api/v1/admin/reports/{id}/photo",
+            get(reports::admin_photo),
+        )
+        .route(
+            "/api/v1/admin/reports/{id}/photos/{position}",
+            get(reports::admin_gallery_photo),
+        )
+        .route(
+            "/api/v1/admin/reports/{id}/resolution",
+            axum::routing::put(reports::update_resolution).layer(DefaultBodyLimit::max(
+                crate::reports::REPORT_UPLOAD_BYTES + 64 * 1024,
+            )),
+        )
+        .route(
+            "/api/v1/admin/reports/{id}/resolution-photos/{photo_id}",
+            get(reports::admin_resolution_photo),
+        )
+        .route(
+            "/api/v1/admin/report-settings",
+            get(reports::settings).put(reports::update_settings),
+        )
         .route("/api/v1/admin/subscribers", get(subscriber_admin::list))
         .route(
             "/api/v1/admin/subscribers/{id}/export",

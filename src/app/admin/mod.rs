@@ -17,6 +17,8 @@ mod navigation;
 #[cfg(not(feature = "demo"))]
 mod recovery;
 #[cfg(not(feature = "demo"))]
+mod reports;
+#[cfg(not(feature = "demo"))]
 mod subscribers;
 #[cfg(not(feature = "demo"))]
 mod ui;
@@ -208,6 +210,7 @@ mod workspace {
                         <AdminLink href="/admin/dokumenty" label="Dokumenty" icon="paper"/>
                         <AdminLink href="/admin/stranky" label="Stránky" icon="pages"/>
                         <AdminLink href="/admin/kalendar" label="Kalendář" icon="calendar"/>
+                        <AdminLink href="/admin/hlaseni-zavad" label="Hlášení závad" icon="info"/>
                         <AdminLink href="/admin/odberatele" label="Odběratelé" icon="mail"/>
                         <AdminLink href="/admin/navigace" label="Navigace" icon="pages"/>
                         <AdminLink href="/admin/kategorie" label="Kategorie" icon="grid"/>
@@ -230,6 +233,7 @@ mod workspace {
                             "dokumenty"=>view!{<Entries kind=Kind::Document/>}.into_any(),
                             "stranky"=>view!{<Entries kind=Kind::Page/>}.into_any(),
                             "kalendar"=>view!{<super::events::Events/>}.into_any(),
+                            "hlaseni-zavad"=>view!{<super::reports::Reports/>}.into_any(),
                             "odberatele"=>view!{<super::subscribers::Subscribers/>}.into_any(),
                             "navigace"=>view!{<super::navigation::NavigationSettings/>}.into_any(),
                             "kategorie"=>view!{<super::navigation::NavigationSettings categories=true/>}.into_any(),

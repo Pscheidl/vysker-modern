@@ -8,6 +8,17 @@ use serde_json::json;
 use time::{Duration, OffsetDateTime};
 
 #[tokio::test]
+async fn browser_location_is_available_to_same_origin_pages_only() {
+    let app = App::new().await;
+    let response = app.call("GET", "/api/v1/privacy", None, false).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()["permissions-policy"],
+        "camera=(), microphone=(), geolocation=(self)"
+    );
+}
+
+#[tokio::test]
 async fn subscription_must_match_the_displayed_wording() {
     let app = App::new().await;
     for consent in [json!({"fingerprint":""}), json!({"fingerprint":"outdated"})] {

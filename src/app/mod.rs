@@ -3,6 +3,7 @@ mod catalog;
 mod components;
 mod events;
 mod pages;
+mod reports;
 mod search;
 
 use crate::content::{Board, load_board};
@@ -100,6 +101,9 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("odber") view=Subscribe ssr=leptos_router::SsrMode::InOrder/>
                     <Route path=path!("kalendar") view=Calendar ssr=leptos_router::SsrMode::InOrder/>
                     <Route path=path!("kalendar/:id") view=events::EventDetail ssr=leptos_router::SsrMode::Async/>
+                    <Route path=path!("hlaseni-zavad") view=reports::Reports ssr=leptos_router::SsrMode::InOrder/>
+                    <Route path=path!("hlaseni-zavad/nove") view=reports::NewReport ssr=leptos_router::SsrMode::InOrder/>
+                    <Route path=path!("hlaseni-zavad/:id") view=reports::ReportDetail ssr=leptos_router::SsrMode::Async/>
                     <Route path=path!("pristupnost") view=Accessibility ssr=leptos_router::SsrMode::InOrder/>
                     <Route path=path!("ochrana-udaju") view=Privacy ssr=leptos_router::SsrMode::InOrder/>
                 </Routes>
