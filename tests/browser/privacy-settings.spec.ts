@@ -128,10 +128,12 @@ test('admin edits privacy content publicly without rewriting previous subscripti
   }
 })
 
-test('verification and publication emails end with useful links and no personal signature', async ({ page }) => {
+test('verification and hourly digest emails end with useful links and no personal signature', async ({ page }) => {
   const subscriber = await subscribe(page, 'unsigned-mail', true)
   expect(subscriber.message.trim()).toMatch(/Informace o soukromí: http:\/\/127\.0\.0\.1:3107\/ochrana-udaju$/)
   expect(subscriber.message.trim().split('\n').at(-1)).not.toBe(subscriber.notice.policy.controller_name)
+  // Hold this synthetic recipient even if publishing crosses an hour boundary.
+  fixtureQuery("UPDATE subscribers SET next_digest_at=extract(epoch FROM clock_timestamp())::bigint+7200 WHERE id=%s RETURNING id", [subscriber.id])
   await login(page)
   const headers = await mutationHeaders(page)
   const created = await page.request.post('/api/v1/admin/documents', { headers, data: { title: 'Dokument pro kontrolu e-mailu bez podpisu' } })
@@ -140,6 +142,10 @@ test('verification and publication emails end with useful links and no personal 
   const published = await page.request.post(`/api/v1/admin/documents/${id}/publish`, { headers })
   expect(published.status()).toBe(204)
   const notification = () => fixtureQuery("SELECT body FROM mail_queue WHERE subscriber_id=%s AND purpose='document' ORDER BY id DESC LIMIT 1", [subscriber.id])
+  expect(notification()).toHaveLength(0)
+  // Make only this synthetic publication due without waiting a real hour.
+  expect(fixtureQuery("UPDATE publication_outbox SET created_at=(floor(extract(epoch FROM clock_timestamp())/3600)::bigint*3600)-1 WHERE subscriber_id=%s AND document_id=%s RETURNING id", [subscriber.id, id])).toHaveLength(1)
+  fixtureQuery('UPDATE subscribers SET next_digest_at=0 WHERE id=%s RETURNING id', [subscriber.id])
   await expect.poll(() => notification().length, { timeout: 45_000 }).toBe(1)
   const body = notification()[0][0] as string
   expect(body.trim()).toMatch(/http:\/\/127\.0\.0\.1:3107\/odber\/nastaveni\?token=[a-f0-9]{64}$/)
