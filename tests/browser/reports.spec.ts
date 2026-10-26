@@ -519,6 +519,69 @@ test('photo selection accepts the exact byte limits and rejects larger additions
   await expect(error).toBeHidden()
 })
 
+test('a resident submits a 50-megapixel photograph within the byte limit and receives a downsized public image', async ({ page }) => {
+  test.setTimeout(120_000)
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  page.on('console', message => {
+    if (message.type() === 'error') errors.push(message.text())
+  })
+  await prepareMap(page)
+  await page.goto('/hlaseni-zavad/nove')
+  const description = `Fotografie s rozlišením 50 megapixelů ${Date.now()}`
+  await page.getByLabel('Popis podnětu nebo závady', { exact: false }).fill(description)
+  await page.getByLabel('Adresa nebo upřesnění místa', { exact: false }).fill('Vyskeř, náves')
+  // Encode a real large JPEG inside the browser, keeping its compressed size small.
+  // This exceeds both former pixel limits without bypassing the resident form.
+  const original = await page.locator('#report-photo').evaluate(async element => {
+    const canvas = document.createElement('canvas')
+    canvas.width = 10_000
+    canvas.height = 5_000
+    const drawing = canvas.getContext('2d')!
+    drawing.fillStyle = '#9abe73'
+    drawing.fillRect(0, 0, canvas.width, canvas.height)
+    drawing.fillStyle = '#586d43'
+    drawing.fillRect(500, 2_000, 9_000, 1_000)
+    const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob(
+      blob => blob ? resolve(blob) : reject(new Error('Large JPEG generation failed')),
+      'image/jpeg',
+      0.85,
+    ))
+    const dimensions = { width: canvas.width, height: canvas.height, size: blob.size, type: blob.type }
+    canvas.width = 1
+    canvas.height = 1
+    const transfer = new DataTransfer()
+    transfer.items.add(new File([blob], 'fotografie-50mp.jpg', { type: blob.type }))
+    const input = element as HTMLInputElement
+    input.files = transfer.files
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+    return dimensions
+  })
+  expect(original.width * original.height).toBe(50_000_000)
+  expect(original.type).toBe('image/jpeg')
+  expect(original.size).toBeGreaterThan(0)
+  expect(original.size).toBeLessThan(15_000_000)
+  await expect(page.locator('[data-report-photo]')).toHaveCount(1)
+  await expect(page.locator('#report-photo-error')).toBeHidden()
+  const report = await submitReport(page)
+  expect(report.description).toBe(description)
+  expect(report.has_photo).toBe(true)
+  expect(report.photo_count).toBe(1)
+  const path = `/api/v1/reports/${report.id}/photos/1`
+  const stored = await page.request.get(path)
+  expect(stored.status()).toBe(200)
+  expect(stored.headers()['content-type']).toBe('image/jpeg')
+  expect((await stored.body()).length).toBeLessThan(15_000_000)
+  await page.reload()
+  const photo = page.getByRole('region', { name: 'Fotografie k hlášení', exact: true }).locator(`img[src="${path}"]`)
+  await expect(photo).toBeVisible()
+  await expect.poll(() => photo.evaluate(image => ({
+    width: (image as HTMLImageElement).naturalWidth,
+    height: (image as HTMLImageElement).naturalHeight,
+  }))).toEqual({ width: 2560, height: 1280 })
+  expect(errors).toEqual([])
+})
+
 test('address suggestions support keyboard selection and moving the pin replaces the address with exact coordinates', async ({ page }, testInfo) => {
   await prepareMap(page)
   const suggestion = { label: 'Vyskeř 50, 512 64 Vyskeř', latitude: 50.5295088, longitude: 15.158555 }

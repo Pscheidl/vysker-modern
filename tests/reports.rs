@@ -9,7 +9,7 @@ use axum::{
 };
 use common::{App, body_json};
 use http_body_util::BodyExt;
-use image::{DynamicImage, ImageFormat};
+use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
 use lettre::{AsyncSmtpTransport, Tokio1Executor};
 use obecni_web::backend::{self, reports};
 use obecni_web::reports::{
@@ -638,6 +638,93 @@ async fn accepts_exact_photo_and_total_limits_and_rejects_larger_uploads_atomica
 }
 
 #[tokio::test]
+async fn fifty_megapixel_jpeg_under_byte_limit_is_accepted_for_report_and_resolution() {
+    let app = App::new().await;
+    // A real 50 MP RGB image crosses the former 8192-pixel, 32 MP and 128 MiB
+    // decoded-buffer limits. Drop its full pixel buffer before either upload,
+    // then exercise the two endpoints sequentially with the compressed JPEG.
+    let source = tokio::task::spawn_blocking(|| {
+        let pixels = image::RgbImage::from_pixel(10_000, 5_000, image::Rgb([214, 104, 52]));
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85)
+            .encode_image(&pixels)
+            .unwrap();
+        jpeg
+    })
+    .await
+    .unwrap();
+    assert!(source.len() < REPORT_PHOTO_BYTES);
+    let decoder = ImageReader::with_format(Cursor::new(&source), ImageFormat::Jpeg)
+        .into_decoder()
+        .unwrap();
+    assert_eq!(decoder.dimensions(), (10_000, 5_000));
+    assert_eq!(decoder.total_bytes(), 150_000_000);
+    drop(decoder);
+
+    let response = submit(&app, VALID, Some(&source), Some(ORIGIN), "192.0.2.114").await;
+    let status = response.status();
+    let report = body_json(response).await;
+    assert_eq!(status, StatusCode::CREATED, "{report}");
+    let id = report["id"].as_i64().unwrap();
+    assert_eq!(report["photo_count"], 1);
+    let public_photo = app
+        .call(
+            "GET",
+            &format!("/api/v1/reports/{id}/photos/1"),
+            None,
+            false,
+        )
+        .await;
+    assert_eq!(public_photo.status(), StatusCode::OK);
+    assert_eq!(public_photo.headers()["content-type"], "image/jpeg");
+    let bytes = public_photo.into_body().collect().await.unwrap().to_bytes();
+    let decoded = image::load_from_memory(&bytes).unwrap();
+    assert_eq!((decoded.width(), decoded.height()), (2560, 1280));
+    assert!(bytes.len() < REPORT_PHOTO_BYTES);
+    drop(decoded);
+    drop(bytes);
+
+    let response = resolve(
+        &app,
+        id,
+        &[
+            ("status", "resolved"),
+            ("resolution_comment", "Fotografie dokončené opravy."),
+        ],
+        &[&source],
+        true,
+        true,
+    )
+    .await;
+    let status = response.status();
+    let resolved = body_json(response).await;
+    assert_eq!(status, StatusCode::OK, "{resolved}");
+    assert_eq!(resolved["status"], "resolved");
+    assert_eq!(
+        resolved["resolution_photo_ids"].as_array().unwrap().len(),
+        1
+    );
+    let photo_id = resolved["resolution_photo_ids"][0].as_i64().unwrap();
+    let public_photo = app
+        .call(
+            "GET",
+            &format!("/api/v1/reports/{id}/resolution-photos/{photo_id}"),
+            None,
+            false,
+        )
+        .await;
+    assert_eq!(public_photo.status(), StatusCode::OK);
+    assert_eq!(public_photo.headers()["content-type"], "image/jpeg");
+    let bytes = public_photo.into_body().collect().await.unwrap().to_bytes();
+    let decoded = image::load_from_memory(&bytes).unwrap();
+    assert_eq!((decoded.width(), decoded.height()), (2560, 1280));
+    assert!(bytes.len() < REPORT_PHOTO_BYTES);
+    let counts: (i64, i64) = sqlx::query_as("SELECT (SELECT count(*) FROM issue_report_photos WHERE report_id=$1),(SELECT count(*) FROM issue_report_resolution_photos WHERE report_id=$1)")
+        .bind(id).fetch_one(&app.state.pool).await.unwrap();
+    assert_eq!(counts, (1, 1));
+}
+
+#[tokio::test]
 async fn searches_all_public_descriptions_and_addresses_before_pagination() {
     let app = App::new().await;
     sqlx::query("INSERT INTO issue_reports(description,address,reporter_name,request_ip,created_at) SELECT CASE WHEN i%2=0 THEN 'Rozbitá lampa' ELSE 'Poškozená lavička' END,CASE WHEN i=24 THEN 'U RYBNÍKA' ELSE 'Vyskeř' END,'Jméno nenajde','192.0.2.200','2026-10-25T12:00:00Z' FROM generate_series(1,24) i")
@@ -1239,7 +1326,6 @@ async fn validates_locations_text_origins_files_and_admin_permissions() {
     for (index, bytes) in [
         b"<svg onload='alert(1)'/>".to_vec(),
         picture(ImageFormat::Gif, 2),
-        picture(ImageFormat::Png, 8193),
         vec![0; REPORT_PHOTO_BYTES + 1],
     ]
     .iter()
@@ -1270,7 +1356,7 @@ async fn validates_locations_text_origins_files_and_admin_permissions() {
                 ("longitude", "15.161"),
                 ("reporter_name", " Jana "),
             ],
-            Some(&picture(format, 2)),
+            Some(&picture(format, 8193)),
             Some(ORIGIN),
             &format!("192.0.2.{}", index + 30),
         )

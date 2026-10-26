@@ -15,7 +15,7 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits};
+use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use sqlx::PgPool;
 use std::{collections::BTreeSet, io::Cursor};
@@ -23,7 +23,9 @@ use time::OffsetDateTime;
 use time_tz::OffsetDateTimeExt;
 
 const RECIPIENT_LIMIT: usize = 20;
-static IMAGE_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+// Decode large camera photos one at a time. Upload admission depends on file
+// bytes, while serialization limits concurrent decoded buffers on the VPS.
+static IMAGE_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
 fn optional_text(value: String, max: usize, multiline: bool) -> Result<Option<String>> {
     let value = value.replace("\r\n", "\n");
@@ -132,32 +134,21 @@ fn sanitize_photo(bytes: &[u8]) -> Result<Vec<u8>> {
         return Err(bad("Fotografie musí být ve formátu JPEG, PNG nebo WebP."));
     }
     let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
-    let mut limits = Limits::default();
-    limits.max_image_width = Some(8192);
-    limits.max_image_height = Some(8192);
-    limits.max_alloc = Some(128 * 1024 * 1024);
-    reader.limits(limits);
-    let invalid = || {
-        bad(
-            "Fotografie je poškozená nebo příliš velká. Nejvýše 8192 bodů na straně a 32 milionů bodů celkem.",
-        )
-    };
+    // Camera resolution does not determine whether an upload is accepted.
+    // read_photo enforces the per-file and total encoded byte limits instead.
+    reader.no_limits();
+    let invalid = || bad("Fotografie je poškozená nebo ji nelze přečíst.");
     let mut decoder = reader.into_decoder().map_err(|_| invalid())?;
-    let (width, height) = decoder.dimensions();
-    if u64::from(width) * u64::from(height) > 32_000_000
-        || decoder.total_bytes() > 128 * 1024 * 1024
-    {
-        return Err(invalid());
-    }
     let orientation = decoder.orientation().map_err(|_| invalid())?;
     let mut image = DynamicImage::from_decoder(decoder).map_err(|_| invalid())?;
-    image.apply_orientation(orientation);
     if image.width() > 2560 || image.height() > 2560 {
         image = image.thumbnail(2560, 2560);
     }
+    // Rotating the thumbnail avoids copying a full camera-sized pixel buffer.
+    image.apply_orientation(orientation);
     let mut result = Vec::new();
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut result, 85)
-        .encode_image(&image.to_rgb8())
+        .encode_image(&image.into_rgb8())
         .map_err(|_| bad("Fotografii se nepodařilo zpracovat."))?;
     if result.len() > REPORT_PHOTO_BYTES {
         return Err(bad("Zpracovaná fotografie překračuje limit 15 MB."));

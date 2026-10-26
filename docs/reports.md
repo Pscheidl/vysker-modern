@@ -183,13 +183,16 @@ or browser MIME type. Supported input formats are JPEG, PNG and WebP.
 | All input photographs together | 50 MB, exactly 50,000,000 bytes |
 | All processed photographs together | 50 MB, to bound memory and stored gallery size |
 | Entire multipart request | 50,000,000 bytes plus 64 KiB for fields and framing |
-| Input image dimensions | At most 8,192 pixels on either side and 32 million pixels total |
-| Decoder allocation limit | 128 MiB |
+| Input image dimensions | No application resolution limit. Admission uses the encoded file sizes above |
 | Processed image dimensions | At most 2,560 pixels on either side |
-| Concurrent image decoding | Two jobs per application process |
+| Concurrent image decoding | One job per application process |
 
-Photographs are decoded, oriented according to EXIF and encoded again as JPEG
-at quality 85. The stored public image contains no original EXIF, embedded GPS,
+Photographs are decoded without a megapixel or side-length admission limit,
+reduced to a web thumbnail, oriented according to EXIF and encoded again as JPEG
+at quality 85. A 50-megapixel camera photograph within the file byte limit is
+accepted. Decoding is serialized, and rotation happens after thumbnailing to
+avoid simultaneous full-resolution buffers on the VPS. The stored public image
+contains no original EXIF, embedded GPS,
 profiles or other source metadata. The original uploaded file is not retained.
 Each processed file must also fit within 15 MB. HEIC and other formats must be
 converted before upload.
