@@ -13,7 +13,7 @@ use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
 use lettre::{AsyncSmtpTransport, Tokio1Executor};
 use obecni_web::backend::{self, reports};
 use obecni_web::reports::{
-    REPORT_MAP_LIMIT, REPORT_PHOTO_BYTES, REPORT_UPLOAD_BYTES, Report, ReportStatusFilter,
+    REPORT_MAP_LIMIT, REPORT_UPLOAD_BYTES, Report, ReportStatusFilter,
 };
 use serde_json::json;
 use std::{io::Cursor, net::SocketAddr};
@@ -418,7 +418,7 @@ async fn admin_resolution_is_atomic_public_and_keeps_original_report_and_photos(
             StatusCode::BAD_REQUEST
         );
     }
-    let oversized = vec![0; REPORT_PHOTO_BYTES + 1];
+    let oversized = vec![0; REPORT_UPLOAD_BYTES + 1];
     assert_eq!(
         resolve(
             &app,
@@ -568,7 +568,7 @@ async fn migration_preserves_existing_photos_and_reports_without_photos() {
 }
 
 #[tokio::test]
-async fn accepts_exact_photo_and_total_limits_and_rejects_larger_uploads_atomically() {
+async fn accepts_large_photos_at_exact_total_limit_and_rejects_larger_uploads_atomically() {
     let app = App::new().await;
     app.call(
         "PUT",
@@ -580,13 +580,13 @@ async fn accepts_exact_photo_and_total_limits_and_rejects_larger_uploads_atomica
     let mut full = picture(ImageFormat::Jpeg, 2);
     // JPEG decoders ignore trailing bytes. This exercises upload limits with a
     // real decodable image without allocating large decoded pixel buffers.
-    full.resize(REPORT_PHOTO_BYTES, 0);
+    full.resize(60_000_000, 0);
     let mut remainder = picture(ImageFormat::Jpeg, 3);
-    remainder.resize(REPORT_UPLOAD_BYTES - 2 * REPORT_PHOTO_BYTES, 0);
+    remainder.resize(REPORT_UPLOAD_BYTES - full.len(), 0);
     let response = submit_photos(
         &app,
         VALID,
-        &[&full, &full, &remainder],
+        &[&full, &remainder],
         Some(ORIGIN),
         "192.0.2.110",
     )
@@ -594,35 +594,35 @@ async fn accepts_exact_photo_and_total_limits_and_rejects_larger_uploads_atomica
     assert_eq!(response.status(), StatusCode::CREATED);
     let report = body_json(response).await;
     let id = report["id"].as_i64().unwrap();
-    assert_eq!(report["photo_count"], 3);
+    assert_eq!(report["photo_count"], 2);
     let body: String = sqlx::query_scalar("SELECT body FROM report_mail_queue WHERE report_id=$1")
         .bind(id)
         .fetch_one(&app.state.pool)
         .await
         .unwrap();
-    for position in 1..=3 {
+    for position in 1..=2 {
         assert!(body.contains(&format!(
             "http://localhost:3000/api/v1/reports/{id}/photos/{position}"
         )));
     }
-    full.push(0);
-    let rejected = submit_photos(&app, VALID, &[&full], Some(ORIGIN), "192.0.2.111").await;
+    let oversized = vec![0; REPORT_UPLOAD_BYTES + 1];
+    let rejected = submit_photos(&app, VALID, &[&oversized], Some(ORIGIN), "192.0.2.111").await;
     assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
     let error = rejected.into_body().collect().await.unwrap().to_bytes();
-    assert!(String::from_utf8_lossy(&error).contains("20 MB"));
-    full.pop();
+    assert!(String::from_utf8_lossy(&error).contains("100 MB"));
+    drop(oversized);
     remainder.push(0);
     let rejected = submit_photos(
         &app,
         VALID,
-        &[&full, &full, &remainder],
+        &[&full, &remainder],
         Some(ORIGIN),
         "192.0.2.112",
     )
     .await;
     assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
     let error = rejected.into_body().collect().await.unwrap().to_bytes();
-    assert!(String::from_utf8_lossy(&error).contains("50 MB"));
+    assert!(String::from_utf8_lossy(&error).contains("100 MB"));
     let rejected = submit_photos(
         &app,
         VALID,
@@ -634,7 +634,7 @@ async fn accepts_exact_photo_and_total_limits_and_rejects_larger_uploads_atomica
     assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
     let counts: (i64, i64, i64) = sqlx::query_as("SELECT (SELECT count(*) FROM issue_reports),(SELECT count(*) FROM issue_report_photos),(SELECT count(*) FROM report_mail_queue)")
         .fetch_one(&app.state.pool).await.unwrap();
-    assert_eq!(counts, (1, 3, 1));
+    assert_eq!(counts, (1, 2, 1));
 }
 
 #[tokio::test]
@@ -653,7 +653,7 @@ async fn fifty_megapixel_jpeg_under_byte_limit_is_accepted_for_report_and_resolu
     })
     .await
     .unwrap();
-    assert!(source.len() < REPORT_PHOTO_BYTES);
+    assert!(source.len() < REPORT_UPLOAD_BYTES);
     let decoder = ImageReader::with_format(Cursor::new(&source), ImageFormat::Jpeg)
         .into_decoder()
         .unwrap();
@@ -680,7 +680,7 @@ async fn fifty_megapixel_jpeg_under_byte_limit_is_accepted_for_report_and_resolu
     let bytes = public_photo.into_body().collect().await.unwrap().to_bytes();
     let decoded = image::load_from_memory(&bytes).unwrap();
     assert_eq!((decoded.width(), decoded.height()), (2560, 1280));
-    assert!(bytes.len() < REPORT_PHOTO_BYTES);
+    assert!(bytes.len() < REPORT_UPLOAD_BYTES);
     drop(decoded);
     drop(bytes);
 
@@ -718,7 +718,7 @@ async fn fifty_megapixel_jpeg_under_byte_limit_is_accepted_for_report_and_resolu
     let bytes = public_photo.into_body().collect().await.unwrap().to_bytes();
     let decoded = image::load_from_memory(&bytes).unwrap();
     assert_eq!((decoded.width(), decoded.height()), (2560, 1280));
-    assert!(bytes.len() < REPORT_PHOTO_BYTES);
+    assert!(bytes.len() < REPORT_UPLOAD_BYTES);
     let counts: (i64, i64) = sqlx::query_as("SELECT (SELECT count(*) FROM issue_report_photos WHERE report_id=$1),(SELECT count(*) FROM issue_report_resolution_photos WHERE report_id=$1)")
         .bind(id).fetch_one(&app.state.pool).await.unwrap();
     assert_eq!(counts, (1, 1));
@@ -1326,7 +1326,7 @@ async fn validates_locations_text_origins_files_and_admin_permissions() {
     for (index, bytes) in [
         b"<svg onload='alert(1)'/>".to_vec(),
         picture(ImageFormat::Gif, 2),
-        vec![0; REPORT_PHOTO_BYTES + 1],
+        vec![0; REPORT_UPLOAD_BYTES + 1],
     ]
     .iter()
     .enumerate()

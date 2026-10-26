@@ -4,9 +4,8 @@ use super::{
 };
 use crate::reports::{
     AdminReport, REPORT_ADDRESS_LIMIT, REPORT_DESCRIPTION_LIMIT, REPORT_MAP_LIMIT,
-    REPORT_NAME_LIMIT, REPORT_PHOTO_BYTES, REPORT_RESOLUTION_LIMIT, REPORT_SEARCH_LIMIT,
-    REPORT_UPLOAD_BYTES, Report, ReportMap, ReportMapPoint, ReportSettings, ReportStatusFilter,
-    ReportUpdate, report_excerpt,
+    REPORT_NAME_LIMIT, REPORT_RESOLUTION_LIMIT, REPORT_SEARCH_LIMIT, REPORT_UPLOAD_BYTES, Report,
+    ReportMap, ReportMapPoint, ReportSettings, ReportStatusFilter, ReportUpdate, report_excerpt,
 };
 use axum::{
     Json,
@@ -135,7 +134,7 @@ fn sanitize_photo(bytes: &[u8]) -> Result<Vec<u8>> {
     }
     let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
     // Camera resolution does not determine whether an upload is accepted.
-    // read_photo enforces the per-file and total encoded byte limits instead.
+    // read_photo enforces the total encoded byte limit instead.
     reader.no_limits();
     let invalid = || bad("Fotografie je poškozená nebo ji nelze přečíst.");
     let mut decoder = reader.into_decoder().map_err(|_| invalid())?;
@@ -150,9 +149,6 @@ fn sanitize_photo(bytes: &[u8]) -> Result<Vec<u8>> {
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut result, 85)
         .encode_image(&image.into_rgb8())
         .map_err(|_| bad("Fotografii se nepodařilo zpracovat."))?;
-    if result.len() > REPORT_PHOTO_BYTES {
-        return Err(bad("Zpracovaná fotografie překračuje limit 20 MB."));
-    }
     Ok(result)
 }
 
@@ -166,13 +162,10 @@ async fn read_photo(
     while let Some(chunk) = tokio::time::timeout(std::time::Duration::from_secs(60), field.chunk())
         .await
         .map_err(|_| bad("Přenos dat se přerušil. Zkuste odeslání znovu."))?
-        .map_err(|_| bad("Fotografie nelze přečíst nebo celková velikost překračuje 50 MB."))?
+        .map_err(|_| bad("Fotografie nelze přečíst nebo celková velikost překračuje 100 MB."))?
     {
-        if chunk.len() > REPORT_PHOTO_BYTES - bytes.len() {
-            return Err(bad("Jedna fotografie může mít nejvýše 20 MB."));
-        }
         if chunk.len() > REPORT_UPLOAD_BYTES - *upload_bytes {
-            return Err(bad("Fotografie mohou mít dohromady nejvýše 50 MB."));
+            return Err(bad("Fotografie mohou mít dohromady nejvýše 100 MB."));
         }
         *upload_bytes += chunk.len();
         bytes.extend_from_slice(&chunk);
@@ -195,7 +188,7 @@ async fn read_photo(
     .map_err(|_| bad("Fotografii se nepodařilo zpracovat."))??;
     if photo.len() > REPORT_UPLOAD_BYTES - *processed_bytes {
         return Err(bad(
-            "Zpracované fotografie mohou mít dohromady nejvýše 50 MB. Přiložte méně fotografií.",
+            "Zpracované fotografie mohou mít dohromady nejvýše 100 MB. Přiložte méně fotografií.",
         ));
     }
     *processed_bytes += photo.len();
@@ -748,7 +741,7 @@ pub async fn update_resolution(
         .sum();
     if retained_bytes > (REPORT_UPLOAD_BYTES - processed_bytes) as i64 {
         return Err(bad(
-            "Fotografie řešení mohou mít dohromady nejvýše 50 MB. Odeberte některé stávající fotografie.",
+            "Fotografie řešení mohou mít dohromady nejvýše 100 MB. Odeberte některé stávající fotografie.",
         ));
     }
     let status = status.unwrap_or_else(|| current.report.status.clone());

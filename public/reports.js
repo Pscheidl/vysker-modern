@@ -4,8 +4,7 @@ let clusterPromise
 const mounted = new WeakMap()
 // A draft survives SPA history navigation only in this page's memory.
 let reportDraft = null
-const MAX_PHOTO_BYTES = 20_000_000
-const MAX_TOTAL_PHOTO_BYTES = 50_000_000
+const MAX_TOTAL_PHOTO_BYTES = 100_000_000
 
 function leaflet() {
   if (window.L) return Promise.resolve(window.L)
@@ -448,7 +447,7 @@ export function mount_report_form(root) {
     }
     const size = state.photos.reduce((sum, item) => sum + item.file.size, 0)
     $('report-photo-status').textContent = state.photos.length
-      ? `Vybrané fotografie: ${state.photos.length}. Celkem ${(size / 1_000_000).toLocaleString('cs-CZ', { maximumFractionDigits: 2 })} MB z 50 MB.`
+      ? `Vybrané fotografie: ${state.photos.length}. Celkem ${(size / 1_000_000).toLocaleString('cs-CZ', { maximumFractionDigits: 2 })} MB z 100 MB.`
       : ''
   }
 
@@ -461,17 +460,13 @@ export function mount_report_form(root) {
     if (!selected.length) return
     let message = ''
     for (const file of selected) {
-      if (file.size > MAX_PHOTO_BYTES) {
-        message = `Fotografie „${file.name}“ je příliš velká. Jedna fotografie může mít nejvýše 20 MB.`
-        break
-      }
       if (!/^image\/(jpeg|png|webp)$/.test(file.type) && (file.type || !/\.(jpe?g|png|webp)$/i.test(file.name))) {
         message = `Soubor „${file.name}“ není podporovaný. Vyberte fotografii JPG, PNG nebo WebP.`
         break
       }
     }
     const total = state.photos.reduce((sum, item) => sum + item.file.size, 0) + selected.reduce((sum, file) => sum + file.size, 0)
-    if (!message && total > MAX_TOTAL_PHOTO_BYTES) message = 'Fotografie dohromady přesahují 50 MB. Vyberte méně fotografií nebo nejprve některou odeberte.'
+    if (!message && total > MAX_TOTAL_PHOTO_BYTES) message = 'Fotografie dohromady přesahují 100 MB. Vyberte méně fotografií nebo nejprve některou odeberte.'
     if (message) {
       photoError.textContent = message
       photoError.hidden = false
@@ -561,7 +556,7 @@ export function mount_report_form(root) {
         }
         break
       }
-      if (!response.ok) throw new Error(result?.error || (response.status === 413 ? 'Upload je příliš velký. Jedna fotografie může mít nejvýše 20 MB a všechny dohromady 50 MB.' : 'Hlášení se nepodařilo odeslat. Zkuste to znovu.'))
+      if (!response.ok) throw new Error(result?.error || (response.status === 413 ? 'Upload je příliš velký. Fotografie mohou mít dohromady nejvýše 100 MB.' : 'Hlášení se nepodařilo odeslat. Zkuste to znovu.'))
       if (!Number.isSafeInteger(result?.id) || result.id < 1) throw new Error('Server vrátil neočekávanou odpověď. Před opakováním zkontrolujte seznam hlášení.')
       state.submitted = true
       reportDraft = null

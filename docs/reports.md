@@ -179,29 +179,28 @@ or browser MIME type. Supported input formats are JPEG, PNG and WebP.
 | Optional reporter name | 120 characters |
 | Optional reporter email | 254 characters, validated email address |
 | Optional reporter phone | 40 characters, digits and usual phone punctuation |
-| Each input photograph | 20 MB, exactly 20,000,000 bytes |
-| All input photographs together | 50 MB, exactly 50,000,000 bytes |
-| All processed photographs together | 50 MB, to bound memory and stored gallery size |
-| Entire multipart request | 50,000,000 bytes plus 64 KiB for fields and framing |
+| Each input photograph | No separate limit, subject to the combined size below |
+| All input photographs together | 100 MB, exactly 100,000,000 bytes |
+| All processed photographs together | 100 MB, to bound memory and stored gallery size |
+| Entire multipart request | 100,000,000 bytes plus 64 KiB for fields and framing |
 | Input image dimensions | No application resolution limit. Admission uses the encoded file sizes above |
 | Processed image dimensions | At most 2,560 pixels on either side |
 | Concurrent image decoding | One job per application process |
 
 Photographs are decoded without a megapixel or side-length admission limit,
 reduced to a web thumbnail, oriented according to EXIF and encoded again as JPEG
-at quality 85. A 50-megapixel camera photograph within the file byte limit is
+at quality 85. A 50-megapixel camera photograph within the combined byte limit is
 accepted. Decoding is serialized, and rotation happens after thumbnailing to
 avoid simultaneous full-resolution buffers on the VPS. The stored public image
 contains no original EXIF, embedded GPS,
 profiles or other source metadata. The original uploaded file is not retained.
-Each processed file must also fit within 20 MB. HEIC and other formats must be
-converted before upload.
+HEIC and other formats must be converted before upload.
 
 The file input accepts multiple files at once and residents can add more later.
 Each selected file has its own preview and remove button. Removing one keeps
 the remaining selection, and a failed submission preserves all form fields,
 coordinates and selected photographs for another attempt. The browser checks
-the same per-file and combined byte limits before sending. The server enforces
+the same combined byte limit before sending. The server enforces
 the limits independently. Accepted photographs are stored in selection order.
 An invalid new selection is rejected as a whole with a visible error. Previously
 selected valid photographs remain available to submit or remove.

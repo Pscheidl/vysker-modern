@@ -66,7 +66,7 @@ async function submitReport(page: Page, expectedStatus = 201) {
 }
 
 async function selectSizedPhotos(page: Page, files: { name: string, size: number }[]) {
-  // Construct real Files in the browser to avoid transferring 50 MB through DevTools.
+  // Construct real Files in the browser to avoid transferring 100 MB through DevTools.
   await page.locator('#report-photo').evaluate((element, { files, png }) => {
     const input = element as HTMLInputElement
     const transfer = new DataTransfer()
@@ -486,36 +486,40 @@ test('individual photos can be removed and a failed submission retains every rem
   expect(errors).toEqual([])
 })
 
-test('photo selection accepts the exact byte limits and rejects larger additions without losing existing files', async ({ page }) => {
+test('photo selection accepts large individual files up to the total limit and preserves files after oversized additions', async ({ page }) => {
   await prepareMap(page)
   await page.goto('/hlaseni-zavad/nove')
   await expect(page.getByRole('button', { name: 'Odeslat hlášení', exact: true })).toBeEnabled()
   expect(await page.locator('#report-photo').evaluate(input => (input as HTMLInputElement).multiple)).toBe(true)
   const photos = page.locator('[data-report-photo]')
   const error = page.locator('#report-photo-error')
-  await selectSizedPhotos(page, [{ name: 'presne20.png', size: 20_000_000 }])
+  await selectSizedPhotos(page, [{ name: 'prvni60.png', size: 60_000_000 }])
   await expect(photos).toHaveCount(1)
   await expect(error).toBeHidden()
-  await selectSizedPhotos(page, [{ name: 'prilis-velka.png', size: 20_000_001 }])
-  await expect(error).toContainText(/20\s*MB/)
+  await selectSizedPhotos(page, [{ name: 'celkem100plus1.png', size: 40_000_001 }])
+  await expect(error).toContainText(/100\s*MB/)
   await expect(photos).toHaveCount(1)
-  await expect(page.getByRole('button', { name: 'Odebrat fotografii presne20.png', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Odebrat fotografii prvni60.png', exact: true })).toBeVisible()
   await selectSizedPhotos(page, [
-    { name: 'druha20.png', size: 20_000_000 },
+    { name: 'druha40.png', size: 40_000_000 },
   ])
   await expect(photos).toHaveCount(2)
   await expect(error).toBeHidden()
-  await selectSizedPhotos(page, [{ name: 'celkem50plus1.png', size: 10_000_001 }])
-  await expect(error).toContainText(/50\s*MB/)
+  await page.getByRole('button', { name: 'Odebrat fotografii prvni60.png', exact: true }).click()
+  await expect(photos).toHaveCount(1)
+  await selectSizedPhotos(page, [{ name: 'nahradni60.png', size: 60_000_000 }])
   await expect(photos).toHaveCount(2)
-  await selectSizedPhotos(page, [{ name: 'celkem50.png', size: 10_000_000 }])
-  await expect(photos).toHaveCount(3)
   await expect(error).toBeHidden()
-  await page.getByRole('button', { name: 'Odebrat fotografii druha20.png', exact: true }).click()
-  await expect(photos).toHaveCount(2)
-  await selectSizedPhotos(page, [{ name: 'nahradni20.png', size: 20_000_000 }])
-  await expect(photos).toHaveCount(3)
+  await page.getByRole('button', { name: 'Odebrat fotografii druha40.png', exact: true }).click()
+  await page.getByRole('button', { name: 'Odebrat fotografii nahradni60.png', exact: true }).click()
+  await expect(photos).toHaveCount(0)
+  await selectSizedPhotos(page, [{ name: 'presne100.png', size: 100_000_000 }])
+  await expect(photos).toHaveCount(1)
   await expect(error).toBeHidden()
+  await page.getByRole('button', { name: 'Odebrat fotografii presne100.png', exact: true }).click()
+  await selectSizedPhotos(page, [{ name: 'pres100.png', size: 100_000_001 }])
+  await expect(error).toContainText(/100\s*MB/)
+  await expect(photos).toHaveCount(0)
 })
 
 test('a resident submits a 50-megapixel photograph within the byte limit and receives a downsized public image', async ({ page }) => {
@@ -559,7 +563,7 @@ test('a resident submits a 50-megapixel photograph within the byte limit and rec
   expect(original.width * original.height).toBe(50_000_000)
   expect(original.type).toBe('image/jpeg')
   expect(original.size).toBeGreaterThan(0)
-  expect(original.size).toBeLessThan(20_000_000)
+  expect(original.size).toBeLessThan(100_000_000)
   await expect(page.locator('[data-report-photo]')).toHaveCount(1)
   await expect(page.locator('#report-photo-error')).toBeHidden()
   const report = await submitReport(page)
@@ -570,7 +574,7 @@ test('a resident submits a 50-megapixel photograph within the byte limit and rec
   const stored = await page.request.get(path)
   expect(stored.status()).toBe(200)
   expect(stored.headers()['content-type']).toBe('image/jpeg')
-  expect((await stored.body()).length).toBeLessThan(20_000_000)
+  expect((await stored.body()).length).toBeLessThan(100_000_000)
   await page.reload()
   const photo = page.getByRole('region', { name: 'Fotografie k hlášení', exact: true }).locator(`img[src="${path}"]`)
   await expect(photo).toBeVisible()
