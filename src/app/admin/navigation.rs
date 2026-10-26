@@ -323,7 +323,7 @@ fn ItemEditor(
                                 "Zvolte hlavní menu nebo položku, pod kterou se má odkaz zobrazit. Podmenu může mít jednu úroveň."
                             }}</small>
                         </label>
-                        <Field id="setting-path" label="Adresa odkazu" value=path required=true maxlength="100" help="Například /uredni-deska, /hlaseni-zavad, /kalendar nebo /stranky/spolky. Stránka musí být zveřejněná."/>
+                        <PageLinkField path name/>
                         <label class="admin-check"><input type="checkbox" prop:checked=move || visible.get() on:change=move |ev| { visible.set(event_target_checked(&ev)); ctx.dirty.set(true); }/>
                             <span><strong>"Zobrazit v menu"</strong><small>"Skrytím hlavní položky se skryjí i její podpoložky. Samotné stránky zůstávají dostupné."</small></span>
                         </label>
@@ -344,5 +344,129 @@ fn ItemEditor(
                 </fieldset>
             </form>
         </section>
+    }
+}
+
+#[component]
+fn PageLinkField(path: RwSignal<String>, name: RwSignal<String>) -> impl IntoView {
+    let ctx = expect_context::<AdminContext>();
+    // A fresh resource for each editor avoids suggesting pages hidden since the app loaded.
+    let pages = LocalResource::new(crate::catalog::load_site_info);
+    let open = RwSignal::new(false);
+    let active = RwSignal::new(None::<usize>);
+    let matches = Memo::new(move |_| {
+        let query = crate::content::fold(path.get().trim());
+        pages
+            .get()
+            .and_then(Result::ok)
+            .map(|info| {
+                info.pages
+                    .into_iter()
+                    .map(|page| (page.title, format!("/stranky/{}", page.slug)))
+                    .filter(|(title, url)| {
+                        crate::content::fold(title).contains(&query) || url.contains(&query)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    });
+    let suggestions = Memo::new(move |_| matches.get().into_iter().take(8).collect::<Vec<_>>());
+    let expanded = Memo::new(move |_| open.get() && !suggestions.get().is_empty());
+    let choose = Callback::new(move |index: usize| {
+        if let Some((title, url)) = suggestions.get_untracked().get(index) {
+            path.set(url.clone());
+            if name.get_untracked().trim().is_empty() {
+                name.set(title.chars().take(40).collect());
+            }
+            ctx.dirty.set(true);
+            open.set(false);
+            active.set(None);
+        }
+    });
+    view! {
+        <div class="admin-field admin-navigation-link-field">
+            <label for="setting-path">"Adresa odkazu *"</label>
+            <div class="admin-navigation-combobox">
+                <input id="setting-path" type="text" required maxlength="100" autocomplete="off"
+                    placeholder="Název stránky nebo /adresa" role="combobox" aria-autocomplete="list"
+                    aria-controls="navigation-page-options" aria-expanded=move || expanded.get().to_string()
+                    aria-activedescendant=move || {
+                        expanded.get().then(|| active.get()).flatten().map(|index| format!("navigation-page-option-{index}"))
+                    }
+                    aria-describedby="setting-path-help navigation-page-status"
+                    prop:value=move || path.get()
+                    on:focus=move |_| { open.set(true); active.set(None); }
+                    on:blur=move |_| { open.set(false); active.set(None); }
+                    on:input=move |ev| {
+                        path.set(event_target_value(&ev));
+                        ctx.dirty.set(true);
+                        open.set(true);
+                        active.set(None);
+                    }
+                    on:keydown=move |ev| {
+                        let count = suggestions.get_untracked().len();
+                        match ev.key().as_str() {
+                            "ArrowDown" | "ArrowUp" if count > 0 => {
+                                ev.prevent_default();
+                                let down = ev.key() == "ArrowDown";
+                                let next = if open.get_untracked() {
+                                    match active.get_untracked() {
+                                        Some(index) if down => (index + 1) % count,
+                                        Some(index) => (index + count - 1) % count,
+                                        None if down => 0,
+                                        None => count - 1,
+                                    }
+                                } else if down { 0 } else { count - 1 };
+                                open.set(true);
+                                active.set(Some(next));
+                            }
+                            "Enter" if expanded.get_untracked() => {
+                                // Enter in an open picker must not accidentally submit the form.
+                                ev.prevent_default();
+                                if let Some(index) = active.get_untracked() { choose.run(index); }
+                            }
+                            "Escape" if open.get_untracked() => {
+                                ev.prevent_default();
+                                ev.stop_propagation();
+                                open.set(false);
+                                active.set(None);
+                            }
+                            _ => {}
+                        }
+                    }
+                />
+                <Show when=move || expanded.get()>
+                    <ul id="navigation-page-options" class="admin-navigation-suggestions" role="listbox" aria-label="Zveřejněné stránky">
+                        {move || suggestions.get().into_iter().enumerate().map(|(index, (title, url))| {
+                            let option_ref = NodeRef::<leptos::html::Li>::new();
+                            #[cfg(feature = "hydrate")]
+                            Effect::new(move |_| {
+                                if active.get() == Some(index) {
+                                    if let Some(option) = option_ref.get() { option.scroll_into_view_with_bool(false); }
+                                }
+                            });
+                            view! {
+                                <li node_ref=option_ref id=format!("navigation-page-option-{index}") role="option"
+                                    aria-selected=move || (active.get() == Some(index)).to_string()
+                                    on:mousedown=move |ev| ev.prevent_default()
+                                    on:click=move |_| choose.run(index)>
+                                    <strong>{title}</strong><span>{url}</span>
+                                </li>
+                            }
+                        }).collect_view()}
+                    </ul>
+                </Show>
+            </div>
+            <small id="navigation-page-status" role="status">{move || {
+                match pages.get() {
+                    None => "Načítám zveřejněné stránky…".to_owned(),
+                    Some(Err(_)) => "Nabídku stránek se nepodařilo načíst. Adresu můžete zadat ručně.".to_owned(),
+                    Some(Ok(_)) if matches.get().is_empty() => "Žádná zveřejněná stránka neodpovídá. Adresu můžete zadat ručně.".to_owned(),
+                    Some(Ok(_)) if matches.get().len() > 8 => "Zobrazeno prvních 8 stránek. Upřesněte název nebo adresu.".to_owned(),
+                    Some(Ok(_)) => String::new(),
+                }
+            }}</small>
+            <small id="setting-path-help">"Vyberte zveřejněnou stránku podle názvu nebo adresy, i bez diakritiky. Výběr doplní také prázdný název položky (nejvýše 40 znaků). Adresu můžete zadat i ručně, například /uredni-deska nebo /kontakt."</small>
+        </div>
     }
 }
