@@ -106,20 +106,30 @@ test('email opt-in requires confirmation and opt-out cancels future deliveries',
   expect(fixtureQuery('SELECT verified_at FROM subscribers WHERE email=%s', [email])[0][0]).toBeNull()
   await page.getByRole('button', { name: 'Potvrdit odběr novinek', exact: true }).click()
   expect(fixtureQuery('SELECT verified_at FROM subscribers WHERE email=%s', [email])[0][0]).not.toBeNull()
-  // A real UI publication creates the notification, including its opt-out link.
+  // Hold this synthetic recipient across a possible wall-clock hour boundary.
+  fixtureQuery("UPDATE subscribers SET next_digest_at=extract(epoch FROM clock_timestamp())::bigint+7200 WHERE email=%s RETURNING id", [email])
+  // Two real UI publications must become one digest, including its opt-out link.
   await login(page)
-  await page.getByRole('link', { name: 'Dokumenty', exact: true }).click()
-  await page.getByRole('link', { name: 'Nový dokument', exact: true }).click()
-  await page.getByLabel('Název', { exact: false }).fill('Novinka pro odběratele')
-  await page.getByRole('button', { name: 'Uložit koncept', exact: true }).click()
-  await expect(page).toHaveURL(/\/admin\/dokumenty\/\d+$/)
-  await page.getByRole('button', { name: 'Zveřejnit', exact: true }).click()
-  await page.getByRole('dialog').getByRole('button', { name: 'Zveřejnit', exact: true }).click()
-  await expect(page.getByRole('button', { name: 'Archivovat dokument', exact: true })).toBeVisible()
-  const notification = () => fixtureQuery("SELECT m.body FROM mail_queue m JOIN subscribers s ON s.id=m.subscriber_id WHERE s.email=%s AND m.purpose='document' ORDER BY m.id DESC LIMIT 1", [email])
-  // Publication is committed to the outbox before the 30-second mail worker runs.
+  const titles = ['První novinka pro odběratele', 'Druhá novinka pro odběratele']
+  for (const title of titles) {
+    await page.getByRole('navigation', { name: 'Administrace' }).getByRole('link', { name: 'Dokumenty', exact: true }).click()
+    await page.getByRole('link', { name: 'Nový dokument', exact: true }).click()
+    await page.getByLabel('Název', { exact: false }).fill(title)
+    await page.getByRole('button', { name: 'Uložit koncept', exact: true }).click()
+    await expect(page).toHaveURL(/\/admin\/dokumenty\/\d+$/)
+    await page.getByRole('button', { name: 'Zveřejnit', exact: true }).click()
+    await page.getByRole('dialog').getByRole('button', { name: 'Zveřejnit', exact: true }).click()
+    await expect(page.getByRole('button', { name: 'Archivovat dokument', exact: true })).toBeVisible()
+  }
+  const notification = () => fixtureQuery("SELECT m.body FROM mail_queue m JOIN subscribers s ON s.id=m.subscriber_id WHERE s.email=%s AND m.purpose='document' ORDER BY m.id", [email])
+  expect(notification()).toHaveLength(0)
+  // Advance only persisted timestamps in the disposable fixture, not the server clock.
+  expect(fixtureQuery("UPDATE publication_outbox o SET created_at=(floor(extract(epoch FROM clock_timestamp())/3600)::bigint*3600)-1 FROM subscribers s WHERE s.id=o.subscriber_id AND s.email=%s RETURNING o.id", [email])).toHaveLength(2)
+  fixtureQuery("UPDATE subscribers SET next_digest_at=0 WHERE email=%s RETURNING id", [email])
   await expect.poll(() => notification().length, { timeout: 45_000 }).toBe(1)
   const message = notification()[0][0]
+  for (const title of titles) expect(message).toContain(title)
+  expect(fixtureQuery("SELECT count(*) FROM mail_publication_items i JOIN subscribers s ON s.id=i.subscriber_id WHERE s.email=%s", [email])[0][0]).toBe(2)
   const unsubscribe = message.match(/http:\/\/127\.0\.0\.1:3107\/odber\/odhlasit\?token=[a-f0-9]+/)[0]
   await page.goto(unsubscribe)
   expect(fixtureQuery('SELECT unsubscribed_at FROM subscribers WHERE email=%s', [email])[0][0]).toBeNull()

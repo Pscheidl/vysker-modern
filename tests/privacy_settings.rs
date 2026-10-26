@@ -144,7 +144,7 @@ async fn saved_privacy_is_live_persistent_and_preserves_original_consent() {
         .unwrap();
     app.publish(app.notice(json!({})).await).await;
     assert!(
-        obecni_web::backend::mail::prepare_publications(&restarted, now)
+        obecni_web::backend::mail::prepare_publications(&restarted, now + Duration::hours(1))
             .await
             .unwrap()
     );

@@ -439,9 +439,12 @@ async fn withdrawal_revokes_tokens_cancels_all_pending_mail_and_preserves_timest
     let publication = app.notice(json!({})).await;
     assert!(app.publish(publication).await.status().is_success());
     assert!(
-        obecni_web::backend::mail::prepare_publications(&app.state, OffsetDateTime::now_utc())
-            .await
-            .unwrap()
+        obecni_web::backend::mail::prepare_publications(
+            &app.state,
+            OffsetDateTime::now_utc() + time::Duration::hours(1)
+        )
+        .await
+        .unwrap()
     );
     let body: String = sqlx::query_scalar(
         "SELECT body FROM mail_queue WHERE subscriber_id=$1 AND purpose='document'",

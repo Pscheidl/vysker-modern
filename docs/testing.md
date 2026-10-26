@@ -20,6 +20,24 @@ on that server, without using its existing application data. Python tests requir
 psycopg, Beautiful Soup, timezone data and PostgreSQL 18 client tools, all included
 in Nix and the test image.
 
+## Hourly digest preparation workload
+
+The opt-in `mail_digest_load` test creates 1,000 confirmed synthetic recipients
+and ten documents in an isolated schema. It checks that 10,000 pending publication
+records become exactly 1,000 digest messages with 10,000 linked items. It reports
+the elapsed preparation time without a hardware-dependent pass threshold.
+It does not submit mail or measure SMTP throughput, and its local timing is not
+a production capacity guarantee.
+
+With `TEST_DATABASE_URL` pointing to a local test PostgreSQL server, run:
+
+```sh
+python3 scripts/test-postgres.py cargo test --locked --no-default-features --features ssr --test mail_digest_load -- --ignored --nocapture
+```
+
+The wrapper creates and drops a separate temporary database. The workload is
+ignored by the routine suite so ordinary correctness tests remain fast.
+
 ## Browser regressions
 
 Install Node.js 22 or newer, pnpm, Python 3, Rust and cargo-leptos. The Nix shell

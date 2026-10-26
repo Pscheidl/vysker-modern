@@ -12,15 +12,21 @@ spec=importlib.util.spec_from_file_location('monitor',Path(__file__).parents[1]/
 monitor=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(monitor)
 
+def mail_tables(db):
+    db.execute('CREATE TABLE mail_queue(created_at BIGINT,attempts BIGINT,sent_at BIGINT,cancelled BOOLEAN)')
+    db.execute('CREATE TABLE subscribers(id BIGINT PRIMARY KEY,next_digest_at BIGINT NOT NULL DEFAULT 0)')
+    db.execute('INSERT INTO subscribers(id) VALUES (1)')
+    db.execute('CREATE TABLE publication_outbox(created_at BIGINT,subscriber_id BIGINT NOT NULL DEFAULT 1,consent_id BIGINT NOT NULL DEFAULT 1)')
+    db.execute('CREATE TABLE recovery_mail(LIKE mail_queue)')
+    db.execute('ALTER TABLE recovery_mail ADD delivery_expired_at BIGINT')
+
+
 class Monitoring(unittest.TestCase):
     def test_no_backups_keeps_application_database_disk_and_mail_checks(self):
         with tempfile.TemporaryDirectory() as root, temporary_database() as database:
             root = Path(root)
             with connect(database) as db:
-                db.execute('CREATE TABLE mail_queue(created_at BIGINT,attempts BIGINT,sent_at BIGINT,cancelled BOOLEAN)')
-                db.execute('CREATE TABLE publication_outbox(created_at BIGINT)')
-                db.execute('CREATE TABLE recovery_mail(LIKE mail_queue)')
-                db.execute('ALTER TABLE recovery_mail ADD delivery_expired_at BIGINT')
+                mail_tables(db)
                 db.execute('INSERT INTO recovery_mail VALUES (1,4,NULL,FALSE,NULL)')
             usage = type('Usage', (), dict(total=100000, free=50000))()
             with patch.object(monitor.urllib.request, 'urlopen', side_effect=OSError()), \
@@ -59,10 +65,7 @@ class Monitoring(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root, temporary_database() as database:
             root=Path(root)
             with connect(database) as db:
-                db.execute('CREATE TABLE mail_queue(created_at INTEGER,attempts INTEGER,sent_at INTEGER,cancelled BOOLEAN)')
-                db.execute('CREATE TABLE publication_outbox(created_at BIGINT)')
-                db.execute('CREATE TABLE recovery_mail(LIKE mail_queue)')
-                db.execute('ALTER TABLE recovery_mail ADD delivery_expired_at BIGINT')
+                mail_tables(db)
                 db.execute('INSERT INTO mail_queue VALUES (1,4,NULL,FALSE)')
                 db.execute('INSERT INTO mail_queue VALUES (1,99,NULL,TRUE)')
             snapshot=root/'vysker-test.dump'
@@ -88,10 +91,7 @@ class Monitoring(unittest.TestCase):
     def test_recovery_failure_is_visible_before_and_after_expiry(self):
         with tempfile.TemporaryDirectory() as root, temporary_database() as database:
             with connect(database) as db:
-                db.execute('CREATE TABLE mail_queue(created_at BIGINT,attempts BIGINT,sent_at BIGINT,cancelled BOOLEAN)')
-                db.execute('CREATE TABLE publication_outbox(created_at BIGINT)')
-                db.execute('CREATE TABLE recovery_mail(LIKE mail_queue)')
-                db.execute('ALTER TABLE recovery_mail ADD delivery_expired_at BIGINT')
+                mail_tables(db)
                 db.execute('INSERT INTO recovery_mail VALUES (9000,3,NULL,FALSE,NULL)')
             with patch.object(monitor.urllib.request,'urlopen',side_effect=OSError()):
                 report=monitor.check(database,root,'http://localhost',now=10000)
@@ -109,11 +109,8 @@ class Monitoring(unittest.TestCase):
     def test_publication_handoff_is_monitored_before_and_after_materialization(self):
         with temporary_database() as database:
             with connect(database) as db:
-                db.execute('CREATE TABLE mail_queue(created_at BIGINT,attempts BIGINT,sent_at BIGINT,cancelled BOOLEAN)')
-                db.execute('CREATE TABLE publication_outbox(created_at BIGINT)')
-                db.execute('CREATE TABLE recovery_mail(LIKE mail_queue)')
-                db.execute('ALTER TABLE recovery_mail ADD delivery_expired_at BIGINT')
-                db.execute('INSERT INTO publication_outbox VALUES (0)')
+                mail_tables(db)
+                db.execute('INSERT INTO publication_outbox(created_at) VALUES (0)')
             response = MagicMock()
             response.__enter__.return_value.status = 200
             response.__enter__.return_value.read.return_value = b'{"status":"ready"}'
@@ -123,17 +120,106 @@ class Monitoring(unittest.TestCase):
                 self.assertEqual(waiting['alerts'], ['mail_queue_large', 'mail_queue_stalled'])
                 self.assertEqual(waiting['metrics']['pending_mail'], 1)
                 self.assertEqual(waiting['metrics']['oldest_mail_age_seconds'], 10000)
+                self.assertEqual(waiting['metrics']['oldest_mail_overdue_seconds'], 6400)
                 self.assertEqual(waiting['metrics']['maximum_mail_attempts'], 0)
                 # The worker atomically exchanges handoff records for rendered mail.
                 with connect(database) as db:
-                    db.execute('INSERT INTO mail_queue SELECT created_at,2,NULL,FALSE FROM publication_outbox')
+                    db.execute('INSERT INTO mail_queue SELECT 10000,2,NULL,FALSE FROM publication_outbox')
                     db.execute('DELETE FROM publication_outbox')
                 ready = monitor.check(database, '/unused', 'http://localhost', now=10000,
                                       check_backups=False, max_pending=1)
-                self.assertEqual(ready['alerts'], waiting['alerts'])
+                self.assertEqual(ready['alerts'], ['mail_queue_large'])
                 self.assertEqual(ready['metrics']['pending_mail'], 1)
-                self.assertEqual(ready['metrics']['oldest_mail_age_seconds'], 10000)
+                self.assertEqual(ready['metrics']['oldest_mail_age_seconds'], 0)
+                self.assertEqual(ready['metrics']['oldest_mail_overdue_seconds'], 0)
                 self.assertEqual(ready['metrics']['maximum_mail_attempts'], 2)
+                retrying = monitor.check(database, '/unused', 'http://localhost', now=11801,
+                                         check_backups=False, max_pending=1)
+                self.assertEqual(retrying['alerts'], ['mail_queue_large', 'mail_queue_stalled'])
+
+    def test_hourly_waiting_is_not_a_backlog_and_uses_the_subscriber_next_slot(self):
+        with temporary_database() as database:
+            with connect(database) as db:
+                mail_tables(db)
+                db.execute('INSERT INTO publication_outbox(created_at) VALUES (3601),(3602)')
+            response = MagicMock()
+            response.__enter__.return_value.status = 200
+            response.__enter__.return_value.read.return_value = b'{"status":"ready"}'
+            with patch.object(monitor.urllib.request, 'urlopen', return_value=response):
+                def check(now):
+                    return monitor.check(database, '/unused', 'http://localhost', now=now,
+                                         check_backups=False, max_pending=1)
+
+                waiting = check(7199)
+                self.assertEqual(waiting['alerts'], [])
+                self.assertEqual(waiting['metrics']['pending_mail'], 2)
+                self.assertEqual(waiting['metrics']['scheduled_publications'], 2)
+                self.assertEqual(waiting['metrics']['ready_mail'], 0)
+                self.assertEqual(waiting['metrics']['oldest_mail_overdue_seconds'], 0)
+                self.assertEqual(check(7200)['alerts'], ['mail_queue_large'])
+                self.assertEqual(check(9000)['alerts'], ['mail_queue_large'])
+                self.assertEqual(check(9001)['alerts'], ['mail_queue_large', 'mail_queue_stalled'])
+
+                # A late publication from the same hour waits until the next
+                # digest slot when the subscriber already received a digest.
+                with connect(database) as db:
+                    db.execute('UPDATE subscribers SET next_digest_at=10800')
+                self.assertEqual(check(9001)['alerts'], [])
+                self.assertEqual(check(10799)['metrics']['scheduled_publications'], 2)
+                due = check(10800)
+                self.assertEqual(due['alerts'], ['mail_queue_large'])
+                self.assertEqual(due['metrics']['scheduled_publications'], 0)
+                self.assertEqual(due['metrics']['ready_mail'], 1)
+                self.assertEqual(check(12601)['alerts'], ['mail_queue_large', 'mail_queue_stalled'])
+
+    def test_ready_backlog_counts_digest_groups_instead_of_publication_items(self):
+        with temporary_database() as database:
+            with connect(database) as db:
+                mail_tables(db)
+                db.execute('INSERT INTO subscribers(id) SELECT generate_series(2,10)')
+                db.execute('''INSERT INTO publication_outbox(created_at,subscriber_id,consent_id)
+                    SELECT 3601,s.id,s.id+100 FROM subscribers s CROSS JOIN generate_series(1,200)''')
+            response = MagicMock()
+            response.__enter__.return_value.status = 200
+            response.__enter__.return_value.read.return_value = b'{"status":"ready"}'
+            with patch.object(monitor.urllib.request, 'urlopen', return_value=response):
+                report = monitor.check(database, '/unused', 'http://localhost', now=7200,
+                                       check_backups=False, max_pending=11)
+                self.assertEqual(report['alerts'], [])
+                self.assertEqual(report['metrics']['pending_mail'], 2000)
+                self.assertEqual(report['metrics']['scheduled_publications'], 0)
+                self.assertEqual(report['metrics']['ready_mail'], 10)
+                crowded = monitor.check(database, '/unused', 'http://localhost', now=7200,
+                                        check_backups=False, max_pending=10)
+                self.assertEqual(crowded['alerts'], ['mail_queue_large'])
+
+                with connect(database) as db:
+                    # A different original consent remains a separate group.
+                    db.execute('INSERT INTO publication_outbox(created_at,consent_id) VALUES (3601,201)')
+                    db.execute('INSERT INTO mail_queue VALUES (7200,0,NULL,FALSE),(7200,1,7200,FALSE),(7200,1,NULL,TRUE)')
+                    db.execute('INSERT INTO recovery_mail VALUES (7200,0,NULL,FALSE,NULL)')
+                combined = monitor.check(database, '/unused', 'http://localhost', now=7200,
+                                         check_backups=False, max_pending=13)
+                self.assertEqual(combined['alerts'], ['mail_queue_large'])
+                self.assertEqual(combined['metrics']['pending_mail'], 2003)
+                self.assertEqual(combined['metrics']['ready_mail'], 13)
+
+    def test_scheduled_publications_do_not_hide_stalled_verification_mail(self):
+        with temporary_database() as database:
+            with connect(database) as db:
+                mail_tables(db)
+                db.execute('INSERT INTO publication_outbox(created_at) VALUES (3601)')
+                db.execute('INSERT INTO mail_queue VALUES (3601,1,NULL,FALSE)')
+            response = MagicMock()
+            response.__enter__.return_value.status = 200
+            response.__enter__.return_value.read.return_value = b'{"status":"ready"}'
+            with patch.object(monitor.urllib.request, 'urlopen', return_value=response):
+                report = monitor.check(database, '/unused', 'http://localhost', now=7199,
+                                       check_backups=False)
+            self.assertEqual(report['alerts'], ['mail_queue_stalled'])
+            self.assertEqual(report['metrics']['scheduled_publications'], 1)
+            self.assertEqual(report['metrics']['ready_mail'], 1)
+            self.assertEqual(report['metrics']['oldest_mail_overdue_seconds'], 3598)
 
     def test_notifications_are_deduplicated_and_recovery_is_sent(self):
         report={'alerts':['backup_stale'],'checked_at':10000}

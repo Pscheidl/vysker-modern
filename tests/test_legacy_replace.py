@@ -22,7 +22,7 @@ STAGING = {'OBEC_PRODUCTION': 'false', 'OBEC_VEREJNA_URL': 'https://staging.exam
 TABLES = ('pages', 'page_revisions', 'page_images', 'documents', 'notices', 'events',
           'attachments', 'notice_events', 'legacy_sources', 'legacy_notice_imports',
           'legacy_sync_reviews', 'audit_log', 'administrators', 'subscribers', 'mail_settings',
-          'mail_queue', 'publication_outbox')
+          'mail_queue', 'publication_outbox', 'mail_publication_items')
 
 
 class StagingGuardTests(unittest.TestCase):
@@ -153,6 +153,45 @@ class ReplaceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'mail is being delivered'):
                 replace_import(conn, self.root, self.source_count, archive_notices=True, skip_pages=True)
             self.assertEqual(self.snapshot(conn), before)
+
+    def test_replacement_refuses_retained_digest_membership_without_changing_records(self):
+        for kind in ('notice', 'document'):
+            for state in ('pending', 'sent', 'cancelled'):
+                with self.subTest(kind=kind, state=state), connect(self.url) as conn:
+                    subscriber, consent = self.subscriber(conn, f'{kind}-{state}@example.test')
+                    target = conn.execute(f'SELECT id FROM {kind}s ORDER BY id LIMIT 1').fetchone()[0]
+                    mail = conn.execute('''INSERT INTO mail_queue
+                        (subscriber_id,consent_id,purpose,deduplication_key,subject,body,
+                         next_attempt_at,created_at,sent_at,cancelled,digest_cutoff)
+                        VALUES (%s,%s,'document',%s,'Digest',%s,3600,3600,%s,%s,3600)
+                        RETURNING id''', (subscriber, consent, f'digest:{subscriber}:3600',
+                                          'Original body' if state == 'pending' else None,
+                                          3601 if state == 'sent' else None, state == 'cancelled')).fetchone()[0]
+                    conn.execute(f'''INSERT INTO mail_publication_items(mail_id,subscriber_id,{kind}_id)
+                        VALUES (%s,%s,%s)''', (mail, subscriber, target))
+                    conn.execute(f'''INSERT INTO publication_outbox({kind}_id,subscriber_id,consent_id,created_at)
+                        VALUES (%s,%s,%s,7200)''', (target, subscriber, consent))
+                    before = self.snapshot(conn)
+                    with self.assertRaisesRegex(ValueError, 'retained email digests'):
+                        replace_import(conn, self.root, self.source_count, archive_notices=True, skip_pages=True)
+                    self.assertEqual(self.snapshot(conn), before)
+                    conn.rollback()
+
+    def test_replacement_preserves_a_digest_for_unrelated_native_content(self):
+        with connect(self.url) as conn:
+            subscriber, consent = self.subscriber(conn, 'native-digest@example.test')
+            document = conn.execute("INSERT INTO documents(title,created_at) VALUES ('Native','2026-10-01') RETURNING id").fetchone()[0]
+            mail = conn.execute('''INSERT INTO mail_queue
+                (subscriber_id,consent_id,purpose,deduplication_key,subject,body,
+                 next_attempt_at,created_at,digest_cutoff)
+                VALUES (%s,%s,'document',%s,'Digest','Original body',3600,3600,3600)
+                RETURNING id''', (subscriber, consent, f'digest:{subscriber}:3600')).fetchone()[0]
+            conn.execute('''INSERT INTO mail_publication_items(mail_id,subscriber_id,document_id)
+                VALUES (%s,%s,%s)''', (mail, subscriber, document))
+            before = conn.execute('SELECT * FROM mail_publication_items').fetchall()
+            replace_import(conn, self.root, self.source_count, archive_notices=True, skip_pages=True)
+            self.assertEqual(conn.execute('SELECT * FROM mail_publication_items').fetchall(), before)
+            self.assertEqual(conn.execute('SELECT body FROM mail_queue WHERE id=%s', (mail,)).fetchone()[0], 'Original body')
 
     def test_replacement_imports_only_documents_archived_notices_and_events(self):
         with connect(self.url) as conn:

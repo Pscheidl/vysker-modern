@@ -78,6 +78,8 @@ test('newsletter saves selected categories, confirms them and allows changes fro
   expect(savedPreferences()).toEqual([false, [categoryId], false, true])
   expect(fixtureQuery('SELECT verified_at FROM subscribers WHERE email=%s', [email])[0][0]).not.toBeNull()
 
+  // Hold the synthetic recipient while the UI publishes, even across an hour boundary.
+  fixtureQuery("UPDATE subscribers SET next_digest_at=extract(epoch FROM clock_timestamp())::bigint+7200 WHERE email=%s RETURNING id", [email])
   // Publish through the real UI to obtain the settings link generated in mail.
   await login(page)
   await page.getByRole('link', { name: 'Dokumenty', exact: true }).click()
@@ -89,7 +91,10 @@ test('newsletter saves selected categories, confirms them and allows changes fro
   await page.getByRole('dialog').getByRole('button', { name: 'Zveřejnit', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Archivovat dokument', exact: true })).toBeVisible()
   const notification = () => fixtureQuery("SELECT m.body FROM mail_queue m JOIN subscribers s ON s.id=m.subscriber_id WHERE s.email=%s AND m.purpose='document' ORDER BY m.id DESC LIMIT 1", [email])
-  // The durable publication outbox is prepared by the worker every 30 seconds.
+  expect(notification()).toHaveLength(0)
+  // Make this synthetic publication due without waiting a real hour.
+  expect(fixtureQuery("UPDATE publication_outbox o SET created_at=(floor(extract(epoch FROM clock_timestamp())/3600)::bigint*3600)-1 FROM subscribers s WHERE s.id=o.subscriber_id AND s.email=%s RETURNING o.id", [email])).toHaveLength(1)
+  fixtureQuery("UPDATE subscribers SET next_digest_at=0 WHERE email=%s RETURNING id", [email])
   await expect.poll(() => notification().length, { timeout: 45_000 }).toBe(1)
   const message = notification()[0][0] as string
   const management = message.match(/http:\/\/127\.0\.0\.1:3107\/odber\/nastaveni\?token=[a-f0-9]+/)![0]

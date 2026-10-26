@@ -69,8 +69,26 @@ async fn publication_survives_restart_and_retention_before_and_after_materializa
     .fetch_one(&restarted.pool)
     .await
     .unwrap();
-    assert_eq!(pending.1, old.unix_timestamp());
+    assert_eq!(pending.1, now.unix_timestamp());
     assert_eq!(pending.3, 0);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM mail_publication_items WHERE mail_id=$1"
+        )
+        .bind(pending.0)
+        .fetch_one(&restarted.pool)
+        .await
+        .unwrap(),
+        1
+    );
+    // A second long outage after materialization must retain the entire digest.
+    sqlx::query("UPDATE mail_queue SET created_at=$1 WHERE id=$2")
+        .bind(old.unix_timestamp())
+        .bind(pending.0)
+        .execute(&restarted.pool)
+        .await
+        .unwrap();
+    let pending = (pending.0, old.unix_timestamp(), pending.2, pending.3);
     privacy::maintenance(&restarted, now).await.unwrap();
 
     let restarted_again = Backend::new(restarted.pool.clone(), (*restarted.config).clone());
@@ -98,6 +116,13 @@ async fn publication_survives_restart_and_retention_before_and_after_materializa
     privacy::maintenance(&restarted_again, now).await.unwrap();
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM mail_queue WHERE purpose='document'")
+            .fetch_one(&restarted_again.pool)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM mail_publication_items")
             .fetch_one(&restarted_again.pool)
             .await
             .unwrap(),

@@ -111,7 +111,7 @@ async fn settings_page(
     Ok(subscriptions::page_document(
         "Nastavení odběru",
         &format!(
-            "<p>Vyberte si, které novinky z webu Vyskeř vám mají chodit e-mailem.</p>{status}{error}<form method=\"post\" action=\"/odber/nastaveni\"><input type=\"hidden\" name=\"token\" value=\"{token}\"><fieldset><legend>Úřední deska</legend>{all}<p>Pro výběr jednotlivých kategorií zrušte volbu „Všechny kategorie“ a zaškrtněte požadované kategorie níže.</p>{choices}{uncategorized}</fieldset><fieldset><legend>Další obsah</legend>{documents}</fieldset><p>Vyberte alespoň jedno téma. Pro ukončení všech zpráv použijte odhlášení odběru.</p><button class=\"button primary\" type=\"submit\">Uložit výběr</button></form><p><a href=\"/odber/odhlasit?token={token}\">Odhlásit celý odběr</a></p>"
+            "<p>Vyberte si, které novinky z webu Vyskeř vám mají chodit v hodinovém e-mailovém souhrnu.</p>{status}{error}<form method=\"post\" action=\"/odber/nastaveni\"><input type=\"hidden\" name=\"token\" value=\"{token}\"><fieldset><legend>Úřední deska</legend>{all}<p>Pro výběr jednotlivých kategorií zrušte volbu „Všechny kategorie“ a zaškrtněte požadované kategorie níže.</p>{choices}{uncategorized}</fieldset><fieldset><legend>Další obsah</legend>{documents}</fieldset><p>Vyberte alespoň jedno téma. Pro ukončení všech zpráv použijte odhlášení odběru.</p><button class=\"button primary\" type=\"submit\">Uložit výběr</button></form><p><a href=\"/odber/odhlasit?token={token}\">Odhlásit celý odběr</a></p>"
         ),
     ))
 }

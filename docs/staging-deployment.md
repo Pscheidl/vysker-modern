@@ -257,7 +257,9 @@ Přepínač `--skip-pages` vynechá obsahové stránky a galerie. Přepínač
 Nevyplněná zdrojová data zůstávají neznámá, datum importu se nevydává za
 datum vyvěšení nebo sejmutí. Nové veřejné dokumenty a položky úřední desky,
 včetně přímého importu do archivu, uloží požadavky na oznámení do
-`publication_outbox`. Web je každých 30 sekund předává do poštovní fronty.
+`publication_outbox`. Web frontu kontroluje každých 30 sekund a po celé hodině
+seskupí čekající dokumenty do jednoho e-mailu pro každého odběratele podle jeho
+výběru. Potvrzení odběru, obnova hesla a hlášení závad na souhrn nečekají.
 Opakovaný import ani přesun již zveřejněné položky do archivu další oznámení
 nevytvoří. Obsahové stránky a události se e-mailem neoznamují.
 Známé přílohy znovu nestahuje. Ověřené soubory přebírá z trvalé cache

@@ -185,7 +185,7 @@ fn EditorForm(
                     ctx.dirty.set(false);
                     if let Some(site)=site {site.refetch();}
                     ctx.changed(if operation == "publish" {
-                        "Zveřejnění je uložené. Oznámení dostanou ověření odběratelé při vyvěšení."
+                        "Zveřejnění je uložené. Oznámení dostanou ověření odběratelé v hodinovém souhrnu po vyvěšení."
                     } else if operation == "withdraw" && scheduled {
                         "Plánované zveřejnění je zrušené. Dokument i přílohy zůstávají v soukromém konceptu."
                     } else {
@@ -272,7 +272,7 @@ fn EditorForm(
                 <button class="button primary" type="submit" form="content-editor" disabled=move||busy.get()>{move||if save.pending().get(){"Ukládám…"}else if id==0&&kind!=Kind::Page{"Uložit koncept"}else{"Uložit změny"}}</button>
                 <span class="admin-save-state" role="status">{move||if ctx.dirty.get(){"Máte neuložené změny"}else if id==0{"Nový koncept"}else{"Všechny změny jsou uložené"}}</span>
             }.into_any()}}
-            {(id>0&&kind!=Kind::Page&&draft).then(move||view!{<hr/><ConfirmButton label="Zveřejnit" title="Zveřejnit dokument?" description=if kind==Kind::Notice{"Dokument se zveřejní podle data vyvěšení. Budoucí datum znamená naplánované zveřejnění. Ověření odběratelé dostanou oznámení při zveřejnění."}else{"Dokument i jeho přílohy budou dostupné na webu. Ověření odběratelé dostanou oznámení."} disabled=action_disabled on_confirm=Callback::new(move|()|{transition.dispatch("publish".into());})/>})}
+            {(id>0&&kind!=Kind::Page&&draft).then(move||view!{<hr/><ConfirmButton label="Zveřejnit" title="Zveřejnit dokument?" description=if kind==Kind::Notice{"Dokument se zveřejní podle data vyvěšení. Budoucí datum znamená naplánované zveřejnění. Ověření odběratelé dostanou oznámení v hodinovém souhrnu po zveřejnění."}else{"Dokument i jeho přílohy budou dostupné na webu. Ověření odběratelé dostanou oznámení v hodinovém souhrnu."} disabled=action_disabled on_confirm=Callback::new(move|()|{transition.dispatch("publish".into());})/>})}
             {(id>0&&kind==Kind::Notice&&!draft&&!archived).then(move||view!{<hr/>
                 <label class="admin-field" for="withdrawal-reason"><span>{if scheduled{"Důvod zrušení plánovaného zveřejnění"}else{"Důvod ručního sejmutí"}}</span><input id="withdrawal-reason" maxlength="2000" prop:value=move||withdrawal_reason.get() on:input=move|ev|withdrawal_reason.set(event_target_value(&ev))/></label>
                 {(!scheduled).then(move||view!{<label class="admin-check"><input type="checkbox" prop:checked=move||emergency.get() on:change=move|ev|emergency.set(event_target_checked(&ev))/><span>"Mimořádné předčasné sejmutí kvůli incidentu"</span></label>})}

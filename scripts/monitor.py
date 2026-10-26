@@ -49,10 +49,26 @@ def check(database, backups, ready_url, *, now=None, backup_hours=30,
             alerts.append('backup_missing')
     try:
         with connect(database, options='-c default_transaction_read_only=on') as conn:
-            pending, oldest, retries = conn.execute('''SELECT count(*),min(created_at),coalesce(max(attempts),0)
-                FROM (SELECT created_at,attempts FROM mail_queue WHERE sent_at IS NULL AND cancelled=FALSE
-                    UNION ALL SELECT created_at,0 FROM publication_outbox
-                    UNION ALL SELECT created_at,attempts FROM recovery_mail WHERE sent_at IS NULL AND cancelled=FALSE) pending''').fetchone()
+            pending, oldest, retries, oldest_due, scheduled, ready = conn.execute('''
+                WITH pending AS (
+                    SELECT created_at,created_at AS due_at,attempts,FALSE AS publication,
+                        NULL::BIGINT AS subscriber_id,NULL::BIGINT AS consent_id
+                        FROM mail_queue WHERE sent_at IS NULL AND cancelled=FALSE
+                    UNION ALL
+                    SELECT o.created_at,
+                        greatest((o.created_at/3600+1)*3600,s.next_digest_at),0,TRUE,
+                        o.subscriber_id,o.consent_id
+                        FROM publication_outbox o JOIN subscribers s ON s.id=o.subscriber_id
+                    UNION ALL
+                    SELECT created_at,created_at,attempts,FALSE,NULL::BIGINT,NULL::BIGINT
+                        FROM recovery_mail WHERE sent_at IS NULL AND cancelled=FALSE
+                )
+                SELECT count(*),min(created_at),coalesce(max(attempts),0),min(due_at),
+                    count(*) FILTER (WHERE publication AND due_at>%s),
+                    count(*) FILTER (WHERE NOT publication AND due_at<=%s)
+                        + count(DISTINCT (subscriber_id,consent_id))
+                            FILTER (WHERE publication AND due_at<=%s)
+                FROM pending''', (int(now), int(now), int(now))).fetchone()
             recovery_oldest = conn.execute('SELECT min(created_at) FROM recovery_mail WHERE sent_at IS NULL AND cancelled=FALSE').fetchone()[0]
             recovery_expired = conn.execute('SELECT count(*) FROM recovery_mail WHERE sent_at IS NULL AND delivery_expired_at>=%s', (int(now)-86400,)).fetchone()[0]
         metrics['expired_recovery_last_day'] = recovery_expired
@@ -60,10 +76,14 @@ def check(database, backups, ready_url, *, now=None, backup_hours=30,
             alerts.append('recovery_mail_stalled')
         if recovery_expired:
             alerts.append('recovery_delivery_expired')
-        metrics.update(pending_mail=pending, oldest_mail_age_seconds=max(0, int(now-oldest)) if oldest is not None else 0, maximum_mail_attempts=retries)
-        if pending >= max_pending:
+        metrics.update(pending_mail=pending, scheduled_publications=scheduled, ready_mail=ready,
+                       oldest_mail_age_seconds=max(0, int(now-oldest)) if oldest is not None else 0,
+                       oldest_mail_overdue_seconds=max(0, int(now-oldest_due)) if oldest_due is not None else 0,
+                       maximum_mail_attempts=retries)
+        # Planned waiting is expected, and many due publication items may be one digest.
+        if ready >= max_pending:
             alerts.append('mail_queue_large')
-        if oldest is not None and now - oldest > mail_minutes * 60:
+        if oldest_due is not None and now - oldest_due > mail_minutes * 60:
             alerts.append('mail_queue_stalled')
     except (OSError, psycopg.Error):
         alerts.append('database_check_failed')

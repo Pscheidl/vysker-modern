@@ -12,12 +12,47 @@ without changing a person's mailbox password.
 All new public documents and official notices save notification requests in
 `publication_outbox` in the same transaction as publication. This includes
 administration, scheduled publication and imports directly into the archive.
-The running web checks this table through its regular mail worker every 30 seconds
-and atomically transfers requests to `mail_queue`. Both stages retain their data
-across web restarts. Only subscribers with active, confirmed consent when the
-document first becomes public receive the announcement. Delivery rechecks consent
-and public visibility. Repeated imports and moving an already published notice
-to the archive do not announce it again. Content pages do not send notifications.
+The running web checks this table through its regular mail worker every 30 seconds.
+At each full hour it combines eligible notices and documents into one email per
+subscriber and consent. A publication at 10:15 is eligible from 11:00, while one
+at exactly 11:00 waits until 12:00. The worker may start a little later depending
+on its polling cycle and existing delivery work. It sends nothing when there is
+no eligible content. Verification, password recovery and report notifications
+keep their existing delivery timing and do not wait for the hourly digest.
+
+Digest scheduling uses UTC hour boundaries, which also fall on full hours in
+Europe/Prague. The next permitted digest time is persisted on the subscriber.
+It prevents a late transaction from creating another digest for the same
+subscriber in the same hourly slot. Late publications remain queued for the next
+slot, even when their recorded publication time is older. After an outage, the
+worker combines all eligible waiting content when it resumes. It does not replay
+each missed hour as a separate email.
+
+The worker atomically transfers the selected requests to `mail_queue` and records
+their individual identities in `mail_publication_items`. Both queues and digest
+membership survive web restarts. Only subscribers with active, confirmed consent
+when the document first becomes public receive the announcement. Every digest
+delivery attempt rechecks consent, preferences and public visibility. Items that
+become ineligible are omitted and remain recorded as suppressed to prevent
+repeated notifications. An empty digest is cancelled. Repeated imports and moving
+an already published notice to the archive do not announce it again. Content pages
+do not send notifications.
+
+## Transition from individual notifications
+
+Migration `0021_hourly_mail_digests.sql` adds digest scheduling and membership
+without changing subscriber addresses, confirmed consents, topic preferences or
+existing unsubscribe links. Individual messages already in `mail_queue` retain
+their original identity and finish through the existing delivery and retry path.
+Pending requests still in `publication_outbox` enter the hourly digest path.
+Previously sent publications are not backfilled. The original per-publication
+keys and new digest membership both prevent repeat inclusion.
+
+Normal imports and recurring synchronization continue to use the same outbox.
+The separate staging replacement command refuses to replace imported content
+referenced by retained digest membership. This protects pending deliveries and
+their history from cascading deletion. An ordinary import does not need this
+destructive replacement operation.
 
 Subscription verification requests are limited on the server to one new email
 per address every 10 minutes and three in any rolling hour. A valid verification
@@ -136,10 +171,23 @@ application behavior, not deliverability from the future production provider.
 attempt count and SMTP acceptance time. Acceptance does not prove inbox delivery
 or reading. Security messages use `recovery_mail`, subscription messages use
 `mail_queue`. Bodies containing links are cleared after sending or cancellation.
-The monitor includes `publication_outbox` and both mail queues in backlog and
-stalled-delivery checks. Unsent, uncancelled document notifications are kept for
+The monitor includes `publication_outbox` and both mail queues. Its default
+30-minute stalled-delivery threshold starts at the digest's scheduled time,
+including the subscriber's next permitted slot, rather than at publication.
+Once a digest enters `mail_queue`, its delivery age starts at message creation.
+Planned publication waiting is reported separately as `scheduled_publications`
+and does not trigger the queue-size alarm. `pending_mail` counts all queued
+messages and publication requests. `ready_mail` counts due messages plus one
+pending digest per subscriber and original consent, regardless of how many
+publication requests it contains. The queue-size alarm uses this message count.
+`oldest_mail_overdue_seconds` measures delay beyond the earliest due time.
+`oldest_mail_age_seconds` remains the age of the oldest queued record.
+
+Unsent, uncancelled document notifications, including digests, are kept for
 delivery rather than removed by the mail-history retention timer. Sent and
 cancelled messages and verification emails follow the configured history period.
+Digest membership is removed with its parent message or subscriber. Subscriber
+exports continue to omit message bodies and private tokens.
 
 Retries have stable Message-IDs and at-least-once semantics. A process crash after
 SMTP acceptance but before recording it may cause a duplicate. Provider bounce

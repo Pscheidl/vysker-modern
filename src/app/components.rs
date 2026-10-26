@@ -401,7 +401,7 @@ pub fn Newsletter() -> impl IntoView {
     let privacy = Resource::new(|| (), |_| crate::catalog::load_privacy_notice());
     view! {<section class="newsletter" aria-labelledby="newsletter-title">
         <Icon name="mail" class="newsletter-icon"/>
-        <div class="newsletter-copy"><h2 id="newsletter-title">"Nové dokumenty do e-mailu"</h2><p>"Odběr je dobrovolný. Aktivujete jej potvrzením e-mailové adresy."</p></div>
+        <div class="newsletter-copy"><h2 id="newsletter-title">"Nové dokumenty do e-mailu"</h2><p>"Nové dokumenty posíláme v hodinovém souhrnu. Odběr je dobrovolný a aktivujete jej potvrzením e-mailové adresy."</p></div>
         <Suspense fallback=||view!{<p role="status">"Načítám informace o odběru…"</p>}>
             {move || privacy.get().map(|result|match result {
                 Ok(Some(notice))=>view!{<NewsletterForm notice/>}.into_any(),

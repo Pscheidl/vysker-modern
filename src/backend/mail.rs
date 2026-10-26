@@ -92,135 +92,235 @@ pub async fn enqueue_publication(
     Ok(())
 }
 
-struct Publication<'a> {
-    kind: &'a str,
-    id: i64,
-    title: &'a str,
-    path: &'a str,
-}
-
-async fn enqueue_recipient(
-    conn: &mut PgConnection,
-    s: &Backend,
-    publication: &Publication<'_>,
-    (recipient, consent_id): (i64, i64),
-    created_at: i64,
-) -> Result<()> {
-    let Publication {
-        kind,
-        id,
-        title,
-        path,
-    } = publication;
-    let key = format!("{kind}:{id}:{recipient}");
-    let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mail_queue WHERE deduplication_key=$1)")
-            .bind(&key)
-            .fetch_one(&mut *conn)
-            .await?;
-    if exists {
-        return Ok(());
-    }
-    let secret = auth::token();
-    sqlx::query(
-            "INSERT INTO subscription_tokens(hash,subscriber_id,purpose,expires_at,consent_id) VALUES ($1,$2,'unsubscribe',$3,$4)",
-        )
-        .bind(auth::hash(&secret))
-        .bind(recipient)
-        // The link remains usable for the lifetime of this consent.
-        .bind(i64::MAX)
-        .bind(consent_id)
-        .execute(&mut *conn)
-        .await?;
-    let body = format!(
-        "Dobrý den,\n\nna webu Vyskeř byl zveřejněn nový dokument:\n{title}\n\n{}{path}\n\nOdběr lze odhlásit zde:\n{}/odber/odhlasit?token={secret}\n\nKategorie a obecné dokumenty si můžete vybrat zde:\n{}/odber/nastaveni?token={secret}",
-        s.config.public_url, s.config.public_url, s.config.public_url
-    );
-    sqlx::query("INSERT INTO mail_queue(subscriber_id,purpose,deduplication_key,subject,body,next_attempt_at,created_at,consent_id) VALUES ($1,'document',$2,$3,$4,$5,$6,$7)")
-            .bind(recipient).bind(key).bind(format!("Vyskeř: {}",title.replace(['\r','\n']," "))).bind(body).bind(created_at).bind(created_at).bind(consent_id).execute(&mut *conn).await?;
-    Ok(())
-}
-
 #[derive(sqlx::FromRow)]
 struct PublicationRequest {
     id: i64,
-    subscriber_id: i64,
-    consent_id: i64,
-    created_at: i64,
-    kind: String,
-    entity_id: i64,
+    notice_id: Option<i64>,
+    document_id: Option<i64>,
     title: String,
     allowed: bool,
 }
 
-/// Atomically transfer a bounded outbox batch to the SMTP queue.
-/// Keep the original recipient and consent even if delivery starts much later.
+const DIGEST_FOOTER: &str = "\n\nOdběr lze odhlásit zde:\n";
+
+async fn publication_line(
+    conn: &mut PgConnection,
+    request: &PublicationRequest,
+    public_url: &str,
+    now: OffsetDateTime,
+) -> Result<String> {
+    let (title, route, id) = if let Some(id) = request.notice_id {
+        let record =
+            sqlx::query_as::<_, super::notices::NoticeRecord>("SELECT * FROM notices WHERE id=$1")
+                .bind(id)
+                .fetch_one(&mut *conn)
+                .await?;
+        (record.into_public(now).title, "uredni-deska", id)
+    } else {
+        (
+            request.title.clone(),
+            "dokumenty",
+            request.document_id.expect("publication target"),
+        )
+    };
+    Ok(format!(
+        "{}\n{public_url}/{route}/{id}",
+        title.replace(['\r', '\n'], " ")
+    ))
+}
+
+fn digest_content(lines: &[String], footer: &str) -> (String, String) {
+    (
+        format!("Vyskeř: Souhrn nových dokumentů ({})", lines.len()),
+        format!(
+            "Dobrý den,\n\nna webu Vyskeř byly zveřejněny tyto dokumenty:\n\n{}{DIGEST_FOOTER}{footer}",
+            lines.join("\n\n")
+        ),
+    )
+}
+
+/// Atomically prepare the complete due set for one original recipient and consent.
+/// The time boundary schedules work only. Late commits remain in the outbox.
 pub async fn prepare_publications(s: &Backend, now: OffsetDateTime) -> Result<bool> {
+    let cutoff = now.unix_timestamp().div_euclid(3600) * 3600;
+    // The common write lock serializes preparation with publication and consent edits.
+    // SMTP runs outside it. Processing one recipient bounds each transaction's scope.
     let mut tx = crate::db::begin_write(&s.pool).await?;
     if super::privacy::policy_in(s, &mut tx).await?.is_none() {
         return Ok(false);
     }
+    let recipient: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT o.subscriber_id,o.consent_id FROM publication_outbox o
+         JOIN subscribers s ON s.id=o.subscriber_id
+         WHERE o.created_at<$1 AND s.next_digest_at<=$1
+         ORDER BY o.created_at,o.id LIMIT 1",
+    )
+    .bind(cutoff)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((recipient, consent_id)) = recipient else {
+        return Ok(false);
+    };
     let publications: Vec<PublicationRequest> = sqlx::query_as(
-        "SELECT o.id,o.subscriber_id,o.consent_id,o.created_at,
-            CASE WHEN o.notice_id IS NOT NULL THEN 'notice' ELSE 'document' END AS kind,
-            coalesce(o.notice_id,o.document_id) AS entity_id,coalesce(n.title,d.title) AS title,
+        "SELECT o.id,o.notice_id,o.document_id,coalesce(n.title,d.title) AS title,
             (s.verified_at IS NOT NULL AND s.unsubscribed_at IS NULL
              AND c.subscriber_id=s.id AND c.confirmed_at IS NOT NULL
              AND c.withdrawn_at IS NULL AND c.superseded_at IS NULL
              AND subscription_matches_publication(s.id,o.notice_id,o.document_id)
              AND (coalesce(n.status IN ('published','archived','withdrawn'),FALSE)
-                  OR coalesce(d.status='published',FALSE))) AS allowed
+                  OR coalesce(d.status='published',FALSE))
+             AND NOT EXISTS (SELECT 1 FROM mail_queue m WHERE m.deduplication_key=
+                 concat(CASE WHEN o.notice_id IS NOT NULL THEN 'notice' ELSE 'document' END,
+                        ':',coalesce(o.notice_id,o.document_id),':',o.subscriber_id))
+             AND NOT EXISTS (SELECT 1 FROM mail_publication_items i
+                 WHERE i.subscriber_id=o.subscriber_id
+                   AND (i.notice_id=o.notice_id OR i.document_id=o.document_id))) AS allowed
          FROM publication_outbox o
          JOIN subscribers s ON s.id=o.subscriber_id
          JOIN subscription_consents c ON c.id=o.consent_id
          LEFT JOIN notices n ON n.id=o.notice_id
          LEFT JOIN documents d ON d.id=o.document_id
-         ORDER BY o.id LIMIT 100 FOR UPDATE OF o",
+         WHERE o.subscriber_id=$1 AND o.consent_id=$2 AND o.created_at<$3
+         ORDER BY o.created_at,o.id FOR UPDATE OF o",
     )
+    .bind(recipient)
+    .bind(consent_id)
+    .bind(cutoff)
     .fetch_all(&mut *tx)
     .await?;
-    for request in &publications {
-        if request.allowed {
-            let title = if request.kind == "notice" {
-                sqlx::query_as::<_, super::notices::NoticeRecord>(
-                    "SELECT * FROM notices WHERE id=$1",
-                )
-                .bind(request.entity_id)
-                .fetch_one(&mut *tx)
-                .await?
-                .into_public(now)
-                .title
-            } else {
-                request.title.clone()
-            };
-            let route = if request.kind == "notice" {
-                "uredni-deska"
-            } else {
-                "dokumenty"
-            };
-            let path = format!("/{route}/{}", request.entity_id);
-            let publication = Publication {
-                kind: &request.kind,
-                id: request.entity_id,
-                title: &title,
-                path: &path,
-            };
-            enqueue_recipient(
-                &mut tx,
-                s,
-                &publication,
-                (request.subscriber_id, request.consent_id),
-                request.created_at,
+    let mut lines = Vec::new();
+    for request in publications.iter().filter(|r| r.allowed) {
+        lines.push(publication_line(&mut tx, request, &s.config.public_url, now).await?);
+    }
+    if !lines.is_empty() {
+        let secret = auth::token();
+        sqlx::query(
+            "INSERT INTO subscription_tokens(hash,subscriber_id,purpose,expires_at,consent_id)
+             VALUES ($1,$2,'unsubscribe',$3,$4)",
+        )
+        .bind(auth::hash(&secret))
+        .bind(recipient)
+        .bind(i64::MAX)
+        .bind(consent_id)
+        .execute(&mut *tx)
+        .await?;
+        let footer = format!(
+            "{}/odber/odhlasit?token={secret}\n\nKategorie a obecné dokumenty si můžete vybrat zde:\n{}/odber/nastaveni?token={secret}",
+            s.config.public_url, s.config.public_url
+        );
+        let (subject, body) = digest_content(&lines, &footer);
+        let mail_id: i64 = sqlx::query_scalar(
+            "INSERT INTO mail_queue(subscriber_id,purpose,deduplication_key,subject,body,
+                next_attempt_at,created_at,consent_id,digest_cutoff)
+             VALUES ($1,'document',$2,$3,$4,$5,$5,$6,$7) RETURNING id",
+        )
+        .bind(recipient)
+        .bind(format!("digest:{recipient}:{consent_id}:{cutoff}"))
+        .bind(subject)
+        .bind(body)
+        .bind(now.unix_timestamp())
+        .bind(consent_id)
+        .bind(cutoff)
+        .fetch_one(&mut *tx)
+        .await?;
+        for request in publications.iter().filter(|r| r.allowed) {
+            sqlx::query(
+                "INSERT INTO mail_publication_items(mail_id,subscriber_id,notice_id,document_id)
+                 VALUES ($1,$2,$3,$4)",
             )
+            .bind(mail_id)
+            .bind(recipient)
+            .bind(request.notice_id)
+            .bind(request.document_id)
+            .execute(&mut *tx)
             .await?;
         }
-        sqlx::query("DELETE FROM publication_outbox WHERE id=$1")
-            .bind(request.id)
+        sqlx::query("UPDATE subscribers SET next_digest_at=$1 WHERE id=$2")
+            .bind(cutoff + 3600)
+            .bind(recipient)
             .execute(&mut *tx)
             .await?;
     }
+    // Delete exactly the selected set, including ineligible and already recorded items.
+    let ids: Vec<i64> = publications.iter().map(|r| r.id).collect();
+    sqlx::query("DELETE FROM publication_outbox WHERE id=ANY($1)")
+        .bind(&ids)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
-    Ok(!publications.is_empty())
+    Ok(true)
+}
+
+/// Rebuild only from this message's recorded membership, never from newer outbox rows.
+/// Once suppressed, an item stays suppressed even if preferences later change again.
+async fn refresh_digest(
+    s: &Backend,
+    message: &mut Pending,
+    lease: &str,
+    now: OffsetDateTime,
+) -> Result<bool> {
+    let Some(footer) = message
+        .body
+        .as_deref()
+        .and_then(|body| body.split_once(DIGEST_FOOTER))
+        .map(|(_, footer)| footer.to_owned())
+    else {
+        return Ok(false);
+    };
+    let mut tx = crate::db::begin_write(&s.pool).await?;
+    let valid: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM mail_queue m
+         JOIN subscribers s ON s.id=m.subscriber_id
+         JOIN subscription_consents c ON c.id=m.consent_id AND c.subscriber_id=s.id
+         WHERE m.id=$1 AND m.lock_token=$2 AND m.cancelled=FALSE AND m.sent_at IS NULL
+           AND s.verified_at IS NOT NULL AND s.unsubscribed_at IS NULL
+           AND c.confirmed_at IS NOT NULL AND c.withdrawn_at IS NULL AND c.superseded_at IS NULL)",
+    )
+    .bind(message.id)
+    .bind(lease)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !valid {
+        return Ok(false);
+    }
+    let items: Vec<PublicationRequest> = sqlx::query_as(
+        "SELECT i.id,i.notice_id,i.document_id,coalesce(n.title,d.title) AS title,
+            (subscription_matches_publication(i.subscriber_id,i.notice_id,i.document_id)
+             AND (coalesce(n.status IN ('published','archived','withdrawn'),FALSE)
+                  OR coalesce(d.status='published',FALSE))) AS allowed
+         FROM mail_publication_items i
+         LEFT JOIN notices n ON n.id=i.notice_id LEFT JOIN documents d ON d.id=i.document_id
+         WHERE i.mail_id=$1 AND i.subscriber_id=$2 AND i.suppressed=FALSE ORDER BY i.id",
+    )
+    .bind(message.id)
+    .bind(message.subscriber_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let mut lines = Vec::new();
+    for item in &items {
+        if item.allowed {
+            lines.push(publication_line(&mut tx, item, &s.config.public_url, now).await?);
+        } else {
+            sqlx::query("UPDATE mail_publication_items SET suppressed=TRUE WHERE id=$1")
+                .bind(item.id)
+                .execute(&mut *tx)
+                .await?;
+        }
+    }
+    if !lines.is_empty() {
+        let (subject, body) = digest_content(&lines, &footer);
+        sqlx::query("UPDATE mail_queue SET subject=$1,body=$2 WHERE id=$3 AND lock_token=$4")
+            .bind(&subject)
+            .bind(&body)
+            .bind(message.id)
+            .bind(lease)
+            .execute(&mut *tx)
+            .await?;
+        message.subject = subject;
+        message.body = Some(body);
+    }
+    tx.commit().await?;
+    Ok(!lines.is_empty())
 }
 
 #[derive(sqlx::FromRow)]
@@ -233,6 +333,7 @@ struct Pending {
     attempts: i64,
     consent_id: Option<i64>,
     deduplication_key: Option<String>,
+    digest_cutoff: Option<i64>,
 }
 
 impl Pending {
@@ -296,9 +397,9 @@ pub async fn deliver_one(
         .await
         .map_err(|error| anyhow::anyhow!(error.1))?;
     let lease = auth::token();
-    let message:Option<Pending>=sqlx::query_as("UPDATE mail_queue SET lock_token=$1,locked_until=$2,attempts=attempts+1 WHERE id=(SELECT id FROM mail_queue WHERE sent_at IS NULL AND cancelled=FALSE AND next_attempt_at<=$3 AND locked_until<=$4 ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id,subscriber_id,purpose,subject,body,attempts,consent_id,deduplication_key")
+    let message:Option<Pending>=sqlx::query_as("UPDATE mail_queue SET lock_token=$1,locked_until=$2,attempts=attempts+1 WHERE id=(SELECT id FROM mail_queue WHERE sent_at IS NULL AND cancelled=FALSE AND next_attempt_at<=$3 AND locked_until<=$4 ORDER BY CASE WHEN purpose='verification' THEN 0 ELSE 1 END,id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id,subscriber_id,purpose,subject,body,attempts,consent_id,deduplication_key,digest_cutoff")
         .bind(&lease).bind(now.unix_timestamp()+300).bind(now.unix_timestamp()).bind(now.unix_timestamp()).fetch_optional(&s.pool).await?;
-    let Some(message) = message else {
+    let Some(mut message) = message else {
         return Ok(prepared);
     };
     let (address, confirmed, unsubscribed): (String, Option<i64>, Option<i64>) =
@@ -331,7 +432,12 @@ pub async fn deliver_one(
             .bind(message.consent_id).bind(message.subscriber_id).bind(&message.purpose).fetch_one(&s.pool).await?
         && unsubscribed.is_none()
         && if message.purpose == "document" {
-            confirmed.is_some() && matches_preferences(s, &message).await?
+            confirmed.is_some() && if message.digest_cutoff.is_some() {
+                refresh_digest(s, &mut message, &lease, now).await
+                    .map_err(|error| anyhow::anyhow!(error.1))?
+            } else {
+                matches_preferences(s, &message).await?
+            }
         } else {
             confirmed.is_none()
         };

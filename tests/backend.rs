@@ -448,9 +448,12 @@ async fn double_opt_in_only_announces_future_documents_and_unsubscribe_cancels_q
     let draft = app.notice(json!({})).await;
     app.publish(draft).await;
     assert!(
-        !backend::mail::prepare_publications(&app.state, OffsetDateTime::now_utc())
-            .await
-            .unwrap()
+        !backend::mail::prepare_publications(
+            &app.state,
+            OffsetDateTime::now_utc() + time::Duration::hours(1)
+        )
+        .await
+        .unwrap()
     );
     let queued: i64 =
         sqlx::query_scalar("SELECT count(*) FROM mail_queue WHERE purpose='document'")
@@ -505,9 +508,12 @@ async fn double_opt_in_only_announces_future_documents_and_unsubscribe_cancels_q
     );
     assert_eq!(app.publish(published).await.status(), StatusCode::CONFLICT);
     assert!(
-        backend::mail::prepare_publications(&app.state, OffsetDateTime::now_utc())
-            .await
-            .unwrap()
+        backend::mail::prepare_publications(
+            &app.state,
+            OffsetDateTime::now_utc() + time::Duration::hours(1)
+        )
+        .await
+        .unwrap()
     );
     let bodies: Vec<String> =
         sqlx::query_scalar("SELECT body FROM mail_queue WHERE purpose='document'")
@@ -547,9 +553,12 @@ async fn double_opt_in_only_announces_future_documents_and_unsubscribe_cancels_q
     assert_eq!(pending, 0);
     app.publish(app.notice(json!({})).await).await;
     assert!(
-        !backend::mail::prepare_publications(&app.state, OffsetDateTime::now_utc())
-            .await
-            .unwrap()
+        !backend::mail::prepare_publications(
+            &app.state,
+            OffsetDateTime::now_utc() + time::Duration::hours(1)
+        )
+        .await
+        .unwrap()
     );
     let queued: i64 =
         sqlx::query_scalar("SELECT count(*) FROM mail_queue WHERE purpose='document'")
@@ -648,9 +657,12 @@ async fn generic_documents_and_pages_are_private_until_published() {
         StatusCode::OK
     );
     assert!(
-        backend::mail::prepare_publications(&app.state, OffsetDateTime::now_utc())
-            .await
-            .unwrap()
+        backend::mail::prepare_publications(
+            &app.state,
+            OffsetDateTime::now_utc() + time::Duration::hours(1)
+        )
+        .await
+        .unwrap()
     );
     let notifications: i64 =
         sqlx::query_scalar("SELECT count(*) FROM mail_queue WHERE purpose='document'")

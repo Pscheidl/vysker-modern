@@ -36,6 +36,15 @@ def publication_sources(conn):
 def publication_snapshot(conn, sources):
     """Lock queued mail before replacing the entities its links identify."""
     entities = {f"{row['kind']}:{row['entity_id']}" for row in sources}
+    # Digest membership is a durable record of which publications were included.
+    # Replacing its targets would remove that evidence through foreign keys.
+    # Refuse before any mutation instead of silently dropping or resending items.
+    digest_exists = conn.execute('''SELECT EXISTS(SELECT 1 FROM mail_publication_items
+        WHERE CASE WHEN notice_id IS NOT NULL THEN 'notice:'||notice_id
+            ELSE 'document:'||document_id END=ANY(%s))''', (list(entities),)).fetchone()[0]
+    if digest_exists:
+        raise ValueError('Imported publications belong to retained email digests. '
+                         'Replacement is not supported while this digest history exists.')
     with conn.cursor(row_factory=dict_row) as cursor:
         pending = cursor.execute('''SELECT * FROM publication_outbox
             WHERE CASE WHEN notice_id IS NOT NULL THEN 'notice:'||notice_id

@@ -97,7 +97,11 @@ async fn native_subscription_pages_keep_scanners_read_only_and_complete_without_
     .await;
     assert!(complete.contains("<h1>Odběr je potvrzený.</h1>"));
     app.publish(app.notice(json!({})).await).await;
-    assert!(mail::prepare_publications(&app.state, now).await.unwrap());
+    assert!(
+        mail::prepare_publications(&app.state, now + time::Duration::hours(1))
+            .await
+            .unwrap()
+    );
     let notification: String =
         sqlx::query_scalar("SELECT body FROM mail_queue WHERE purpose='document'")
             .fetch_one(&app.state.pool)

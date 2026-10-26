@@ -7,6 +7,19 @@ use obecni_web::backend::{Backend, mail, subscriptions};
 use serde_json::json;
 use time::OffsetDateTime;
 
+fn digest_time() -> OffsetDateTime {
+    OffsetDateTime::now_utc() + time::Duration::hours(1)
+}
+
+async fn prepare_all(state: &Backend, now: OffsetDateTime) -> usize {
+    let mut count = 0;
+    while mail::prepare_publications(state, now).await.unwrap() {
+        count += 1;
+        assert!(count < 100, "digest preparation must make progress");
+    }
+    count
+}
+
 async fn subscriber(app: &App, email: &str) -> i64 {
     let now = OffsetDateTime::now_utc();
     common::request_subscription(&app.state, email, now)
@@ -117,17 +130,13 @@ async fn native_publication_snapshots_default_categories_uncategorized_and_docum
         vec![default, documents]
     );
 
-    assert!(
-        mail::prepare_publications(&app.state, OffsetDateTime::now_utc())
-            .await
-            .unwrap()
-    );
+    assert!(prepare_all(&app.state, digest_time()).await > 0);
     let bodies: Vec<String> =
         sqlx::query_scalar("SELECT body FROM mail_queue WHERE purpose='document'")
             .fetch_all(&app.state.pool)
             .await
             .unwrap();
-    assert_eq!(bodies.len(), 9);
+    assert_eq!(bodies.len(), 5);
     for body in bodies {
         let token = common::token_from_body(&body);
         assert!(body.contains(&format!("/odber/odhlasit?token={token}")));
@@ -146,11 +155,7 @@ async fn delayed_outbox_rechecks_preferences_without_adding_new_recipients() {
 
     preferences(&app, original, false, &[], false, true).await;
     preferences(&app, excluded, true, &[], true, true).await;
-    assert!(
-        mail::prepare_publications(&app.state, OffsetDateTime::now_utc())
-            .await
-            .unwrap()
-    );
+    assert!(prepare_all(&app.state, digest_time()).await > 0);
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM mail_queue WHERE purpose='document'")
             .fetch_one(&app.state.pool)
@@ -171,7 +176,7 @@ async fn queued_notice_and_document_recheck_preferences_before_smtp() {
     let category = category(&app, "Vyhlášky").await;
     notice(&app, Some(category)).await;
     document(&app).await;
-    let now = OffsetDateTime::now_utc();
+    let now = digest_time();
     assert!(mail::prepare_publications(&app.state, now).await.unwrap());
     // Keep uncategorized notices enabled while dropping both queued subjects.
     preferences(&app, recipient, false, &[], true, false).await;
@@ -182,12 +187,11 @@ async fn queued_notice_and_document_recheck_preferences_before_smtp() {
     let state = Backend::new(app.state.pool.clone(), config);
     let smtp = mail::transport(&state).unwrap();
     assert!(mail::deliver_one(&state, &smtp, now).await.unwrap());
-    assert!(mail::deliver_one(&state, &smtp, now).await.unwrap());
     assert!(!mail::deliver_one(&state, &smtp, now).await.unwrap());
     let messages: Vec<(bool, Option<String>, Option<i64>, i64)> = sqlx::query_as(
         "SELECT cancelled,body,sent_at,attempts FROM mail_queue WHERE purpose='document' ORDER BY id")
         .fetch_all(&state.pool).await.unwrap();
-    assert_eq!(messages, vec![(true, None, None, 1), (true, None, None, 1)]);
+    assert_eq!(messages, vec![(true, None, None, 1)]);
 }
 
 #[tokio::test]
@@ -195,7 +199,7 @@ async fn queued_document_is_still_delivered_when_only_notice_preferences_change(
     let app = App::new().await;
     let recipient = subscriber(&app, "document-queue@example.test").await;
     document(&app).await;
-    let now = OffsetDateTime::now_utc();
+    let now = digest_time();
     assert!(mail::prepare_publications(&app.state, now).await.unwrap());
     preferences(&app, recipient, false, &[], false, true).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -273,8 +277,8 @@ async fn mailpit_receives_only_matching_publications_and_unfiltered_verification
         vec![everything, documents]
     );
 
-    let now = OffsetDateTime::now_utc();
-    assert!(mail::prepare_publications(&state, now).await.unwrap());
+    let now = digest_time();
+    assert_eq!(prepare_all(&state, now).await, 4);
     // An already queued notice must respect the recipient's latest selection.
     preferences(&app, changed, false, &[], false, true).await;
 
@@ -289,13 +293,13 @@ async fn mailpit_receives_only_matching_publications_and_unfiltered_verification
     .unwrap();
     preferences(&app, pending, false, &[], false, false).await;
 
-    for _ in 0..10 {
+    for _ in 0..5 {
         assert!(mail::deliver_one(&state, &smtp, now).await.unwrap());
     }
     assert!(!mail::deliver_one(&state, &smtp, now).await.unwrap());
 
     let delivered: Vec<String> = sqlx::query_scalar(
-        "SELECT deduplication_key FROM mail_queue WHERE purpose='document' AND sent_at IS NOT NULL ORDER BY deduplication_key",
+        "SELECT CASE WHEN i.notice_id IS NOT NULL THEN 'notice:' || i.notice_id ELSE 'document:' || i.document_id END || ':' || i.subscriber_id FROM mail_publication_items i JOIN mail_queue m ON m.id=i.mail_id WHERE m.sent_at IS NOT NULL ORDER BY 1",
     )
     .fetch_all(&state.pool)
     .await

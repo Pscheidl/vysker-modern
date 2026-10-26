@@ -5,6 +5,7 @@ const successMessage = 'Pokud je potřeba odběr potvrdit, pošleme vám ověřo
 
 async function openNewsletter(page: Page) {
   await page.goto('/odber')
+  await expect(page.locator('.newsletter-copy')).toContainText('Nové dokumenty posíláme v hodinovém souhrnu.')
   const form = page.locator('.newsletter-form')
   const email = form.getByLabel('E-mailová adresa', { exact: true })
   const submit = form.getByRole('button')

@@ -196,8 +196,13 @@ Default alert thresholds are:
 
 - No completed backup, or the latest snapshot is older than 30 hours
 - Less than 1,024 MiB or 10 percent free on either storage volume
-- At least 1,000 pending messages, or an unsent message older than 30 minutes
+- At least 1,000 messages ready for delivery, or delivery overdue by 30 minutes
 - An unreachable or unready application, or an unreadable database
+
+Hourly document digests are counted once per due recipient and consent, rather
+than once per document. Planned waiting before their hourly slot does not raise
+a backlog alert. Verification and recovery messages retain their immediate
+delivery checks. See [mail.md](mail.md) for digest scheduling and migration.
 
 Change thresholds using the command arguments listed by `python3 scripts/monitor.py
 --help`. Backups are created and archive-directory-checked by `database.py`. The monitor
