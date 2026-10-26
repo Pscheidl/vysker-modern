@@ -127,7 +127,7 @@ and additions are committed together, so failed uploads do not partially
 change a repair record.
 
 Repair photographs use the same JPEG, PNG and WebP validation, metadata removal
-and per-file 15,000,000-byte limit as resident photographs. A request accepts
+and per-file 20,000,000-byte limit as resident photographs. A request accepts
 up to 50,000,000 bytes of new images. All retained and new processed repair
 photographs together must also fit within 50,000,000 bytes. The administration
 shows previews and permits individual removal before saving. Failed saves
@@ -179,7 +179,7 @@ or browser MIME type. Supported input formats are JPEG, PNG and WebP.
 | Optional reporter name | 120 characters |
 | Optional reporter email | 254 characters, validated email address |
 | Optional reporter phone | 40 characters, digits and usual phone punctuation |
-| Each input photograph | 15 MB, exactly 15,000,000 bytes |
+| Each input photograph | 20 MB, exactly 20,000,000 bytes |
 | All input photographs together | 50 MB, exactly 50,000,000 bytes |
 | All processed photographs together | 50 MB, to bound memory and stored gallery size |
 | Entire multipart request | 50,000,000 bytes plus 64 KiB for fields and framing |
@@ -194,7 +194,7 @@ accepted. Decoding is serialized, and rotation happens after thumbnailing to
 avoid simultaneous full-resolution buffers on the VPS. The stored public image
 contains no original EXIF, embedded GPS,
 profiles or other source metadata. The original uploaded file is not retained.
-Each processed file must also fit within 15 MB. HEIC and other formats must be
+Each processed file must also fit within 20 MB. HEIC and other formats must be
 converted before upload.
 
 The file input accepts multiple files at once and residents can add more later.

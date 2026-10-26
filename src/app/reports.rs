@@ -75,7 +75,7 @@ fn ReportForm() -> impl IntoView {
                 </div>
                 <p id="report-location-status" class="field-note" role="status" aria-live="polite">"Místo zatím není označené."</p>
                 <label class="report-field" for="report-photo"><span>"Fotografie (nepovinné)"</span><input id="report-photo" name="photo" type="file" accept="image/jpeg,image/png,image/webp" multiple aria-describedby="report-photo-help report-photo-status report-photo-error"/></label>
-                <p id="report-photo-help" class="field-note">"JPG, PNG nebo WebP, nejvýše 15 MB na fotografii a 50 MB celkem. Fotografie můžete přidávat postupně. Na telefonu lze podle možností prohlížeče vybrat fotky nebo pořídit nové."</p>
+                <p id="report-photo-help" class="field-note">"JPG, PNG nebo WebP, nejvýše 20 MB na fotografii a 50 MB celkem. Fotografie můžete přidávat postupně. Na telefonu lze podle možností prohlížeče vybrat fotky nebo pořídit nové."</p>
                 <p id="report-photo-error" class="report-error" role="alert" hidden></p>
                 <p id="report-photo-status" class="field-note" role="status" aria-live="polite"></p>
                 <div id="report-photo-preview" class="report-photo-previews" hidden></div>

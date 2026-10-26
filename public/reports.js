@@ -4,7 +4,7 @@ let clusterPromise
 const mounted = new WeakMap()
 // A draft survives SPA history navigation only in this page's memory.
 let reportDraft = null
-const MAX_PHOTO_BYTES = 15_000_000
+const MAX_PHOTO_BYTES = 20_000_000
 const MAX_TOTAL_PHOTO_BYTES = 50_000_000
 
 function leaflet() {
@@ -462,7 +462,7 @@ export function mount_report_form(root) {
     let message = ''
     for (const file of selected) {
       if (file.size > MAX_PHOTO_BYTES) {
-        message = `Fotografie „${file.name}“ je příliš velká. Jedna fotografie může mít nejvýše 15 MB.`
+        message = `Fotografie „${file.name}“ je příliš velká. Jedna fotografie může mít nejvýše 20 MB.`
         break
       }
       if (!/^image\/(jpeg|png|webp)$/.test(file.type) && (file.type || !/\.(jpe?g|png|webp)$/i.test(file.name))) {
@@ -561,7 +561,7 @@ export function mount_report_form(root) {
         }
         break
       }
-      if (!response.ok) throw new Error(result?.error || (response.status === 413 ? 'Upload je příliš velký. Jedna fotografie může mít nejvýše 15 MB a všechny dohromady 50 MB.' : 'Hlášení se nepodařilo odeslat. Zkuste to znovu.'))
+      if (!response.ok) throw new Error(result?.error || (response.status === 413 ? 'Upload je příliš velký. Jedna fotografie může mít nejvýše 20 MB a všechny dohromady 50 MB.' : 'Hlášení se nepodařilo odeslat. Zkuste to znovu.'))
       if (!Number.isSafeInteger(result?.id) || result.id < 1) throw new Error('Server vrátil neočekávanou odpověď. Před opakováním zkontrolujte seznam hlášení.')
       state.submitted = true
       reportDraft = null

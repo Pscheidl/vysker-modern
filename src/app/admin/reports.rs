@@ -521,7 +521,7 @@ fn ResolutionEditor(
                         let selected: Vec<web_sys::File> = (0..files.length()).filter_map(|index| files.item(index)).collect();
                         element.set_value("");
                         error.set(None);
-                        let invalid_size = selected.iter().any(|file| file.size() > 15_000_000.0);
+                        let invalid_size = selected.iter().any(|file| file.size() > 20_000_000.0);
                         let invalid_type = selected.iter().any(|file| {
                             let kind = file.type_();
                             let name = file.name().to_lowercase();
@@ -530,7 +530,7 @@ fn ResolutionEditor(
                         });
                         let total = photos.with(|items| items.iter().map(|item| item.file.size()).sum::<f64>()) + selected.iter().map(|file| file.size()).sum::<f64>();
                         if invalid_size || invalid_type || total > 50_000_000.0 {
-                            let message = if invalid_size { "Jedna fotografie může mít nejvýše 15 MB." } else if invalid_type { "Vyberte fotografie JPG, PNG nebo WebP." } else { "Nové fotografie dohromady přesahují 50 MB." };
+                            let message = if invalid_size { "Jedna fotografie může mít nejvýše 20 MB." } else if invalid_type { "Vyberte fotografie JPG, PNG nebo WebP." } else { "Nové fotografie dohromady přesahují 50 MB." };
                             error.set(Some(resolution_failure(message)));
                             return;
                         }
@@ -542,7 +542,7 @@ fn ResolutionEditor(
                             }
                         }
                     }/></label>
-                    <p id="report-resolution-photo-help" class="admin-caption">"JPG, PNG nebo WebP, nejvýše 15 MB na fotografii a 50 MB nových fotografií celkem. Přidávat je můžete postupně. Uložené fotografie včetně nových mohou mít dohromady nejvýše 50 MB."</p>
+                    <p id="report-resolution-photo-help" class="admin-caption">"JPG, PNG nebo WebP, nejvýše 20 MB na fotografii a 50 MB nových fotografií celkem. Přidávat je můžete postupně. Uložené fotografie včetně nových mohou mít dohromady nejvýše 50 MB."</p>
                     <div class="report-photo-previews" aria-label="Nové fotografie řešení">{move || photos.get().into_iter().enumerate().map(|(index, photo)| {
                         let name = photo.file.name();
                         view! { <figure class="report-photo-preview-item" data-resolution-photo=name.clone()><img src=photo.preview alt=format!("Náhled fotografie řešení {name}")/><figcaption>{name.clone()}</figcaption><button class="text-link" type="button" aria-label=format!("Odebrat novou fotografii řešení {name}") on:click=move |_| photos.update(|items| {

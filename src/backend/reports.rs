@@ -151,7 +151,7 @@ fn sanitize_photo(bytes: &[u8]) -> Result<Vec<u8>> {
         .encode_image(&image.into_rgb8())
         .map_err(|_| bad("Fotografii se nepodařilo zpracovat."))?;
     if result.len() > REPORT_PHOTO_BYTES {
-        return Err(bad("Zpracovaná fotografie překračuje limit 15 MB."));
+        return Err(bad("Zpracovaná fotografie překračuje limit 20 MB."));
     }
     Ok(result)
 }
@@ -169,7 +169,7 @@ async fn read_photo(
         .map_err(|_| bad("Fotografie nelze přečíst nebo celková velikost překračuje 50 MB."))?
     {
         if chunk.len() > REPORT_PHOTO_BYTES - bytes.len() {
-            return Err(bad("Jedna fotografie může mít nejvýše 15 MB."));
+            return Err(bad("Jedna fotografie může mít nejvýše 20 MB."));
         }
         if chunk.len() > REPORT_UPLOAD_BYTES - *upload_bytes {
             return Err(bad("Fotografie mohou mít dohromady nejvýše 50 MB."));

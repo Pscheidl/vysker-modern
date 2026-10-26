@@ -582,11 +582,11 @@ async fn accepts_exact_photo_and_total_limits_and_rejects_larger_uploads_atomica
     // real decodable image without allocating large decoded pixel buffers.
     full.resize(REPORT_PHOTO_BYTES, 0);
     let mut remainder = picture(ImageFormat::Jpeg, 3);
-    remainder.resize(REPORT_UPLOAD_BYTES - 3 * REPORT_PHOTO_BYTES, 0);
+    remainder.resize(REPORT_UPLOAD_BYTES - 2 * REPORT_PHOTO_BYTES, 0);
     let response = submit_photos(
         &app,
         VALID,
-        &[&full, &full, &full, &remainder],
+        &[&full, &full, &remainder],
         Some(ORIGIN),
         "192.0.2.110",
     )
@@ -594,13 +594,13 @@ async fn accepts_exact_photo_and_total_limits_and_rejects_larger_uploads_atomica
     assert_eq!(response.status(), StatusCode::CREATED);
     let report = body_json(response).await;
     let id = report["id"].as_i64().unwrap();
-    assert_eq!(report["photo_count"], 4);
+    assert_eq!(report["photo_count"], 3);
     let body: String = sqlx::query_scalar("SELECT body FROM report_mail_queue WHERE report_id=$1")
         .bind(id)
         .fetch_one(&app.state.pool)
         .await
         .unwrap();
-    for position in 1..=4 {
+    for position in 1..=3 {
         assert!(body.contains(&format!(
             "http://localhost:3000/api/v1/reports/{id}/photos/{position}"
         )));
@@ -609,13 +609,13 @@ async fn accepts_exact_photo_and_total_limits_and_rejects_larger_uploads_atomica
     let rejected = submit_photos(&app, VALID, &[&full], Some(ORIGIN), "192.0.2.111").await;
     assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
     let error = rejected.into_body().collect().await.unwrap().to_bytes();
-    assert!(String::from_utf8_lossy(&error).contains("15 MB"));
+    assert!(String::from_utf8_lossy(&error).contains("20 MB"));
     full.pop();
     remainder.push(0);
     let rejected = submit_photos(
         &app,
         VALID,
-        &[&full, &full, &full, &remainder],
+        &[&full, &full, &remainder],
         Some(ORIGIN),
         "192.0.2.112",
     )
@@ -634,7 +634,7 @@ async fn accepts_exact_photo_and_total_limits_and_rejects_larger_uploads_atomica
     assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
     let counts: (i64, i64, i64) = sqlx::query_as("SELECT (SELECT count(*) FROM issue_reports),(SELECT count(*) FROM issue_report_photos),(SELECT count(*) FROM report_mail_queue)")
         .fetch_one(&app.state.pool).await.unwrap();
-    assert_eq!(counts, (1, 4, 1));
+    assert_eq!(counts, (1, 3, 1));
 }
 
 #[tokio::test]
