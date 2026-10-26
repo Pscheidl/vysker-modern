@@ -118,9 +118,11 @@ compose_files+=(-f compose.staging-privacy.yaml)
 
 Obsah tohoto JSON se zveřejní na stránce ochrany údajů, nepatří do něj hesla.
 Zkontrolovat formulář odběru, totožnost provozovatele, potvrzení e-mailové adresy
-a odhlášení. SMTP nastavení samo odběr nezapíná. Pro deaktivaci nových žádostí
-vynechat privacy overlay a znovu vytvořit webový kontejner. Tím se pozastaví i
-odesílání zpráv odběratelům, odhlášení zůstává dostupné. Při již běžícím importu
+a odhlášení. SMTP nastavení samo odběr nezapíná. Po prvním uložení v administraci
+`/admin/ochrana-udaju` mají údaje v databázi přednost před tímto souborem a změny platí
+bez restartu. Odebrání privacy overlay už uloženou databázovou konfiguraci nevypíná.
+Při nasazení ponechat aktivní overlay. Lhůty externích záloh a diagnostických logů
+je nutné upravit také v jejich provozní konfiguraci. Při již běžícím importu
 s restartem počkat na jeho dokončení.
 
 Pro zvolenou kombinaci používat ve stejné bash relaci:

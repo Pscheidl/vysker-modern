@@ -268,6 +268,12 @@ pub fn router(state: Backend) -> Router {
         )
         .route("/api/v1/privacy", get(privacy::public_notice))
         .route(
+            "/api/v1/admin/privacy",
+            get(privacy::admin_notice)
+                .put(privacy::update)
+                .layer(DefaultBodyLimit::max(128 * 1024)),
+        )
+        .route(
             "/api/v1/admin/subscribers/{id}/consents",
             get(privacy::evidence),
         )

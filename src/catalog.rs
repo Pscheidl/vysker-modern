@@ -185,7 +185,10 @@ pub async fn load_subscription_categories() -> Result<Vec<SubscriptionCategory>,
 pub async fn load_privacy_notice() -> Result<Option<crate::privacy::PrivacyNotice>, ServerFnError> {
     let state = use_context::<crate::backend::Backend>()
         .ok_or_else(|| ServerFnError::new("Informace o soukromí nejsou dostupné."))?;
-    Ok(state.config.privacy.as_ref().map(|p| p.notice()))
+    crate::backend::privacy::policy(&state)
+        .await
+        .map(|policy| policy.map(|p| p.notice()))
+        .map_err(|error| ServerFnError::new(error.1))
 }
 #[cfg(feature = "demo")]
 pub async fn load_privacy_notice() -> Result<Option<crate::privacy::PrivacyNotice>, ServerFnError> {

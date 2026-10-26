@@ -55,6 +55,21 @@
 .newsletter-consent{flex-basis:100%;font-size:.875rem;line-height:1.6}
 .newsletter-consent a{text-decoration:underline}
 
+/* Private subscription pages share the public site's typography and colours. */
+.subscription-page .page-heading{max-width:900px;padding-bottom:28px}
+.subscription-card{max-width:760px;padding:clamp(22px,4vw,36px);border:1px solid var(--line);border-radius:18px;background:var(--surface);box-shadow:var(--shadow);overflow-wrap:anywhere}
+.subscription-card>*+*,.subscription-card form>*+*,.subscription-card details>*+*{margin-top:20px}
+.subscription-card p{line-height:1.75}
+.subscription-card a:not(.button){color:var(--accent);text-decoration:underline;text-underline-offset:3px}
+.subscription-card details{padding:18px;background:var(--soft);border-radius:10px}
+.subscription-card summary{cursor:pointer;font-weight:550}
+.subscription-card fieldset{min-width:0;padding:18px;border:1px solid var(--border);border-radius:10px}
+.subscription-card legend{padding:0 6px;font-weight:550}
+.subscription-card fieldset>p{font-size:13px;margin-bottom:12px}
+.subscription-card [role=status]{padding:16px 18px;background:var(--success-bg);color:var(--success);border-radius:10px}
+.subscription-card [role=alert]{padding:16px 18px;background:var(--warning-bg);color:var(--warning);border-radius:10px}
+@media(max-width:600px){.subscription-page .page-heading h1{font-size:36px}.subscription-card .button{width:100%}}
+
 .managed-content{white-space:pre-line;overflow-wrap:anywhere;margin-block:2rem}.site-footer nav{flex-wrap:wrap}
 
 .admin-account{padding:18px 0;border-top:1px solid var(--line)}.admin-account summary{cursor:pointer;overflow-wrap:anywhere}.admin-account>p{margin:18px 0}.admin-account .admin-field{max-width:500px}

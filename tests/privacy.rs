@@ -44,7 +44,7 @@ async fn subscription_must_match_the_displayed_wording() {
         subscriptions::request_subscription(
             &unavailable,
             "person@example.test",
-            &common::consent(&app.state),
+            &common::consent(&app.state).await,
             OffsetDateTime::now_utc()
         )
         .await
@@ -287,7 +287,8 @@ async fn private_operator_subscription_uses_actual_controller_and_no_fictitious_
             .await
             .unwrap();
     assert_eq!(subject, "Potvrzení odběru novinek z webu Vyskeř");
-    assert!(email.ends_with("\n\nSoukromý provozovatel"));
+    assert!(email.ends_with("\n\nInformace o soukromí: http://localhost:3000/ochrana-udaju"));
+    assert!(!email.ends_with("\n\nSoukromý provozovatel"));
     assert!(!email.contains("Obec Vyskeř"));
     let token = app.confirmation_token("person@example.test").await;
     let response = app
@@ -313,7 +314,8 @@ async fn private_operator_subscription_uses_actual_controller_and_no_fictitious_
     assert!(html.contains("Vlastní zálohy databáze odběratelů nyní nevytváříme."));
     assert!(!html.contains("Pověřenec"));
     assert!(!html.contains("Zálohy: 0 dní"));
-    assert!(html.contains("<p>Web Vyskeř</p>"));
+    assert!(html.contains("class=\"site-header\""));
+    assert!(html.contains("class=\"brand\""));
     let pending: Option<i64> = sqlx::query_scalar("SELECT confirmed_at FROM subscription_consents")
         .fetch_one(&app.state.pool)
         .await

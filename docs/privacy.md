@@ -14,7 +14,9 @@ link alone changes nothing, so an antivirus link scanner cannot activate or
 cancel it. Confirmation and withdrawal each use one button and require no
 account or password. Unsubscribe links in new messages have no fixed expiry.
 Verification links expire after 24 hours, and a new request invalidates the
-previous verification link.
+previous verification link. Confirmation, unsubscribe and preference pages use the
+public website styles and theme controls, and work without JavaScript. Newsletter
+verification and publication messages contain no personal closing signature.
 
 The backend stores the exact notice wording and privacy configuration, their
 fingerprint, and request, confirmation and withdrawal times. This is evidence
@@ -36,8 +38,26 @@ does not invent prior consent or send automatic requests for it.
 
 ## Configuration
 
-`OBEC_PRIVACY_CONFIG` points to JSON matching `config/privacy.example.json`.
-The example contains explicit placeholders and development retention periods.
+Administrators edit the current policy at `/admin/ochrana-udaju` in **Ochrana údajů**.
+The form includes controller and processor details, contacts, legal bases,
+newsletter conditions, consent wording, rights and retention periods. Saving takes
+effect immediately on the public notice, subscription form and background cleanup.
+Saving a changed policy does not create email notifications or ask existing
+subscribers to confirm again. The default conditions reserve changes and link
+their current wording to this public page.
+Stored settings persist in the database across application restarts. Concurrent
+edits are rejected if another administrator saved a newer version first.
+
+`GET /api/v1/admin/privacy` returns the current notice to an authenticated
+administrator. `PUT /api/v1/admin/privacy` accepts `{policy, fingerprint}` with
+the fingerprint from that read, or `null` when no policy exists. The endpoint
+requires the same origin and administrator session, validates all fields and
+records an audit event. Historical consent snapshots are never rewritten.
+A subscription form with an outdated fingerprint must refresh before submitting.
+
+`OBEC_PRIVACY_CONFIG` points to initial JSON matching `config/privacy.example.json`.
+It provides a fallback until the first administrator save. Saved database settings
+then take precedence. The example contains explicit placeholders and development retention periods.
 The operator must supply controller details, contacts, processors, international
 transfers, legal bases and justified retention periods before setting `approved_on`.
 Controller name and a valid contact email are required. A postal contact address
@@ -64,7 +84,9 @@ approved retention period. Cleanup summaries contain no erased addresses.
 after a recorded withdrawal. Historical archive entries without a withdrawal
 timestamp are not automatically purged by this rule. The minimal public record
 always remains. The production
-backup service uses a positive `backup_days` value to rotate local snapshots.
+backup service reads `backup_days` from its configured JSON file to rotate local snapshots.
+An administrator edit updates the published policy and application cleanup, but
+external backup and diagnostic-log rotation must be adjusted separately to match.
 Use `backup_days: 0` to declare that the operator does not create backups of the
 subscriber database, and keep the
 backup service disabled in that deployment. This value changes the published

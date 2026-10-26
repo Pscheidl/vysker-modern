@@ -103,7 +103,7 @@ impl App {
         if path == "/api/v1/subscriptions" {
             if let Some(value) = value.as_mut() {
                 if value.get("consent").is_none() {
-                    value["consent"] = serde_json::to_value(consent(&self.state)).unwrap();
+                    value["consent"] = serde_json::to_value(consent(&self.state).await).unwrap();
                 }
             }
         }
@@ -186,9 +186,9 @@ pub async fn body_json(response: Response) -> Value {
 }
 pub const PDF: &[u8] = b"%PDF-1.7\nukazkovy soubor pro test\n%%EOF";
 
-pub fn consent(state: &Backend) -> backend::subscriptions::ConsentAcceptance {
+pub async fn consent(state: &Backend) -> backend::subscriptions::ConsentAcceptance {
     backend::subscriptions::ConsentAcceptance {
-        fingerprint: backend::privacy::notice(state).unwrap().fingerprint,
+        fingerprint: backend::privacy::notice(state).await.unwrap().fingerprint,
     }
 }
 pub async fn request_subscription(
@@ -196,7 +196,7 @@ pub async fn request_subscription(
     email: &str,
     now: time::OffsetDateTime,
 ) -> backend::Result<()> {
-    backend::subscriptions::request_subscription(state, email, &consent(state), now).await
+    backend::subscriptions::request_subscription(state, email, &consent(state).await, now).await
 }
 
 /// Each test gets a separate schema inside the disposable database supplied by test.sh.

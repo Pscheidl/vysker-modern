@@ -8,7 +8,7 @@ use axum::{
     Form, Json,
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
-    response::Html,
+    response::{Html, IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -141,14 +141,14 @@ pub async fn request_subscription_with_preferences(
     preferences: &SubscriptionPreferences,
     now: OffsetDateTime,
 ) -> Result<()> {
-    let notice = super::privacy::notice(s)?;
+    let mut tx = crate::db::begin_write(&s.pool).await?;
+    let notice = super::privacy::notice_in(s, &mut tx).await?;
     if consent.fingerprint != notice.fingerprint {
         return Err(bad(
             "Informace o odběru se změnily. Obnovte stránku a přečtěte si aktuální znění.",
         ));
     }
     let address = auth::email(address)?;
-    let mut tx = crate::db::begin_write(&s.pool).await?;
     let preferences = validate_preferences(&mut tx, preferences).await?;
     let old: Option<(i64, Option<i64>, Option<i64>)> =
         sqlx::query_as("SELECT id,verified_at,unsubscribed_at FROM subscribers WHERE email=$1")
@@ -254,13 +254,12 @@ pub async fn request_subscription_with_preferences(
         .await?;
     let topics = preferences_description(&mut tx, &preferences).await?;
     let body = format!(
-        "Dobrý den,\n\npotvrďte odběr nových dokumentů z webu Vyskeř na tomto odkazu:\n{}/odber/potvrdit?token={}\n\nVybraný odběr: {topics}.\n\nOdkaz platí 24 hodin. Do potvrzení vám novinky chodit nebudou. Pokud jste o odběr nepožádali, zprávu ignorujte.\n\nZnění souhlasu ({}):\n{}\n\nInformace o soukromí: {}/ochrana-udaju\n\n{}",
+        "Dobrý den,\n\npotvrďte odběr nových dokumentů z webu Vyskeř na tomto odkazu:\n{}/odber/potvrdit?token={}\n\nVybraný odběr: {topics}.\n\nOdkaz platí 24 hodin. Do potvrzení vám novinky chodit nebudou. Pokud jste o odběr nepožádali, zprávu ignorujte.\n\nZnění souhlasu ({}):\n{}\n\nInformace o soukromí: {}/ochrana-udaju",
         s.config.public_url,
         secret,
         notice.consent_version,
         notice.consent_text,
-        s.config.public_url,
-        notice.policy.controller_name
+        s.config.public_url
     );
     sqlx::query("INSERT INTO mail_queue(subscriber_id,purpose,subject,body,next_attempt_at,created_at,consent_id) VALUES ($1,'verification','Potvrzení odběru novinek z webu Vyskeř',$2,$3,$4,$5)")
         .bind(id).bind(body).bind(now.unix_timestamp()).bind(now.unix_timestamp()).bind(consent_id).execute(&mut *tx).await?;
@@ -379,6 +378,10 @@ struct SubscriptionPolicySnapshot {
     processors: String,
     international_transfers: String,
     retention: SubscriptionRetentionSnapshot,
+    #[serde(default)]
+    newsletter_terms: Option<String>,
+    #[serde(default)]
+    rights_text: Option<String>,
 }
 #[derive(Deserialize)]
 struct SubscriptionRetentionSnapshot {
@@ -432,8 +435,14 @@ async fn landing(s: &Backend, secret: &str, confirm: bool) -> Result<Html<String
         } else {
             format!("Zálohy: {} dní.", policy.retention.backup_days)
         };
+        // Older snapshots predate editable wording. Keep their original text,
+        // never substitute the current policy into a historical confirmation.
+        let terms = policy.newsletter_terms.as_deref().map(crate::markdown::render)
+            .unwrap_or_else(|| "<p>Účel: odběr nových dokumentů. Právní důvod: dobrovolný souhlas podle čl. 6 odst. 1 písm. a) GDPR. Souhlas lze kdykoli odvolat odkazem v každé zprávě.</p>".into());
+        let rights = policy.rights_text.as_deref().map(crate::markdown::render)
+            .unwrap_or_else(|| "<p>Práva: přístup, oprava, výmaz, omezení, podle právního důvodu přenositelnost a námitka. Stížnost lze podat u ÚOOÚ.</p>".into());
         format!(
-            "<p>Vybraný odběr: {}.</p><p>{}</p><p>Verze souhlasu: {}. Informace o soukromí: {}.</p><details><summary>Informace platné při žádosti</summary><p>Správce: {}{controller_address}. Kontakt: {}.{dpo}</p><p>Účel: odběr nových dokumentů. Právní důvod: dobrovolný souhlas podle čl. 6 odst. 1 písm. a) GDPR. Souhlas lze kdykoli odvolat odkazem v každé zprávě.</p><p>Nepotvrzené žádosti: {} dní. Údaje po odhlášení: {} dní. Poštovní fronta: {} dní. {backups}</p><p>Důvod uchování dokladu: {}</p><p>Příjemci: {}</p><p>Předávání: {}</p><p>Práva: přístup, oprava, výmaz, omezení, podle právního důvodu přenositelnost a námitka. Stížnost lze podat u ÚOOÚ.</p></details>",
+            "<p>Vybraný odběr: {}.</p><p>{}</p><p>Verze souhlasu: {}. Informace o soukromí: {}.</p><details><summary>Informace platné při žádosti</summary><p>Správce: {}{controller_address}. Kontakt: {}.{dpo}</p><div class=\"markdown-content\">{terms}</div><p>Nepotvrzené žádosti: {} dní. Údaje po odhlášení: {} dní. Poštovní fronta: {} dní. {backups}</p><p>Důvod uchování dokladu: {}</p><p>Příjemci: {}</p><p>Předávání: {}</p><div class=\"markdown-content\">{rights}</div></details>",
             escape(&topics),
             escape(&wording),
             escape(&version),
@@ -448,25 +457,70 @@ async fn landing(s: &Backend, secret: &str, confirm: bool) -> Result<Html<String
             escape(&policy.international_transfers)
         )
     } else {
+        let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM subscription_tokens t JOIN subscribers s ON s.id=t.subscriber_id JOIN subscription_consents c ON c.id=t.consent_id AND c.subscriber_id=s.id WHERE t.hash=$1 AND t.purpose='unsubscribe' AND t.expires_at>$2 AND s.verified_at IS NOT NULL AND s.unsubscribed_at IS NULL AND c.confirmed_at IS NOT NULL AND c.withdrawn_at IS NULL AND c.superseded_at IS NULL)")
+            .bind(auth::hash(secret)).bind(OffsetDateTime::now_utc().unix_timestamp()).fetch_one(&s.pool).await?;
+        if !valid {
+            return Err(bad("Odkaz není platný nebo vypršel."));
+        }
         format!(
-            "<p>Odhlášením odvoláte souhlas s dalším zasíláním novinek. Přihlášení k účtu není potřeba.</p><p>Chcete dostávat jen některé zprávy? <a href=\"/odber/nastaveni?token={secret}\">Upravit výběr kategorií</a>.</p>"
+            "<p>Odhlášením odvoláte souhlas s dalším zasíláním novinek.</p><p>Chcete dostávat jen některé zprávy? <a href=\"/odber/nastaveni?token={secret}\">Upravit výběr kategorií</a>.</p>"
         )
     };
-    Ok(Html(format!(
-        "<!doctype html><html lang=\"cs\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"robots\" content=\"noindex\"><title>{heading} · Vyskeř</title><body><main><h1>{heading}</h1><p>Web Vyskeř</p>{details}<form method=\"post\" action=\"{action}\"><input type=\"hidden\" name=\"token\" value=\"{secret}\"><button type=\"submit\">{heading}</button></form></main></body></html>"
-    )))
+    Ok(page_document(
+        heading,
+        &format!(
+            "{details}<form method=\"post\" action=\"{action}\"><input type=\"hidden\" name=\"token\" value=\"{secret}\"><button class=\"button primary\" type=\"submit\">{heading}</button></form>"
+        ),
+    ))
 }
 pub async fn confirmation_page(
     State(s): State<Backend>,
     Query(input): Query<TokenInput>,
-) -> Result<Html<String>> {
-    landing(&s, &input.token, true).await
+) -> Response {
+    page_response(landing(&s, &input.token, true).await)
 }
 pub async fn unsubscribe_page(
     State(s): State<Backend>,
     Query(input): Query<TokenInput>,
-) -> Result<Html<String>> {
-    landing(&s, &input.token, false).await
+) -> Response {
+    page_response(landing(&s, &input.token, false).await)
+}
+
+/// The bearer-link pages use the public site's stylesheet and native forms.
+/// They intentionally do not hydrate the public router or put tokens in an API URL.
+pub(super) fn page_document(heading: &str, content: &str) -> Html<String> {
+    use leptos::prelude::*;
+    static OPTIONS: std::sync::OnceLock<LeptosOptions> = std::sync::OnceLock::new();
+    let options = OPTIONS.get_or_init(|| {
+        get_configuration(Some("Cargo.toml"))
+            .map(|configuration| configuration.leptos_options)
+            .unwrap_or_else(|_| {
+                get_config_from_str(include_str!("../../Cargo.toml"))
+                    .expect("valid bundled Leptos configuration")
+            })
+    });
+    let stylesheet = view! { <leptos_meta::HashedStylesheet options=options.clone()/> }.to_html();
+    let heading = escape(heading);
+    Html(format!(
+        r##"<!doctype html><html lang="cs"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><meta name="robots" content="noindex, noarchive"><meta name="referrer" content="no-referrer"><title>{heading} · Vyskeř</title><link rel="icon" type="image/png" href="/images/chapel-cutout.png"><link rel="preload" href="/fonts/geist.woff2" as="font" type="font/woff2" crossorigin="anonymous"><script src="/theme.js"></script>{stylesheet}<script src="/subscription-page.js" defer></script></head><body><a href="#obsah" class="skip-link">Přejít k obsahu</a><header class="site-header"><div class="page-width header-inner"><a href="/" class="brand" aria-label="Vyskeř, úvodní stránka"><span class="logo-mark" aria-hidden="true"></span><span>Vyskeř</span></a><div class="header-actions"><div class="theme-switch" data-subscription-theme hidden><button class="theme-light" type="button" aria-label="Světlý vzhled" data-theme-choice="light"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M5 19l1.5-1.5M17.5 6.5 19 5"/></svg></button><button class="theme-dark" type="button" aria-label="Tmavý vzhled" data-theme-choice="dark"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M20.9 13.2A9 9 0 0 1 10.8 3.1 9 9 0 1 0 20.9 13.2z"/></svg></button></div><a class="contact-link" href="/">Zpět na web</a></div></div></header><main id="obsah" tabindex="-1" class="page-width interior subscription-page"><header class="page-heading"><p class="eyebrow">ODBĚR E-MAILEM</p><h1>{heading}</h1></header><div class="subscription-card">{content}</div></main><footer class="site-footer page-width"><span>Obec Vyskeř</span><nav aria-label="Patička"><a href="/povinne-informace">Povinné informace</a><a href="/stranky">Informace obce</a><a href="/pristupnost">Přístupnost</a><a href="/ochrana-udaju">Ochrana údajů</a><a href="/kontakt">Kontakt</a><a href="/admin">Správa webu</a></nav><p class="site-footer-note">Neoficiální web obce Vyskeř. Informace o obci přehledněji.</p></footer></body></html>"##
+    ))
+}
+
+pub(super) fn page_response(result: Result<Html<String>>) -> Response {
+    match result {
+        Ok(page) => page.into_response(),
+        Err(error) => (
+            error.0,
+            page_document(
+                "Odkaz není dostupný",
+                &format!(
+                    "<p role=\"alert\">{}</p><p><a class=\"button secondary\" href=\"/odber\">Přejít na odběr novinek</a></p>",
+                    escape(error.1)
+                ),
+            ),
+        )
+            .into_response(),
+    }
 }
 
 fn escape(value: &str) -> String {
@@ -480,18 +534,17 @@ fn escape(value: &str) -> String {
 pub async fn confirmation_form(
     State(s): State<Backend>,
     Form(input): Form<TokenInput>,
-) -> Result<Html<&'static str>> {
-    use_token(&s, &input.token, true, OffsetDateTime::now_utc()).await?;
-    Ok(Html(
-        "<!doctype html><html lang=cs><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Odběr potvrzen · Vyskeř</title><h1>Odběr je potvrzený.</h1><p>Nové dokumenty vám nyní přijdou e-mailem.</p><a href=/>Zpět na web Vyskeř</a></html>",
-    ))
+) -> Response {
+    page_response(
+        use_token(&s, &input.token, true, OffsetDateTime::now_utc())
+            .await
+            .map(|()| page_document("Odběr je potvrzený.", "<p role=\"status\">Nové dokumenty vám nyní přijdou e-mailem.</p><p><a class=\"button primary\" href=\"/\">Zpět na web Vyskeř</a></p>")),
+    )
 }
-pub async fn unsubscribe_form(
-    State(s): State<Backend>,
-    Form(input): Form<TokenInput>,
-) -> Result<Html<&'static str>> {
-    use_token(&s, &input.token, false, OffsetDateTime::now_utc()).await?;
-    Ok(Html(
-        "<!doctype html><html lang=cs><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Odběr odhlášen · Vyskeř</title><h1>Odběr je odhlášený.</h1><p>Další novinky vám posílat nebudeme.</p><a href=/>Zpět na web Vyskeř</a></html>",
-    ))
+pub async fn unsubscribe_form(State(s): State<Backend>, Form(input): Form<TokenInput>) -> Response {
+    page_response(
+        use_token(&s, &input.token, false, OffsetDateTime::now_utc())
+            .await
+            .map(|()| page_document("Odběr je odhlášený.", "<p role=\"status\">Další novinky vám posílat nebudeme.</p><p><a class=\"button primary\" href=\"/\">Zpět na web Vyskeř</a></p>")),
+    )
 }

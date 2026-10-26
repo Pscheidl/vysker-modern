@@ -247,7 +247,10 @@ pub async fn publish_at(s: &Backend, id: i64, actor: i64, now: OffsetDateTime) -
                 "Konec zveřejnění v archivu musí být po sejmutí a v budoucnosti.",
             ));
         }
-        if let (Some(policy), Some(end)) = (&s.config.privacy, record.withdraw_on) {
+        if let (Some(policy), Some(end)) = (
+            super::privacy::policy_in(s, &mut tx).await?,
+            record.withdraw_on,
+        ) {
             if until > end + Duration::days(i64::from(policy.retention.notice_internal_days)) {
                 return Err(bad(
                     "Zveřejnění v archivu přesahuje schválenou dobu interního uchování. Upravte nastavení s pověřencem.",

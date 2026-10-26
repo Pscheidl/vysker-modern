@@ -4,19 +4,136 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use time::{Duration, OffsetDateTime};
 
-pub fn notice(s: &Backend) -> Result<crate::privacy::PrivacyNotice> {
-    s.config.privacy.as_ref().map(|p| p.notice()).ok_or(Error(
+/// Administrators' saved policy overrides the server's initial configuration.
+/// A read failure must never silently fall back to stale consent or retention rules.
+pub async fn policy(s: &Backend) -> Result<Option<crate::privacy::PrivacyPolicy>> {
+    let saved: Option<String> =
+        sqlx::query_scalar("SELECT policy_json FROM privacy_settings WHERE id=1")
+            .fetch_optional(&s.pool)
+            .await?;
+    decode_policy(saved, s)
+}
+
+pub async fn policy_in(
+    s: &Backend,
+    conn: &mut sqlx::PgConnection,
+) -> Result<Option<crate::privacy::PrivacyPolicy>> {
+    let saved: Option<String> =
+        sqlx::query_scalar("SELECT policy_json FROM privacy_settings WHERE id=1")
+            .fetch_optional(conn)
+            .await?;
+    decode_policy(saved, s)
+}
+
+pub async fn notice_in(
+    s: &Backend,
+    conn: &mut sqlx::PgConnection,
+) -> Result<crate::privacy::PrivacyNotice> {
+    policy_in(s, conn).await?.map(|p| p.notice()).ok_or(Error(
         StatusCode::SERVICE_UNAVAILABLE,
         "Odběr novinek zatím není aktivní.",
     ))
 }
+
+fn decode_policy(
+    saved: Option<String>,
+    s: &Backend,
+) -> Result<Option<crate::privacy::PrivacyPolicy>> {
+    match saved {
+        Some(json) => serde_json::from_str(&json).map(Some).map_err(|_| {
+            Error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Uložené informace o soukromí se nepodařilo načíst.",
+            )
+        }),
+        None => Ok(s.config.privacy.clone()),
+    }
+}
+
+pub async fn notice(s: &Backend) -> Result<crate::privacy::PrivacyNotice> {
+    policy(s).await?.map(|p| p.notice()).ok_or(Error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Odběr novinek zatím není aktivní.",
+    ))
+}
+
 pub async fn public_notice(
     State(s): State<Backend>,
-) -> Json<Option<crate::privacy::PrivacyNotice>> {
-    Json(s.config.privacy.as_ref().map(|p| p.notice()))
+) -> Result<Json<Option<crate::privacy::PrivacyNotice>>> {
+    Ok(Json(policy(&s).await?.map(|p| p.notice())))
+}
+
+pub async fn admin_notice(
+    State(s): State<Backend>,
+    _: Admin,
+) -> Result<Json<Option<crate::privacy::PrivacyNotice>>> {
+    public_notice(State(s)).await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyUpdate {
+    policy: crate::privacy::PrivacyPolicy,
+    fingerprint: Option<String>,
+}
+
+pub fn validate_policy(
+    policy: &crate::privacy::PrivacyPolicy,
+    production: bool,
+) -> anyhow::Result<()> {
+    policy.validate()?;
+    if production {
+        anyhow::ensure!(
+            policy.approved_on.is_some(),
+            "Produkce vyžaduje schválené informace o soukromí"
+        );
+        let json = serde_json::to_string(policy)?;
+        anyhow::ensure!(
+            !json.contains("DOPLNIT") && !json.contains("example.test"),
+            "Nahraďte ukázkové údaje v nastavení soukromí"
+        );
+    }
+    Ok(())
+}
+
+pub async fn update(
+    State(s): State<Backend>,
+    admin: Admin,
+    Json(input): Json<PolicyUpdate>,
+) -> Result<Json<crate::privacy::PrivacyNotice>> {
+    validate_policy(&input.policy, s.config.production).map_err(|_| super::bad(
+        "Zkontrolujte povinné texty, e-maily, datum schválení a lhůty uchování. V produkci vyplňte schválené údaje bez ukázkových hodnot.",
+    ))?;
+    let mut tx = crate::db::begin_write(&s.pool).await?;
+    let saved: Option<String> =
+        sqlx::query_scalar("SELECT policy_json FROM privacy_settings WHERE id=1")
+            .fetch_optional(&mut *tx)
+            .await?;
+    let current = decode_policy(saved, &s)?.map(|p| p.notice().fingerprint);
+    if current != input.fingerprint {
+        return Err(super::conflict(
+            "Informace mezitím změnil jiný správce. Obnovte stránku a zopakujte úpravu.",
+        ));
+    }
+    let notice = input.policy.notice();
+    sqlx::query("INSERT INTO privacy_settings(id,policy_json,updated_at,updated_by) VALUES (1,$1,$2,$3) ON CONFLICT(id) DO UPDATE SET policy_json=excluded.policy_json,updated_at=excluded.updated_at,updated_by=excluded.updated_by")
+        .bind(serde_json::to_string(&input.policy).expect("serializable policy"))
+        .bind(OffsetDateTime::now_utc().unix_timestamp()).bind(admin.id)
+        .execute(&mut *tx).await?;
+    audit(
+        &mut tx,
+        Some(admin.id),
+        "updated",
+        "privacy",
+        1,
+        OffsetDateTime::now_utc(),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(notice))
 }
 
 #[derive(sqlx::FromRow, Serialize)]
@@ -45,12 +162,12 @@ pub async fn evidence(
 pub async fn maintenance(s: &Backend, now: OffsetDateTime) -> Result<()> {
     super::recovery::maintenance(s, now).await?;
     super::report_abuse::maintenance(&s.pool, now.unix_timestamp()).await?;
-    let Some(policy) = &s.config.privacy else {
+    let mut tx = crate::db::begin_write(&s.pool).await?;
+    let Some(policy) = policy_in(s, &mut tx).await? else {
         return Ok(());
     };
     let r = &policy.retention;
     let cutoff = |days: u16| now.unix_timestamp() - i64::from(days) * 86400;
-    let mut tx = crate::db::begin_write(&s.pool).await?;
     // Keep document delivery pending through outages. Retention removes completed
     // history and verification mail, never records owned by an SMTP worker.
     let mail = sqlx::query("DELETE FROM mail_queue WHERE created_at<$1 AND locked_until<=$2 AND (purpose<>'document' OR sent_at IS NOT NULL OR cancelled=TRUE)")
@@ -120,8 +237,8 @@ pub async fn response_headers(
         || request.uri().path().starts_with("/api/")
         || request.uri().path() == "/"
         || request.uri().path() == "/hledat";
-    let frontend_asset =
-        request.uri().path().starts_with("/pkg/") || request.uri().path() == "/theme.js";
+    let frontend_asset = request.uri().path().starts_with("/pkg/")
+        || matches!(request.uri().path(), "/theme.js" | "/subscription-page.js");
     let route = request
         .extensions()
         .get::<axum::extract::MatchedPath>()

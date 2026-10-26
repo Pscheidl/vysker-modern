@@ -88,7 +88,7 @@ async fn changed_pending_selection_invalidates_old_confirmation_after_cooldown()
     subscriptions::request_subscription_with_preferences(
         &app.state,
         email,
-        &common::consent(&app.state),
+        &common::consent(&app.state).await,
         &selection,
         now + Duration::minutes(10),
     )

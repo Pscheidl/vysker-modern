@@ -53,7 +53,7 @@ fn escape(value: &str) -> String {
 
 fn checkbox(name: &str, label: &str, checked: bool) -> String {
     format!(
-        "<label><input type=\"checkbox\" name=\"{}\" value=\"on\"{}> {}</label>",
+        "<label class=\"newsletter-option\"><input type=\"checkbox\" name=\"{}\" value=\"on\"{}> {}</label>",
         escape(name),
         if checked { " checked" } else { "" },
         escape(label)
@@ -108,17 +108,20 @@ async fn settings_page(
     let error = error
         .map(|message| format!("<p role=\"alert\">{}</p>", escape(message)))
         .unwrap_or_default();
-    Ok(Html(format!(
-        "<!doctype html><html lang=\"cs\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"robots\" content=\"noindex\"><title>Nastavení odběru · Vyskeř</title><style>body{{font-family:system-ui,sans-serif;line-height:1.6;margin:0;background:#f7f8f5;color:#233a2c}}main{{max-width:42rem;margin:3rem auto;padding:1.5rem;background:white;border-radius:1rem}}fieldset{{border:1px solid #ccd8ce;border-radius:.5rem;margin:1.2rem 0;padding:1rem}}legend{{font-weight:600}}label{{display:block;padding:.45rem 0}}input{{margin-right:.4rem;accent-color:#2c5b3c}}button{{font:inherit;padding:.65rem 1.2rem;background:#2c5b3c;color:white;border:0;border-radius:.4rem;cursor:pointer}}a{{color:#2c5b3c}}[role=status]{{padding:1rem;background:#edf7ed;border-radius:.4rem}}[role=alert]{{padding:1rem;background:#fff0ed;color:#8f241b;border-radius:.4rem}}@media(max-width:46rem){{main{{margin:1rem}}}}</style></head><body><main><h1>Nastavení odběru</h1><p>Vyberte si, které novinky z webu Vyskeř vám mají chodit e-mailem. Přihlášení k účtu není potřeba.</p>{status}{error}<form method=\"post\" action=\"/odber/nastaveni\"><input type=\"hidden\" name=\"token\" value=\"{token}\"><fieldset><legend>Úřední deska</legend>{all}<p>Pro výběr jednotlivých kategorií zrušte volbu „Všechny kategorie“ a zaškrtněte požadované kategorie níže.</p>{choices}{uncategorized}</fieldset><fieldset><legend>Další obsah</legend>{documents}</fieldset><p>Vyberte alespoň jedno téma. Pro ukončení všech zpráv použijte odhlášení odběru.</p><button type=\"submit\">Uložit výběr</button></form><p><a href=\"/odber/odhlasit?token={token}\">Odhlásit celý odběr</a></p><p><a href=\"/\">Zpět na web Vyskeř</a></p></main></body></html>"
-    )))
+    Ok(subscriptions::page_document(
+        "Nastavení odběru",
+        &format!(
+            "<p>Vyberte si, které novinky z webu Vyskeř vám mají chodit e-mailem.</p>{status}{error}<form method=\"post\" action=\"/odber/nastaveni\"><input type=\"hidden\" name=\"token\" value=\"{token}\"><fieldset><legend>Úřední deska</legend>{all}<p>Pro výběr jednotlivých kategorií zrušte volbu „Všechny kategorie“ a zaškrtněte požadované kategorie níže.</p>{choices}{uncategorized}</fieldset><fieldset><legend>Další obsah</legend>{documents}</fieldset><p>Vyberte alespoň jedno téma. Pro ukončení všech zpráv použijte odhlášení odběru.</p><button class=\"button primary\" type=\"submit\">Uložit výběr</button></form><p><a href=\"/odber/odhlasit?token={token}\">Odhlásit celý odběr</a></p>"
+        ),
+    ))
 }
 
 // Email scanners can open this link without changing any preferences or tokens.
 pub async fn page(
     State(s): State<Backend>,
     Query(input): Query<subscriptions::TokenInput>,
-) -> Result<Html<String>> {
-    settings_page(&s, &input.token, false, None, None).await
+) -> Response {
+    subscriptions::page_response(settings_page(&s, &input.token, false, None, None).await)
 }
 
 pub async fn update(

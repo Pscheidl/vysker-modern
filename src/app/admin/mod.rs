@@ -15,6 +15,8 @@ mod markdown_editor;
 #[cfg(not(feature = "demo"))]
 mod navigation;
 #[cfg(not(feature = "demo"))]
+mod privacy;
+#[cfg(not(feature = "demo"))]
 mod recovery;
 #[cfg(not(feature = "demo"))]
 mod reports;
@@ -212,6 +214,7 @@ mod workspace {
                         <AdminLink href="/admin/kalendar" label="Kalendář" icon="calendar"/>
                         <AdminLink href="/admin/hlaseni-zavad" label="Podněty a závady" icon="info"/>
                         <AdminLink href="/admin/odberatele" label="Odběratelé" icon="mail"/>
+                        <AdminLink href="/admin/ochrana-udaju" label="Ochrana údajů" icon="info"/>
                         <AdminLink href="/admin/navigace" label="Navigace" icon="pages"/>
                         <AdminLink href="/admin/kategorie" label="Kategorie" icon="grid"/>
                         <AdminLink href="/admin/posta" label="Rozesílání" icon="mail"/>
@@ -235,6 +238,7 @@ mod workspace {
                             "kalendar"=>view!{<super::events::Events/>}.into_any(),
                             "hlaseni-zavad"=>view!{<super::reports::Reports/>}.into_any(),
                             "odberatele"=>view!{<super::subscribers::Subscribers/>}.into_any(),
+                            "ochrana-udaju"=>view!{<super::privacy::PrivacySettings/>}.into_any(),
                             "navigace"=>view!{<super::navigation::NavigationSettings/>}.into_any(),
                             "kategorie"=>view!{<super::navigation::NavigationSettings categories=true/>}.into_any(),
                             "posta"=>view!{<MailHistory/>}.into_any(),

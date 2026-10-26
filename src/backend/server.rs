@@ -20,6 +20,17 @@ pub async fn initialize() -> anyhow::Result<Backend> {
         crate::db::seed_demo(&pool).await?;
     }
     let state = Backend::new(pool, config);
+    let policy = privacy::policy(&state)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.1))?;
+    if state.config.production {
+        let policy = policy.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Produkce vyžaduje informace o soukromí v administraci nebo OBEC_PRIVACY_CONFIG"
+            )
+        })?;
+        privacy::validate_policy(policy, true)?;
+    }
     check_launch_content(&state).await?;
     state
         .config

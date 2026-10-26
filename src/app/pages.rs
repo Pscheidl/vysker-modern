@@ -271,8 +271,7 @@ fn PrivacyDetails(policy: crate::privacy::PrivacyPolicy) -> impl IntoView {
         <h2>{if has_dpo { "Správce a pověřenec" } else { "Správce" }}</h2><p>{policy.controller_name}{controller_address}</p>
         <p>"Kontakt správce: "<a href=format!("mailto:{}",policy.controller_email)>{policy.controller_email.clone()}</a></p>
         {has_dpo.then(|| view! {<p>"Pověřenec pro ochranu osobních údajů: "<a href=format!("mailto:{}",policy.dpo_email)>{policy.dpo_email.clone()}</a></p>})}
-        <h2>"Odběr novinek"</h2><p>"Na základě dobrovolného souhlasu podle čl. 6 odst. 1 písm. a) GDPR používáme e-mailovou adresu k zasílání nových dokumentů včetně úřední desky. Evidujeme přesné znění souhlasu a čas žádosti, potvrzení a případného odvolání. Bez poskytnutí adresy nelze odběr zajistit, používání ostatních částí webu tím není omezeno."</p>
-        <p>"Souhlas kdykoli odvoláte odkazem v každé novince bez přihlášení. Odvolání nemá vliv na zákonnost předchozího zpracování."</p>
+        <h2>"Odběr novinek"</h2><div class="markdown-content" inner_html=crate::markdown::render(&policy.newsletter_terms)></div>
         <p>{format!("Nepotvrzené žádosti uchováváme nejvýše {} dní. Aktivní odběr trvá do odvolání souhlasu. Po odhlášení se adresa a doklad souhlasu odstraní z databáze tohoto webu nejpozději za {} dní. Čekající oznámení dokumentů uchováváme do odeslání nebo odhlášení odběru. Odeslané a zrušené zprávy a ověřovací e-maily odstraňujeme po uplynutí {} dní od vytvoření záznamu.",r.pending_days,r.withdrawn_days,r.mail_days)}</p>
         <p>"Důvod uchování dokladu o souhlasu: "{policy.consent_evidence_legal_basis}</p>
         <h2>"Zveřejněné dokumenty"</h2><p>{policy.public_records_legal_basis}</p><p>{format!("Rozsah údajů a dobu zveřejnění určuje typ dokumentu. U položek s evidovaným datem sejmutí uchováváme interní texty a doklady vyvěšení {} dní po sejmutí. Potom zůstane jen minimální evidenční záznam. Na historické položky bez evidovaného data sejmutí se tento automatický výmaz nevztahuje. Úřední originály a spisovou službu spravuje obec odděleně.",r.notice_internal_days)}</p>
@@ -280,8 +279,7 @@ fn PrivacyDetails(policy: crate::privacy::PrivacyPolicy) -> impl IntoView {
         <p>{format!("Audit obsahuje identifikátor správce, provedenou operaci, dotčený záznam a čas. Uchovává se {} dní. Provozní logy se průběžně obměňují podle nastavení serveru. Krátkodobá počítadla ochrany proti zneužití se uchovávají nejvýše 24 hodin. Dobu uchování údajů u podnětů a závad uvádíme samostatně níže. Aplikace do HTTP logů nezapisuje těla požadavků, e-mailové adresy ani parametry s ověřovacími tokeny.",r.audit_days)}</p>
         <h2>"Příjemci a předávání údajů"</h2><p>{policy.processors}</p><p>{policy.international_transfers}</p>
         <p>{if r.backup_days == 0 { "Vlastní zálohy databáze odběratelů nyní nevytváříme.".into() } else { format!("Záložní kopie mohou údaje obsahovat nejvýše {} dní. Po obnově se znovu uplatní lhůty uchování. Vyřizování žádostí o výmaz a odvolání souhlasu zahrnuje také postup obnovy ze záloh.",r.backup_days) }}</p>
-        <h2>"Vaše práva"</h2><p>{if has_dpo { "U správce nebo pověřence" } else { "U správce" }}" můžete požádat o přístup k údajům, jejich opravu, výmaz či omezení zpracování. Podle právního důvodu zpracování máte také právo na přenositelnost nebo vznést námitku. Souhlas s odběrem lze odvolat kdykoli."</p>
-        <p>"Stížnost můžete podat u "<a href="https://uoou.gov.cz/">"Úřadu pro ochranu osobních údajů"</a>"."</p>
+        <h2>"Vaše práva"</h2><div class="markdown-content" inner_html=crate::markdown::render(&policy.rights_text)></div>
     }
 }
 

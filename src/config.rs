@@ -176,18 +176,6 @@ impl Config {
                 url.scheme() == "https" && smtp_tls != "none",
                 "Produkce vyžaduje HTTPS a šifrované SMTP"
             );
-            let policy = privacy
-                .as_ref()
-                .context("Produkce vyžaduje OBEC_PRIVACY_CONFIG")?;
-            anyhow::ensure!(
-                policy.approved_on.is_some(),
-                "Produkce vyžaduje schválené informace o soukromí"
-            );
-            let serialized = serde_json::to_string(policy)?;
-            anyhow::ensure!(
-                !serialized.contains("DOPLNIT") && !serialized.contains("example.test"),
-                "Nahraďte ukázkové údaje v nastavení soukromí"
-            );
             anyhow::ensure!(
                 env_var("OBEC_UKAZKOVA_DATA", "false") == "false",
                 "Produkce nesmí vkládat ukázkové údaje"

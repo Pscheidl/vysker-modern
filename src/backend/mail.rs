@@ -106,9 +106,6 @@ async fn enqueue_recipient(
     (recipient, consent_id): (i64, i64),
     created_at: i64,
 ) -> Result<()> {
-    let Some(policy) = &s.config.privacy else {
-        return Ok(());
-    };
     let Publication {
         kind,
         id,
@@ -136,8 +133,8 @@ async fn enqueue_recipient(
         .execute(&mut *conn)
         .await?;
     let body = format!(
-        "Dobrý den,\n\nna webu Vyskeř byl zveřejněn nový dokument:\n{title}\n\n{}{path}\n\nOdběr lze odhlásit zde:\n{}/odber/odhlasit?token={secret}\n\nKategorie a obecné dokumenty si můžete vybrat zde:\n{}/odber/nastaveni?token={secret}\n\n{}",
-        s.config.public_url, s.config.public_url, s.config.public_url, policy.controller_name
+        "Dobrý den,\n\nna webu Vyskeř byl zveřejněn nový dokument:\n{title}\n\n{}{path}\n\nOdběr lze odhlásit zde:\n{}/odber/odhlasit?token={secret}\n\nKategorie a obecné dokumenty si můžete vybrat zde:\n{}/odber/nastaveni?token={secret}",
+        s.config.public_url, s.config.public_url, s.config.public_url
     );
     sqlx::query("INSERT INTO mail_queue(subscriber_id,purpose,deduplication_key,subject,body,next_attempt_at,created_at,consent_id) VALUES ($1,'document',$2,$3,$4,$5,$6,$7)")
             .bind(recipient).bind(key).bind(format!("Vyskeř: {}",title.replace(['\r','\n']," "))).bind(body).bind(created_at).bind(created_at).bind(consent_id).execute(&mut *conn).await?;
@@ -159,10 +156,10 @@ struct PublicationRequest {
 /// Atomically transfer a bounded outbox batch to the SMTP queue.
 /// Keep the original recipient and consent even if delivery starts much later.
 pub async fn prepare_publications(s: &Backend, now: OffsetDateTime) -> Result<bool> {
-    if s.config.privacy.is_none() {
+    let mut tx = crate::db::begin_write(&s.pool).await?;
+    if super::privacy::policy_in(s, &mut tx).await?.is_none() {
         return Ok(false);
     }
-    let mut tx = crate::db::begin_write(&s.pool).await?;
     let publications: Vec<PublicationRequest> = sqlx::query_as(
         "SELECT o.id,o.subscriber_id,o.consent_id,o.created_at,
             CASE WHEN o.notice_id IS NOT NULL THEN 'notice' ELSE 'document' END AS kind,
@@ -288,7 +285,11 @@ pub async fn deliver_one(
     if super::reports::deliver_one(s, smtp, now).await? {
         return Ok(true);
     }
-    if s.config.privacy.is_none() {
+    if super::privacy::policy(s)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.1))?
+        .is_none()
+    {
         return Ok(false);
     }
     let prepared = prepare_publications(s, now)

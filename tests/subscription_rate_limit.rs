@@ -270,8 +270,14 @@ async fn changed_consent_gets_a_new_snapshot_without_bypassing_the_cooldown() {
     .fetch_all(&updated.pool)
     .await
     .unwrap();
-    assert_eq!(consent_rows[0].0, common::consent(&app.state).fingerprint);
-    assert_eq!(consent_rows[1].0, common::consent(&updated).fingerprint);
+    assert_eq!(
+        consent_rows[0].0,
+        common::consent(&app.state).await.fingerprint
+    );
+    assert_eq!(
+        consent_rows[1].0,
+        common::consent(&updated).await.fingerprint
+    );
     assert_eq!(
         consent_rows[0].1,
         Some((now + Duration::minutes(10)).unix_timestamp())
