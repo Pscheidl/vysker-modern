@@ -39,6 +39,8 @@ Current illustration and identity: [Saint Anne's Chapel and the treeless Hůra h
 Production uses municipal content stored in the database for contact details,
 municipal information, the calendar, accessibility and mandatory disclosures.
 The full application uses structured event records for the calendar and homepage.
+An optional [ČEZ outage importer](docs/cez-outages.md) keeps municipal outages,
+affected addresses and source announcements in the same calendar.
 The GitHub Pages demo keeps illustrative sample events.
 
 ## Backend and local tests

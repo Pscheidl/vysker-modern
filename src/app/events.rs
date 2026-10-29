@@ -222,6 +222,7 @@ pub fn EventDetail() -> impl IntoView {
                     <p class="field-note">"Místní čas pro Vyskeř (Europe/Prague)."</p>
                     <p><strong>"Místo: "</strong>{if item.location.is_empty() {"Místo bude upřesněno".into()} else {item.location}}</p>
                     <div class="event-description-text markdown-content" inner_html=crate::markdown::render(&item.description)></div>
+                    {item.source_url.map(|url|view!{<p class="field-note">"Zdroj: "<a class="text-link" href=url rel="external">"ČEZ Distribuce"</a></p>})}
                     <section class="event-calendar-action" aria-label="Uložit akci do kalendáře">
                         <a class="button secondary" href=export_url rel="external" type="text/calendar"><Icon name="calendar"/>"Přidat do kalendáře"</a>
                         {item.repeat_every_14_days.then(||view!{<p>"Do kalendáře se přidá celá řada opakování každých 14 dní."</p>})}

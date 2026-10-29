@@ -1,4 +1,4 @@
-use super::{Backend, mail, notices, privacy};
+use super::{Backend, cez, mail, notices, power_outages, privacy};
 use std::net::SocketAddr;
 use time::OffsetDateTime;
 use tokio::sync::watch;
@@ -50,9 +50,15 @@ pub async fn initialize() -> anyhow::Result<Backend> {
 }
 pub async fn serve(state: Backend, app: axum::Router) -> anyhow::Result<()> {
     let mut sender = mail::Worker::new(&state)?;
+    let outage_client = if state.config.cez_outages.enabled {
+        Some(cez::Client::new(&state.config.public_url)?)
+    } else {
+        None
+    };
     let listener = tokio::net::TcpListener::bind(state.config.bind_address).await?;
     let (stop, mut stopped) = watch::channel(false);
     let mut mail_stopped = stopped.clone();
+    let mut outage_stopped = stopped.clone();
     let worker_state = state.clone();
     let worker = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
@@ -90,6 +96,30 @@ pub async fn serve(state: Backend, app: axum::Router) -> anyhow::Result<()> {
             }
         }
     });
+    // External service calls must not delay document maintenance or mail delivery.
+    let outage_state = state.clone();
+    let outage_worker = tokio::spawn(async move {
+        let Some(client) = outage_client else { return };
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                _ = outage_stopped.changed() => break,
+                _ = interval.tick() => {
+                    tokio::select! {
+                        _ = outage_stopped.changed() => break,
+                        result = power_outages::sync_if_due(&outage_state, &client, OffsetDateTime::now_utc()) => {
+                            match result {
+                                Ok(Some(report)) => tracing::info!(?report, "kontrola odstávek ČEZ dokončena"),
+                                Ok(None) => {},
+                                Err(error) => tracing::warn!(%error, "kontrola odstávek ČEZ selhala, kalendář zůstal beze změny"),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
     tracing::info!("server běží na http://{}", listener.local_addr()?);
     let result = axum::serve(
         listener,
@@ -102,6 +132,7 @@ pub async fn serve(state: Backend, app: axum::Router) -> anyhow::Result<()> {
     .await;
     worker.await?;
     mail_worker.await?;
+    outage_worker.await?;
     state.pool.close().await;
     result?;
     Ok(())

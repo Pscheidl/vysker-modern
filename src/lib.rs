@@ -17,6 +17,7 @@ pub mod events;
 pub mod markdown;
 #[cfg(feature = "ssr")]
 pub mod model;
+pub mod outages;
 pub mod privacy;
 pub mod reports;
 

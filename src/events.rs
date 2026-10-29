@@ -56,6 +56,10 @@ pub struct Event {
     pub cancelled: bool,
     pub version: i64,
     pub updated_at: String,
+    #[serde(default)]
+    pub source_provider: Option<String>,
+    #[serde(default)]
+    pub source_url: Option<String>,
 }
 
 impl Event {

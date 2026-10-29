@@ -458,3 +458,45 @@ async fn failed_audit_rolls_back_the_event_write() {
         .unwrap();
     assert_eq!(count, 0);
 }
+
+#[tokio::test]
+async fn imported_outage_exposes_its_source_and_rejects_manual_update_and_delete() {
+    let app = App::new().await;
+    let event = create(
+        &app,
+        json!({"title":"Odstávka elektřiny","published":true,"category":"other"}),
+    )
+    .await;
+    let source = "https://www.cezdistribuce.cz/odstavky";
+    sqlx::query("UPDATE events SET source_provider='cez_distribuce',source_id='outage-123',source_url=$1 WHERE id=$2")
+        .bind(source).bind(event.id).execute(&app.state.pool).await.unwrap();
+
+    let public = body_json(
+        app.call("GET", &format!("/api/v1/events/{}", event.id), None, false)
+            .await,
+    )
+    .await;
+    assert_eq!(public["source_provider"], "cez_distribuce");
+    assert_eq!(public["source_url"], source);
+    assert_eq!(public["category"], "other");
+    assert!(public.get("source_id").is_none());
+
+    let path = format!("/api/v1/admin/events/{}", event.id);
+    let mut replacement = input();
+    replacement["expected_version"] = json!(event.version);
+    for (method, value) in [
+        ("PUT", replacement),
+        ("DELETE", json!({"expected_version":event.version})),
+    ] {
+        let response = app.call(method, &path, Some(value), true).await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(
+            body_json(response).await["error"]
+                .as_str()
+                .unwrap()
+                .contains("automatický import")
+        );
+    }
+    let current = body_json(app.call("GET", &path, None, true).await).await;
+    assert_eq!(current, public);
+}

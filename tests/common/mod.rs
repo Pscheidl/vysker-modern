@@ -25,6 +25,7 @@ pub struct App {
 impl App {
     pub async fn new() -> Self {
         let config = Config {
+            cez_outages: Default::default(),
             production: false,
             minimum_password_length: obecni_web::config::DEFAULT_MIN_PASSWORD_LENGTH,
             trusted_proxy: None,

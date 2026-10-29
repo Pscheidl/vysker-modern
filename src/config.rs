@@ -7,6 +7,59 @@ use anyhow::Context;
 
 pub const DEFAULT_MIN_PASSWORD_LENGTH: usize = 24;
 
+/// The public ČEZ website feed needs no account. Polling is opt-in.
+#[derive(Clone, Debug)]
+pub struct CezOutagesConfig {
+    pub enabled: bool,
+    pub town_code: String,
+    pub interval_seconds: u64,
+}
+
+impl Default for CezOutagesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            town_code: "577685".into(),
+            interval_seconds: 3600,
+        }
+    }
+}
+
+impl CezOutagesConfig {
+    fn from_env() -> anyhow::Result<Self> {
+        Self::from_lookup(|name| std::env::var(name).ok())
+    }
+
+    fn from_lookup(mut lookup: impl FnMut(&str) -> Option<String>) -> anyhow::Result<Self> {
+        let defaults = Self::default();
+        let config = Self {
+            enabled: lookup("OBEC_CEZ_ODSTAVKY_ENABLED")
+                .unwrap_or_else(|| "false".into())
+                .parse()
+                .context("OBEC_CEZ_ODSTAVKY_ENABLED musí být true nebo false")?,
+            town_code: lookup("OBEC_CEZ_OBEC_KOD").unwrap_or(defaults.town_code),
+            interval_seconds: lookup("OBEC_CEZ_INTERVAL_SECONDS")
+                .unwrap_or_else(|| "3600".into())
+                .parse()
+                .context("OBEC_CEZ_INTERVAL_SECONDS musí být celé číslo")?,
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.town_code.len() == 6 && self.town_code.bytes().all(|c| c.is_ascii_digit()),
+            "OBEC_CEZ_OBEC_KOD musí být šestimístný kód obce"
+        );
+        anyhow::ensure!(
+            (900..=86400).contains(&self.interval_seconds),
+            "OBEC_CEZ_INTERVAL_SECONDS musí být mezi 900 a 86400 sekundami"
+        );
+        Ok(())
+    }
+}
+
 /// Connection limits apply to each application process, not to PostgreSQL as a whole.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DatabasePoolConfig {
@@ -95,6 +148,7 @@ impl DatabasePoolConfig {
 
 #[derive(Clone)]
 pub struct Config {
+    pub cez_outages: CezOutagesConfig,
     /// Adresa, na které server poslouchá. `OBEC_ADRESA`
     pub bind_address: SocketAddr,
     /// Připojovací řetězec PostgreSQL. `OBEC_DATABAZE`
@@ -201,6 +255,7 @@ impl Config {
             &DEFAULT_MIN_PASSWORD_LENGTH.to_string(),
         ))?;
         let config = Self {
+            cez_outages: CezOutagesConfig::from_env()?,
             minimum_password_length,
             trusted_proxy: std::env::var("OBEC_TRUSTED_PROXY")
                 .ok()
@@ -277,6 +332,32 @@ fn parse_minimum_password_length(value: &str) -> anyhow::Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cez_polling_is_disabled_by_default_and_bounds_its_configuration() {
+        let config = CezOutagesConfig::from_lookup(|_| None).unwrap();
+        assert!(!config.enabled);
+        assert_eq!(config.town_code, "577685");
+        assert_eq!(config.interval_seconds, 3600);
+        for (key, value) in [
+            ("OBEC_CEZ_ODSTAVKY_ENABLED", "yes"),
+            ("OBEC_CEZ_OBEC_KOD", "577685/anything"),
+            ("OBEC_CEZ_OBEC_KOD", ""),
+            ("OBEC_CEZ_INTERVAL_SECONDS", "60"),
+            ("OBEC_CEZ_INTERVAL_SECONDS", "86401"),
+        ] {
+            assert!(
+                CezOutagesConfig::from_lookup(|name| (name == key).then(|| value.into())).is_err()
+            );
+        }
+        assert!(
+            CezOutagesConfig::from_lookup(
+                |name| (name == "OBEC_CEZ_ODSTAVKY_ENABLED").then(|| "true".into())
+            )
+            .unwrap()
+            .enabled
+        );
+    }
 
     fn pool_config(
         production: bool,

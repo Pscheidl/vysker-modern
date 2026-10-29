@@ -35,6 +35,9 @@ services:
       OBEC_DATABAZE: postgresql://vysker:vysker@postgres:5432/vysker
       OBEC_VEREJNA_URL: http://localhost:3000
       OBEC_UKAZKOVA_DATA: "false"
+      OBEC_CEZ_ODSTAVKY_ENABLED: ${OBEC_CEZ_ODSTAVKY_ENABLED:-false}
+      OBEC_CEZ_OBEC_KOD: ${OBEC_CEZ_OBEC_KOD:-577685}
+      OBEC_CEZ_INTERVAL_SECONDS: ${OBEC_CEZ_INTERVAL_SECONDS:-3600}
       OBEC_PRIVACY_CONFIG: /app/config/privacy.example.json
       OBEC_SMTP_HOST: mailpit
       OBEC_SMTP_PORT: "1025"

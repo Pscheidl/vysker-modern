@@ -39,6 +39,8 @@ struct EventRecord {
     cancelled: bool,
     version: i64,
     updated_at: String,
+    source_provider: Option<String>,
+    source_url: Option<String>,
 }
 
 impl From<EventRecord> for Event {
@@ -63,6 +65,8 @@ impl From<EventRecord> for Event {
             cancelled: record.cancelled,
             version: record.version,
             updated_at: record.updated_at,
+            source_provider: record.source_provider,
+            source_url: record.source_url,
         }
     }
 }
@@ -268,6 +272,21 @@ async fn version_mismatch(conn: &mut sqlx::PgConnection, id: i64) -> Result<supe
     })
 }
 
+async fn require_editable(conn: &mut sqlx::PgConnection, id: i64) -> Result<()> {
+    let imported: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM events WHERE id=$1 AND source_provider IS NOT NULL)",
+    )
+    .bind(id)
+    .fetch_one(conn)
+    .await?;
+    if imported {
+        return Err(conflict(
+            "Tuto akci aktualizuje automatický import. Nelze ji ručně upravit ani smazat.",
+        ));
+    }
+    Ok(())
+}
+
 pub async fn create(
     State(s): State<Backend>,
     admin: Admin,
@@ -299,6 +318,7 @@ pub async fn update(
     let version = expected_version(input.expected_version)?;
     let now = OffsetDateTime::now_utc();
     let mut tx = crate::db::begin_write(&s.pool).await?;
+    require_editable(&mut tx, id).await?;
     if input.repeat_every_14_days && !input.all_day {
         let unknown_precision: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM events WHERE id=$1 AND version=$2 AND (NOT (start_time_known OR starts_at IS DISTINCT FROM $3 OR all_day) OR NOT (end_time_known OR ends_at IS DISTINCT FROM $4 OR all_day) OR NOT (end_date_known OR ends_at IS DISTINCT FROM $4)))"
@@ -330,6 +350,7 @@ pub async fn delete(
 ) -> Result<StatusCode> {
     let version = expected_version(Some(input.expected_version))?;
     let mut tx = crate::db::begin_write(&s.pool).await?;
+    require_editable(&mut tx, id).await?;
     let changed = sqlx::query("DELETE FROM events WHERE id=$1 AND version=$2")
         .bind(id)
         .bind(version)

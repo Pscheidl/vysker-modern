@@ -535,3 +535,54 @@ async fn recurring_timed_duration_keeps_elapsed_seconds_across_clock_change() {
     assert!(calendar.contains("DTSTART;TZID=Europe/Prague:20260328T120000"));
     assert!(calendar.contains("DURATION:PT82800S"));
 }
+
+#[tokio::test]
+async fn outage_in_general_calendar_includes_addresses_and_keeps_identity_when_cancelled() {
+    let app = App::new().await;
+    let event = create(
+        &app,
+        json!({
+            "title":"Odstávka elektřiny",
+            "description":"Dotčené adresy:\nVyskeř č. p. 10\nVyskeř č. p. 11",
+            "location":"Vyskeř",
+            "category":"other"
+        }),
+    )
+    .await;
+    sqlx::query("UPDATE events SET source_provider='cez_distribuce',source_id='outage-456',source_url='https://www.cezdistribuce.cz/odstavky' WHERE id=$1")
+        .bind(event["id"].as_i64().unwrap()).execute(&app.state.pool).await.unwrap();
+    let calendar = feed(&app, "").await;
+    assert!(calendar.contains("SUMMARY:Odstávka elektřiny"));
+    assert!(calendar.contains("Vyskeř č. p. 10\\nVyskeř č. p. 11"));
+    assert!(calendar.contains("CATEGORIES:Ostatní"));
+    assert!(
+        !feed(&app, "?category=culture")
+            .await
+            .contains("BEGIN:VEVENT")
+    );
+    let uid = property(&calendar, "UID").to_owned();
+    let version = property(&calendar, "SEQUENCE").parse::<i64>().unwrap();
+
+    sqlx::query("UPDATE events SET cancelled=TRUE WHERE id=$1")
+        .bind(event["id"].as_i64().unwrap())
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    let cancelled = feed(&app, "").await;
+    assert_eq!(property(&cancelled, "UID"), uid);
+    assert_eq!(property(&cancelled, "STATUS"), "CANCELLED");
+    assert_eq!(
+        property(&cancelled, "SEQUENCE").parse::<i64>().unwrap(),
+        version + 1
+    );
+
+    sqlx::query("DELETE FROM events WHERE id=$1")
+        .bind(event["id"].as_i64().unwrap())
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    let withdrawn = feed(&app, "").await;
+    assert_eq!(property(&withdrawn, "UID"), uid);
+    assert_eq!(property(&withdrawn, "STATUS"), "CANCELLED");
+    assert!(!withdrawn.contains("Vyskeř č. p. 10"));
+}

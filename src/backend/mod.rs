@@ -2,6 +2,7 @@
 pub mod accounts;
 pub mod auth;
 pub mod calendar;
+pub mod cez;
 pub mod documents;
 pub mod events;
 pub mod legacy;
@@ -12,6 +13,7 @@ pub mod navigation;
 pub mod notices;
 pub mod page_images;
 pub mod pages;
+pub mod power_outages;
 pub mod privacy;
 pub mod recovery;
 pub mod report_abuse;
@@ -306,6 +308,10 @@ pub fn router(state: Backend) -> Router {
         )
         .route("/api/v1/admin/audit", get(audit_list))
         .route("/api/v1/admin/overview", get(management::overview))
+        .route(
+            "/api/v1/admin/cez-outages/status",
+            get(power_outages::status),
+        )
         .route(
             "/api/v1/admin/notices",
             get(management::notices).post(notices::create),

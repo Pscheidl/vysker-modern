@@ -2,7 +2,8 @@
 use super::{AdminContext, api, ui::*};
 use crate::{
     app::components::Icon,
-    events::{EVENT_CATEGORIES, Event, EventInput, category_label, local_datetime},
+    events::{EVENT_CATEGORIES, Event, EventInput, category_label, date_label, local_datetime},
+    outages::OutageSyncStatus,
 };
 use leptos::prelude::*;
 use leptos_meta::Title;
@@ -20,6 +21,7 @@ pub fn Events() -> impl IntoView {
         <div class="admin-title-row"><Heading title="Kalendář akcí" description="Termíny, místa konání, koncepty a zveřejněné akce. Zrušení akce zůstane na veřejném webu viditelné."/>
             <div class="admin-create"><AdminLink href="/admin/kalendar/nove" label="Nová akce" icon="plus"/></div>
         </div>
+        <OutageImportStatus/>
         <section class="admin-panel admin-list-panel">
             <div class="admin-filters"><button class="button secondary" type="button" on:click=move |_|data.refetch()>"Obnovit seznam"</button></div>
             <Suspense fallback=Pending>{move ||data.get().map(|result|match result {
@@ -31,9 +33,10 @@ pub fn Events() -> impl IntoView {
                             let start=event.start_label();
                             let end=event.end_label();
                             let recurrence=event.recurrence_label();
+                            let imported=event.source_provider.is_some();
                             view!{<tr><td class="admin-name"><AdminLink href=format!("/admin/kalendar/{}",event.id) label=event.title icon="calendar"/><small>{event.location}</small><small>{category_label(&event.category)}</small></td>
                                 <td class="admin-table-meta"><span>{start}</span><small>"Do "{end}</small>{recurrence.map(|label|view!{<small>{label}</small>})}</td>
-                                <td><Status value=if event.published {"published"} else {"draft"}/>{event.cancelled.then(||view!{<span class="status-badge warning">"Zrušeno"</span>})}</td></tr>}
+                                <td><Status value=if event.published {"published"} else {"draft"}/>{event.cancelled.then(||view!{<span class="status-badge warning">"Zrušeno"</span>})}{imported.then(||view!{<small>"Automatický import"</small>})}</td></tr>}
                         }).collect_view()}
                     </tbody></table></div>
                     {(count==0).then(||view!{<div class="admin-empty"><Icon name="calendar"/><h2>"Žádné akce"</h2><p>"Novou akci přidáte tlačítkem Nová akce."</p></div>})}
@@ -41,6 +44,45 @@ pub fn Events() -> impl IntoView {
                     }.into_any()
                 }
             })}</Suspense>
+        </section>
+    }
+}
+
+#[component]
+fn OutageImportStatus() -> impl IntoView {
+    let status = LocalResource::new(move || async {
+        api::get::<OutageSyncStatus>("/api/v1/admin/cez-outages/status").await
+    });
+    view! {
+        <section class="admin-panel admin-form-section" aria-labelledby="outage-import-title">
+            <h2 id="outage-import-title">"Odstávky ČEZ Distribuce"</h2>
+            <Suspense fallback=Pending>{move ||status.get().map(|result|match result {
+                Err(error)=>view!{<FailureView error/>}.into_any(),
+                Ok(state)=>{
+                    let interval=if state.interval_seconds%3600==0 {
+                        format!("{} h",state.interval_seconds/3600)
+                    }else if state.interval_seconds%60==0 {
+                        format!("{} min",state.interval_seconds/60)
+                    }else{
+                        format!("{} s",state.interval_seconds)
+                    };
+                    let last_success=state.last_success_at.as_deref().map(date_label)
+                        .unwrap_or_else(||"Dosud neproběhla žádná úspěšná kontrola.".into());
+                    view!{
+                        <p><strong>{if state.enabled {"Automatický import je zapnutý."}else{"Automatický import je vypnutý."}}</strong></p>
+                        {if state.enabled {
+                            view!{<p>{format!("Interval kontroly: {interval}.")}</p>}.into_any()
+                        }else{
+                            view!{<p>"Nové odstávky ani změny nyní nepřebíráme. Zapnutí zajišťuje správce provozu webu."</p>}.into_any()
+                        }}
+                        <p>"Poslední úspěšná kontrola: "{last_success}</p>
+                        {state.last_attempt_at.as_deref().map(date_label).map(|date|view!{<p>"Poslední pokus o kontrolu: "{date}</p>})}
+                        {state.enabled.then(||state.next_attempt_at.as_deref().map(date_label).map(|date|view!{<p>"Další kontrola nejdříve: "{date}</p>})).flatten()}
+                        {state.last_error.map(|error|view!{<div class="admin-error" role="alert"><p><strong>"Poslední kontrola se nezdařila. "</strong>{error}</p><p>"Dosud uložené odstávky zůstaly zachované. Údaje nemusí být aktuální."</p></div>})}
+                    }.into_any()
+                }
+            })}</Suspense>
+            <button class="button secondary" type="button" on:click=move |_|status.refetch()>"Obnovit stav importu"</button>
         </section>
     }
 }
@@ -59,9 +101,34 @@ pub fn EventEditor(id: i64) -> impl IntoView {
         }
     });
     view! {<Suspense fallback=Pending>{move ||data.get().map(|result|match result {
+        Ok(event) if event.source_provider.is_some()=>view!{<ImportedEvent event/>}.into_any(),
         Ok(event)=>view!{<EventForm event reload/>}.into_any(),
         Err(error)=>view!{<FailureView error/><button class="button secondary" type="button" on:click=move |_|data.refetch()>"Načíst znovu"</button><AdminLink href="/admin/kalendar" label="Zpět na kalendář" icon="back"/>}.into_any(),
     })}</Suspense>}
+}
+
+#[component]
+fn ImportedEvent(event: Event) -> impl IntoView {
+    let start = event.start_label();
+    let end = event.end_label();
+    let source_url = event.source_url.clone();
+    let public_url = event.href();
+    view! {
+        <Title text=format!("{} · Správa kalendáře",event.title)/>
+        <AdminLink href="/admin/kalendar" label="Zpět na kalendář" icon="back"/>
+        <Heading title=event.title.clone() description="Automaticky přebíraná odstávka elektřiny."/>
+        <section class="admin-panel admin-form-section">
+            <div class="info-banner"><Icon name="info"/><p>"Tuto akci aktualizujeme podle údajů ČEZ Distribuce. Termín, adresy a zrušení se přebírají automaticky. Ruční úpravy a smazání nejsou dostupné."</p></div>
+            <p><strong>{category_label(&event.category)}</strong></p>
+            <p>{start}" až "{end}</p>
+            <p>{event.location}</p>
+            <Status value=if event.published {"published"} else {"draft"}/>
+            {event.cancelled.then(||view!{<span class="status-badge warning">"Zrušeno"</span>})}
+            <div class="markdown-content" inner_html=crate::markdown::render(&event.description)></div>
+            {source_url.map(|url|view!{<p>"Zdroj: "<a class="text-link" href=url rel="external">"ČEZ Distribuce"<Icon name="external"/></a></p>})}
+            {event.published.then(||view!{<p><a class="text-link" href=public_url>"Otevřít veřejný detail"<Icon name="external"/></a></p>})}
+        </section>
+    }
 }
 
 #[component]
