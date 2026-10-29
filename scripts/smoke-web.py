@@ -90,25 +90,33 @@ def main():
         refused = subprocess.run([binary], env=env, capture_output=True, timeout=15)
         assert refused.returncode != 0 and b'kontakt' in refused.stderr, 'Missing content must block production startup'
         with connect(database) as connection:
-            for slug in ('kontakt', 'obec', 'kalendar', 'pristupnost', 'povinne-informace'):
+            for slug in ('kontakt', 'kalendar', 'pristupnost', 'povinne-informace'):
                 connection.execute('INSERT INTO pages(slug,title,content,published,updated_at) VALUES (%s,%s,%s,TRUE,%s)',
                                    (slug, 'Test: ' + slug, 'Approved content fixture: ' + slug, '2026-09-29T00:00:00Z'))
         process, url = start(binary, env)
         try:
             assets = {}
-            for path in ('/', '/kontakt', '/pristupnost', '/povinne-informace', '/kalendar'):
+            for path, slug in (('/', None), ('/obec', 'kontakt'),
+                               ('/pristupnost', 'pristupnost'),
+                               ('/povinne-informace', 'povinne-informace'),
+                               ('/kalendar', 'kalendar')):
                 with urllib.request.urlopen(url + path, timeout=10) as response:
                     html = response.read().decode()
                     assert response.status == 200
                     assert 'Vývojový náhled' not in html
                     assert 'Podzimní setkání sousedů' not in html
                     assert 'strict-transport-security' in response.headers
-                    if path != '/':
-                        assert 'Approved content fixture: ' + path[1:] in html
+                    if slug is not None:
+                        assert 'Approved content fixture: ' + slug in html
                     page_assets = frontend_assets(html)
                     if assets:
                         assert page_assets == assets, 'All pages must reference the same frontend release'
                     assets = page_assets
+            for path in ('/kontakt', '/kontakt/', '/stranky/kontakt', '/stranky/kontakt/'):
+                with urllib.request.urlopen(url + path + '?from=old-link', timeout=10) as response:
+                    assert response.status == 200
+                    assert response.geturl() == url + '/obec?from=old-link'
+                    assert 'Approved content fixture: kontakt' in response.read().decode()
             for kind, asset_url in assets.items():
                 with urllib.request.urlopen(url + asset_url, timeout=10) as response:
                     data = response.read()

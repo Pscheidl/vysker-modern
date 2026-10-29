@@ -60,6 +60,43 @@ function adminRow(page: Page, label: string) {
   })
 }
 
+test('municipality address shows office contacts and old contact links keep query and anchor', async ({ page, browser }) => {
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  await page.goto('/obec')
+  await expect(page.getByRole('heading', { name: 'Kontakt', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Obecní úřad Vyskeř', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Úřední hodiny', exact: true })).toBeVisible()
+  await expect(page.getByText('Obec, ve které žijeme', { exact: true })).toHaveCount(0)
+  await expect(page.locator('header a.contact-link')).toHaveAttribute('href', '/obec')
+  await expect(page.getByRole('navigation', { name: 'Patička' }).getByRole('link', { name: 'Kontakt', exact: true })).toHaveAttribute('href', '/obec')
+
+  for (const path of ['/kontakt', '/stranky/kontakt']) {
+    const response = await page.request.get(`${path}?zdroj=test`, { maxRedirects: 0 })
+    expect(response.status()).toBe(301)
+    expect(response.headers().location).toBe('/obec?zdroj=test')
+    await page.goto(`${path}?zdroj=test#uredni-hodiny`)
+    await expect(page).toHaveURL(/\/obec\?zdroj=test#uredni-hodiny$/)
+    await expect(page.locator('#uredni-hodiny')).toBeVisible()
+  }
+
+  await page.goto('/')
+  await page.getByRole('link', { name: 'Úřední hodiny', exact: true }).click()
+  await expect(page).toHaveURL(/\/obec#uredni-hodiny$/)
+  await expect(page.locator('#uredni-hodiny')).toBeVisible()
+
+  const context = await browser.newContext({ javaScriptEnabled: false })
+  try {
+    const publicPage = await context.newPage()
+    await publicPage.goto(new URL('/kontakt#uredni-hodiny', page.url()).href)
+    await expect(publicPage).toHaveURL(/\/obec#uredni-hodiny$/)
+    await expect(publicPage.getByRole('heading', { name: 'Obecní úřad Vyskeř', exact: true })).toBeVisible()
+  } finally {
+    await context.close()
+  }
+  expect(errors).toEqual([])
+})
+
 test('administrator creates a submenu, changes its placement and sees the saved hierarchy publicly', async ({ page }) => {
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
@@ -110,8 +147,10 @@ test('administrator creates a submenu, changes its placement and sees the saved 
     await nav.getByRole('button', { name: `Podmenu: ${parent}`, exact: true }).click()
     await expect(childLink).toBeVisible()
     await childLink.click()
-    await expect(page).toHaveURL(/\/kontakt$/)
+    await expect(page).toHaveURL(/\/obec$/)
     await expect(page.getByRole('heading', { name: 'Kontakt', exact: true })).toBeVisible()
+    await page.goBack()
+    await expect(page).toHaveURL(/\/$/)
     expect(errors).toEqual([])
   } finally {
     await cleanUpItems(page, marker)
@@ -200,7 +239,7 @@ test('desktop submenus support keyboard, a single open group, outside clicks and
       // Keep the real viewport for the subsequent coordinate click.
       await page.screenshot({ path: test.info().outputPath(`submenu-desktop-${width}.png`) })
       await page.mouse.click(childBounds!.x + childBounds!.width / 2, childBounds!.y + childBounds!.height / 2)
-      await expect(page).toHaveURL(/\/kontakt$/)
+      await expect(page).toHaveURL(/\/obec$/)
       await expect(toggle).toHaveAttribute('aria-expanded', 'false')
     }
     expect(errors).toEqual([])
@@ -257,7 +296,7 @@ test('mobile submenus stay inline and usable in both themes and close after sele
     await menu.click()
     await toggle.click()
     await contactLink.click()
-    await expect(page).toHaveURL(/\/kontakt$/)
+    await expect(page).toHaveURL(/\/obec$/)
     await expect(menu).toHaveAttribute('aria-expanded', 'false')
     await expect(nav).toBeHidden()
     expect(errors).toEqual([])

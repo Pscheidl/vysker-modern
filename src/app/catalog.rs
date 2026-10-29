@@ -38,13 +38,14 @@ pub fn DocumentDetail() -> impl IntoView {
 #[component]
 pub fn ContentPage() -> impl IntoView {
     let params = use_params_map();
+    let contact = move || params.get().get("slug").as_deref() == Some("kontakt");
     let page = Resource::new(
         move || params.get().get("slug").unwrap_or_default(),
         load_page,
     );
-    view! {<div class="page-width interior prose"><Suspense fallback=Loading>{move ||page.get().map(|result|match result {
+    view! {<Show when=contact fallback=move || view! {<div class="page-width interior prose"><Suspense fallback=Loading>{move ||page.get().map(|result|match result {
         Ok(Some(page))=>view!{<Title text=format!("{} · Vyskeř",page.title)/><header class="page-heading"><h1>{page.title}</h1></header><div class="markdown-content" inner_html=crate::markdown::render(&page.content)></div>}.into_any(),
         Ok(None)=>view!{<NotFound/>}.into_any(),
         Err(_)=>view!{<p role="alert">"Stránku se nepodařilo načíst."</p>}.into_any()
-    })}</Suspense></div>}
+    })}</Suspense></div>}><super::pages::ContactRedirect/></Show>}
 }

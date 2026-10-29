@@ -133,6 +133,16 @@ pub fn source_key(path: &str, query: Option<&str>) -> Option<String> {
 
 pub async fn redirects(State(state): State<Backend>, request: Request, next: Next) -> Response {
     if matches!(*request.method(), Method::GET | Method::HEAD) {
+        if matches!(
+            request.uri().path(),
+            "/kontakt" | "/kontakt/" | "/stranky/kontakt" | "/stranky/kontakt/"
+        ) {
+            let target = match request.uri().query() {
+                Some(query) => format!("/obec?{query}"),
+                None => "/obec".into(),
+            };
+            return (StatusCode::MOVED_PERMANENTLY, [(header::LOCATION, target)]).into_response();
+        }
         if request.uri().path().eq_ignore_ascii_case("/index.asp") {
             return (StatusCode::MOVED_PERMANENTLY, [(header::LOCATION, "/")]).into_response();
         }

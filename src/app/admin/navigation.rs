@@ -362,7 +362,7 @@ fn PageLinkField(path: RwSignal<String>, name: RwSignal<String>) -> impl IntoVie
             .map(|info| {
                 info.pages
                     .into_iter()
-                    .map(|page| (page.title, format!("/stranky/{}", page.slug)))
+                    .map(|page| (page.title, crate::catalog::page_path(&page.slug)))
                     .filter(|(title, url)| {
                         crate::content::fold(title).contains(&query) || url.contains(&query)
                     })
@@ -466,7 +466,7 @@ fn PageLinkField(path: RwSignal<String>, name: RwSignal<String>) -> impl IntoVie
                     Some(Ok(_)) => String::new(),
                 }
             }}</small>
-            <small id="setting-path-help">"Vyberte zveřejněnou stránku podle názvu nebo adresy, i bez diakritiky. Výběr doplní také prázdný název položky (nejvýše 40 znaků). Adresu můžete zadat i ručně, například /uredni-deska nebo /kontakt."</small>
+            <small id="setting-path-help">"Vyberte zveřejněnou stránku podle názvu nebo adresy, i bez diakritiky. Výběr doplní také prázdný název položky (nejvýše 40 znaků). Adresu můžete zadat i ručně, například /uredni-deska nebo /obec."</small>
         </div>
     }
 }

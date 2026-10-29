@@ -152,13 +152,7 @@ async fn shutdown() {
     tracing::info!("dokončuji rozdělané požadavky");
 }
 
-pub const REQUIRED_PAGES: &[&str] = &[
-    "kontakt",
-    "obec",
-    "kalendar",
-    "pristupnost",
-    "povinne-informace",
-];
+pub const REQUIRED_PAGES: &[&str] = &["kontakt", "kalendar", "pristupnost", "povinne-informace"];
 pub async fn check_launch_content(state: &Backend) -> anyhow::Result<()> {
     if !state.config.production {
         return Ok(());

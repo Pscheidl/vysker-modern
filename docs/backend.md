@@ -250,9 +250,12 @@ Embed returned IDs as `![Description](/api/v1/page-images/123)`. Anonymous acces
 requires that the owning page is published and currently references the image.
 Images remain stored for revision restoration and are included in database backups.
 
-The slugs `kontakt`, `obec`, `kalendar`, `pristupnost` and `povinne-informace`
-also populate their dedicated public routes. Production requires these pages to
-be published and prevents hiding or renaming them. Their contents remain editable.
+Production requires published pages with the slugs `kontakt`, `kalendar`,
+`pristupnost` and `povinne-informace` and prevents hiding or renaming them.
+Their contents remain editable. The managed slug `kontakt` supplies the public
+`/obec` page. The old `/kontakt` and `/stranky/kontakt` addresses permanently
+redirect to `/obec`, including their query parameters. A separate managed page
+with the slug `obec` is not required.
 
 ### Attachments
 

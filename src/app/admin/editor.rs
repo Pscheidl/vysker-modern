@@ -209,7 +209,7 @@ fn EditorForm(
     let public_url = match kind {
         Kind::Notice => format!("/uredni-deska/{id}"),
         Kind::Document => format!("/dokumenty/{id}"),
-        Kind::Page => format!("/stranky/{}", entry.slug),
+        Kind::Page => crate::catalog::page_path(&entry.slug),
     };
     let public_visible = kind == Kind::Page && entry.published == Some(true)
         || kind != Kind::Page
@@ -229,7 +229,7 @@ fn EditorForm(
                         <Field id="entry-name" label="Název" value=name required=true maxlength=if kind==Kind::Page{"200"}else{"300"}/>
                         {if kind==Kind::Page{view!{
                             <Field id="page-slug" label="Adresa stránky" value=slug required=true maxlength="80" help="Například spolky. Malá písmena bez diakritiky, číslice a pomlčky."/>
-                            <p class="admin-url">{move||format!("/stranky/{}",slug.get())}</p>
+                            <p class="admin-url">{move||crate::catalog::page_path(&slug.get())}</p>
                             <super::markdown_editor::MarkdownEditor id title=name content busy working=file_busy/>
                         }.into_any()}else{view!{
                             <TextArea id="entry-description" label="Popis" value=description/>

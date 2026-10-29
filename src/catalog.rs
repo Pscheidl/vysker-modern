@@ -18,6 +18,14 @@ pub struct Page {
     pub content: String,
 }
 
+pub fn page_path(slug: &str) -> String {
+    if slug == "kontakt" {
+        "/obec".into()
+    } else {
+        format!("/stranky/{slug}")
+    }
+}
+
 #[cfg(not(feature = "demo"))]
 #[server]
 pub async fn load_document(id: i64) -> Result<Option<Document>, ServerFnError> {

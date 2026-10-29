@@ -56,8 +56,8 @@ docker compose --env-file deploy/.env -f compose.production.yaml run --rm \
 Use an SSH tunnel to the server's local port. Keep this preparation server off
 the public internet. Sign in at `/admin` and publish pages with these slugs:
 
-- `kontakt`: contacts, electronic filing office, data mailbox and office hours
-- `obec`: real information about the municipality and its office
+- `kontakt`: contacts, electronic filing office, data mailbox and office hours,
+  displayed at `/obec`
 - `kalendar`: actual events or an accurate statement that none are listed
 - `pristupnost`: an approved accessibility statement based on an assessment
 - `povinne-informace`: mandatory disclosures using Decree No. 515/2020 Coll.
@@ -67,6 +67,9 @@ them in production, but their content can be edited. The application cannot
 verify the accuracy or legal completeness of the text. Additional published
 pages appear under **Informace obce** (Municipal information) in the footer.
 Production does not fall back to sample contacts, events or accessibility text.
+The public addresses `/kontakt` and `/stranky/kontakt` permanently redirect to
+`/obec`. Keep the managed page slug `kontakt`. A separate page with the slug
+`obec` is not required.
 
 Stop the preparation server, then start production:
 

@@ -126,7 +126,7 @@ pub fn MarkdownEditor(
                     ("Tučně", "**", "**", "tučný text"),
                     ("Kurzíva", "*", "*", "text kurzívou"),
                     ("Seznam", "\n\n- ", "\n", "položka"),
-                    ("Odkaz", "[", "](/kontakt)", "text odkazu"),
+                    ("Odkaz", "[", "](/obec)", "text odkazu"),
                     ("Citace", "\n\n> ", "\n\n", "citovaný text"),
                 ].into_iter().map(move |(label,prefix,suffix,placeholder)| view! {
                     <button class="button secondary" type="button" disabled=move||busy.get()
@@ -141,7 +141,7 @@ pub fn MarkdownEditor(
             </label>
             <details id="markdown-help" class="markdown-help"><summary>"Nápověda k Markdownu"</summary>
                 <p>"Označte text a použijte tlačítko formátování, nebo pište Markdown přímo. Podporované jsou nadpisy, tučný text, kurzíva, seznamy, odkazy, citace, kód, tabulky a přeškrtnutí."</p>
-                <pre>{"## Nadpis\n**Tučně** a *kurzíva*\n- Položka seznamu\n[Kontakt](/kontakt)\n> Citace\n`Kód` a ~~přeškrtnutí~~\n\n| Den | Hodiny |\n| --- | --- |\n| Pondělí | 8–12 |"}</pre>
+                <pre>{"## Nadpis\n**Tučně** a *kurzíva*\n- Položka seznamu\n[Kontakt](/obec)\n> Citace\n`Kód` a ~~přeškrtnutí~~\n\n| Den | Hodiny |\n| --- | --- |\n| Pondělí | 8–12 |"}</pre>
                 <p>"Obrázky nahrajte níže. Jejich popis slouží čtečkám obrazovky. HTML se zobrazí jako text."</p>
             </details>
             <ErrorMessage error/>

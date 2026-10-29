@@ -129,14 +129,14 @@ pub fn Header() -> impl IntoView {
                 <A href=site_url("/") attr:class="brand" attr:aria-label="Vyskeř, úvodní stránka"><Logo/><span>"Vyskeř"</span></A>
                 <nav class="desktop-nav" aria-label="Hlavní navigace"><Navigation prefix="desktop" menu/></nav>
                 <div class="header-actions"><ThemeSwitch/>
-                    <A href=site_url("/kontakt") attr:class="contact-link">"Kontakt"<Icon name="external"/></A>
+                    <A href=site_url("/obec") attr:class="contact-link">"Kontakt"<Icon name="external"/></A>
                     <button id="mobile-menu-toggle" node_ref=menu_button class="menu-toggle icon-button" type="button" aria-label="Hlavní menu" disabled=move || !interactive.get() aria-expanded=move || menu.get().to_string() aria-controls="mobile-menu" on:click=move |_| menu.update(|m| *m=!*m)>
                         {move || view!{<Icon name=if menu.get() {"close"} else {"menu"}/>}}
                         <span>"Menu"</span>
                     </button>
                 </div>
             </div>
-            <nav id="mobile-menu" class="mobile-nav page-width" aria-label="Mobilní navigace" hidden=move || !menu.get()><Navigation prefix="mobile" menu/><A href=site_url("/kontakt") attr:class="mobile-contact" on:click=move |_|menu.set(false)>"Kontakt"<Icon name="external"/></A></nav>
+            <nav id="mobile-menu" class="mobile-nav page-width" aria-label="Mobilní navigace" hidden=move || !menu.get()><Navigation prefix="mobile" menu/><A href=site_url("/obec") attr:class="mobile-contact" on:click=move |_|menu.set(false)>"Kontakt"<Icon name="external"/></A></nav>
             <noscript><style>
                 ".nav-submenu[hidden]{display:block!important;position:static;box-shadow:none}.nav-submenu-toggle,.menu-toggle{display:none!important}.desktop-nav .nav-list{align-items:flex-start}.header-inner{height:auto;min-height:76px}@media(max-width:1050px){.site-header .mobile-nav[hidden]{display:block!important}}"
             </style></noscript>
@@ -349,7 +349,7 @@ pub fn Shortcuts() -> impl IntoView {
         <nav class="shortcuts" aria-label="Nejčastější služby">
             <A href=site_url("/uredni-deska")><Icon name="board"/><span>"Úřední deska"</span><Icon class="shortcut-arrow"/></A>
             <A href=site_url("/dokumenty")><Icon name="paper"/><span>"Dokumenty a formuláře"</span><Icon class="shortcut-arrow"/></A>
-            <A href=site_url("/kontakt#uredni-hodiny")><Icon name="clock"/><span>"Úřední hodiny"</span><Icon class="shortcut-arrow"/></A>
+            <A href=site_url("/obec#uredni-hodiny")><Icon name="clock"/><span>"Úřední hodiny"</span><Icon class="shortcut-arrow"/></A>
         </nav>
     }
 }
@@ -518,7 +518,7 @@ pub fn Footer() -> impl IntoView {
     view! {
         <footer class="site-footer page-width">
             <span>"Obec Vyskeř"</span>
-            <nav aria-label="Patička"><A href=site_url("/povinne-informace")>"Povinné informace"</A><A href=site_url("/stranky")>"Informace obce"</A><A href=site_url("/pristupnost")>"Přístupnost"</A><A href=site_url("/ochrana-udaju")>"Ochrana údajů"</A><A href=site_url("/kontakt")>"Kontakt"</A>{(!cfg!(feature="demo")).then(||view!{<A href="/admin">"Správa webu"</A>})}</nav>
+            <nav aria-label="Patička"><A href=site_url("/povinne-informace")>"Povinné informace"</A><A href=site_url("/stranky")>"Informace obce"</A><A href=site_url("/pristupnost")>"Přístupnost"</A><A href=site_url("/ochrana-udaju")>"Ochrana údajů"</A><A href=site_url("/obec")>"Kontakt"</A>{(!cfg!(feature="demo")).then(||view!{<A href="/admin">"Správa webu"</A>})}</nav>
             <p class="site-footer-note">"Neoficiální web obce Vyskeř. Informace o obci přehledněji."</p>
         </footer>
     }

@@ -94,10 +94,10 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("dokumenty/:id") view=catalog::DocumentDetail ssr=leptos_router::SsrMode::Async/>
                     <Route path=path!("stranky/:slug") view=catalog::ContentPage ssr=leptos_router::SsrMode::Async/>
                     <Route path=path!("hledat") view=SearchResults ssr=leptos_router::SsrMode::InOrder/>
-                    <Route path=path!("obec") view=Municipality ssr=leptos_router::SsrMode::InOrder/>
+                    <Route path=path!("obec") view=Contact ssr=leptos_router::SsrMode::InOrder/>
                     <Route path=path!("povinne-informace") view=RequiredInformation ssr=leptos_router::SsrMode::InOrder/>
                     <Route path=path!("stranky") view=PagesIndex ssr=leptos_router::SsrMode::InOrder/>
-                    <Route path=path!("kontakt") view=Contact ssr=leptos_router::SsrMode::InOrder/>
+                    <Route path=path!("kontakt") view=ContactRedirect ssr=leptos_router::SsrMode::InOrder/>
                     <Route path=path!("odber") view=Subscribe ssr=leptos_router::SsrMode::InOrder/>
                     <Route path=path!("kalendar") view=Calendar ssr=leptos_router::SsrMode::InOrder/>
                     <Route path=path!("kalendar/:id") view=events::EventDetail ssr=leptos_router::SsrMode::Async/>

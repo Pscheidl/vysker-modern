@@ -42,6 +42,61 @@ fn legacy_urls_have_stable_identity_without_unsafe_actions() {
 }
 
 #[tokio::test]
+async fn contact_urls_redirect_permanently_to_municipality_without_losing_query() {
+    let app = common::App::new().await;
+    let router = app.router.clone().layer(middleware::from_fn_with_state(
+        app.state.clone(),
+        legacy::redirects,
+    ));
+    for path in [
+        "/kontakt",
+        "/kontakt/",
+        "/stranky/kontakt",
+        "/stranky/kontakt/",
+    ] {
+        for method in ["GET", "HEAD"] {
+            for query in ["", "?q=uredni%20hodiny&utm_source=old-link"] {
+                let response = router
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method(method)
+                            .uri(format!("{path}{query}"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::MOVED_PERMANENTLY);
+                assert_eq!(response.headers()["location"], format!("/obec{query}"));
+            }
+        }
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert!(!response.headers().contains_key("location"));
+    }
+    for path in ["/obec", "/stranky/obec", "/kontakt-jiny"] {
+        let response = router
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert!(!response.headers().contains_key("location"));
+    }
+}
+
+#[tokio::test]
 async fn redirects_and_images_follow_publication_and_withdrawal() {
     let app = common::App::new().await;
     let page:i64=sqlx::query_scalar("INSERT INTO pages(slug,title,content,published,updated_at) VALUES ('legacy','Old','Body',FALSE,'now') RETURNING id").fetch_one(&app.state.pool).await.unwrap();

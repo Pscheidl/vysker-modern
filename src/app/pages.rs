@@ -188,19 +188,6 @@ fn DetailContent(notice: Notice) -> impl IntoView {
 }
 
 #[component]
-fn MunicipalityPreview() -> impl IntoView {
-    view! {
-        <Title text="Obec a úřad · Vyskeř"/>
-        <div class="page-width interior"><PageHeading title="Obecní úřad" description="Obec v Českém ráji. Informace pro každodenní život i návštěvu úřadu."/>
-            <div class="municipality-intro"><div><h2>"Obec, ve které žijeme"</h2><p>"Na Vyskři se potkává krajina Českého ráje s každodenním životem obce. Tady najdete důležité dokumenty, praktické informace i to, co se u nás právě chystá."</p><A href=super::site_url("/kontakt") attr:class="button primary">"Kontakty na obecní úřad"<Icon/></A></div><div class="mini-terrain mini-chapel" aria-hidden="true"><img class="terrain-light" src=super::site_url("/images/chapel-ceramic-light.png") alt="" width="1536" height="1024" loading="lazy"/><img class="terrain-dark" src=super::site_url("/images/chapel-ceramic-dark.png") alt="" width="1536" height="1024" loading="lazy"/></div></div>
-            <section id="sluzby" class="services-section"><h2>"Co potřebujete vyřídit?"</h2><div class="service-grid">
-                <article><Icon name="board"/><h3>"Zastupitelstvo"</h3><p>"Pozvánky na veřejná zasedání a zveřejněné dokumenty."</p><A href=super::site_url("/uredni-deska?kategorie=Zastupitelstvo") attr:class="text-link">"Dokumenty zastupitelstva"<Icon/></A></article>
-            </div></section><Newsletter/>
-        </div>
-    }
-}
-
-#[component]
 fn ContactPreview() -> impl IntoView {
     view! {
         <Title text="Kontakt a úřední hodiny · Vyskeř"/>
@@ -224,8 +211,8 @@ pub fn Subscribe() -> impl IntoView {
 #[component]
 fn CalendarPreview() -> impl IntoView {
     view! {<Title text="Kalendář akcí · Vyskeř"/><div class="page-width interior"><PageHeading title="Dění na Vyskři." description="Setkání, události a praktické termíny na jednom místě." eyebrow="KALENDÁŘ AKCÍ"/>
-    <div class="calendar-list"><details id="setkani"><summary><span class="date-tile"><strong>"10"</strong><span>"ŘÍJEN"</span></span><span><span class="eyebrow">"SPOLEČNĚ V OBCI"</span><strong>"Podzimní setkání sousedů"</strong><span>"Sobota 10. října 2026"</span></span><Icon/></summary><div class="event-description"><p>"Příležitost potkat se se sousedy a strávit společně podzimní odpoledne. Podrobnosti o místě a programu zveřejní obec před akcí."</p><A href=super::site_url("/kontakt") attr:class="text-link">"Kontakt na pořadatele"<Icon/></A></div></details>
-    <details id="svoz"><summary><span class="date-tile"><strong>"12"</strong><span>"ŘÍJEN"</span></span><span><span class="eyebrow">"PRAKTICKÉ INFORMACE"</span><strong>"Svoz bioodpadu"</strong><span>"Pondělí 12. října 2026"</span></span><Icon/></summary><div class="event-description"><p>"Informace ke svozu bioodpadu a přistavení nádob poskytne obecní úřad."</p><A href=super::site_url("/kontakt") attr:class="text-link">"Zeptat se na svoz"<Icon/></A></div></details></div><p class="field-note">"Události a termíny jsou pouze ilustrační. Nejde o potvrzené akce obce."</p>
+    <div class="calendar-list"><details id="setkani"><summary><span class="date-tile"><strong>"10"</strong><span>"ŘÍJEN"</span></span><span><span class="eyebrow">"SPOLEČNĚ V OBCI"</span><strong>"Podzimní setkání sousedů"</strong><span>"Sobota 10. října 2026"</span></span><Icon/></summary><div class="event-description"><p>"Příležitost potkat se se sousedy a strávit společně podzimní odpoledne. Podrobnosti o místě a programu zveřejní obec před akcí."</p><A href=super::site_url("/obec") attr:class="text-link">"Kontakt na pořadatele"<Icon/></A></div></details>
+    <details id="svoz"><summary><span class="date-tile"><strong>"12"</strong><span>"ŘÍJEN"</span></span><span><span class="eyebrow">"PRAKTICKÉ INFORMACE"</span><strong>"Svoz bioodpadu"</strong><span>"Pondělí 12. října 2026"</span></span><Icon/></summary><div class="event-description"><p>"Informace ke svozu bioodpadu a přistavení nádob poskytne obecní úřad."</p><A href=super::site_url("/obec") attr:class="text-link">"Zeptat se na svoz"<Icon/></A></div></details></div><p class="field-note">"Události a termíny jsou pouze ilustrační. Nejde o potvrzené akce obce."</p>
     </div>}
 }
 
@@ -298,6 +285,28 @@ pub fn Contact() -> impl IntoView {
 }
 
 #[component]
+pub fn ContactRedirect() -> impl IntoView {
+    let location = leptos_router::hooks::use_location();
+    let search = location.search.get_untracked();
+    let hash = location.hash.get_untracked();
+    let target = format!(
+        "{}{}{}",
+        super::site_url("/obec"),
+        if search.is_empty() {
+            String::new()
+        } else {
+            format!("?{}", search.trim_start_matches('?'))
+        },
+        if hash.is_empty() {
+            String::new()
+        } else {
+            format!("#{}", hash.trim_start_matches('#'))
+        },
+    );
+    view! {<leptos_router::components::Redirect path=target/>}
+}
+
+#[component]
 pub fn Calendar() -> impl IntoView {
     #[cfg(feature = "demo")]
     return view! {<ManagedPage slug="kalendar"><CalendarPreview/></ManagedPage>};
@@ -308,11 +317,6 @@ pub fn Calendar() -> impl IntoView {
 #[component]
 pub fn Accessibility() -> impl IntoView {
     view! {<ManagedPage slug="pristupnost"><AccessibilityPreview/></ManagedPage>}
-}
-
-#[component]
-pub fn Municipality() -> impl IntoView {
-    view! {<ManagedPage slug="obec"><MunicipalityPreview/></ManagedPage>}
 }
 
 #[component]
@@ -335,7 +339,7 @@ fn ManagedPage(slug: &'static str, children: ChildrenFn) -> impl IntoView {
 #[component]
 pub fn PagesIndex() -> impl IntoView {
     let info = expect_context::<super::SiteResource>();
-    view! {<div class="page-width interior prose"><PageHeading title="Informace obce" description="Přehled zveřejněných obsahových stránek."/><Suspense fallback=Loading>{move||info.get().map(|r|match r {Ok(info)=>view!{<ul>{info.pages.into_iter().map(|p|view!{<li><A href=super::site_url(&format!("/stranky/{}",p.slug))>{p.title}</A></li>}).collect_view()}</ul>}.into_any(),Err(_)=>view!{<p>"Stránky se nepodařilo načíst."</p>}.into_any()})}</Suspense></div>}
+    view! {<div class="page-width interior prose"><PageHeading title="Informace obce" description="Přehled zveřejněných obsahových stránek."/><Suspense fallback=Loading>{move||info.get().map(|r|match r {Ok(info)=>view!{<ul>{info.pages.into_iter().map(|p|view!{<li><A href=super::site_url(&crate::catalog::page_path(&p.slug))>{p.title}</A></li>}).collect_view()}</ul>}.into_any(),Err(_)=>view!{<p>"Stránky se nepodařilo načíst."</p>}.into_any()})}</Suspense></div>}
 }
 
 #[component]

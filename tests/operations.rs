@@ -81,9 +81,15 @@ async fn production_requires_real_information_pages_and_preserves_their_routes()
     let mut config = (*app.state.config).clone();
     config.production = true;
     let prod = backend::Backend::new(app.state.pool.clone(), config);
-    assert!(server::check_launch_content(&prod).await.is_err());
+    assert!(
+        server::check_launch_content(&prod)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("kontakt")
+    );
     let mut first = 0;
-    for slug in server::REQUIRED_PAGES {
+    for slug in ["kontakt", "kalendar", "pristupnost", "povinne-informace"] {
         let response=app.call("POST","/api/v1/admin/pages",Some(json!({"slug":slug,"title":slug,"content":"Schválený obsah v testovací databázi","published":true})),true).await;
         assert_eq!(response.status(), StatusCode::CREATED);
         if first == 0 {
