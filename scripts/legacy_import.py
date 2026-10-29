@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Validate and import an offline Vismo bundle, with no SMTP or public publishing by default."""
 import argparse
-from datetime import date
+from datetime import date, datetime
 import json
 from pathlib import Path
 import re
@@ -310,9 +310,23 @@ def import_bundle(conn, root, publish_content=False, allow_incomplete=False, pag
                 report['review'].append({'key': item['key'], 'reason': 'Notice remains a draft. Check dates, attachments and publication rules before cutover.'})
         elif item.get('event') and len(item['content']) <= 10_000:
             event = item['event']
-            event_id = conn.execute('INSERT INTO events(title,description,location,starts_at,ends_at,start_time_known,end_time_known,end_date_known,published,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id',
+            announcement = conn.execute('SELECT announced_at FROM legacy_event_announcements WHERE source_key=%s',
+                                        (item['key'],)).fetchone()
+            if publish_content and announcement is None:
+                announcement = conn.execute('''INSERT INTO legacy_event_announcements(source_key,announced_at)
+                    VALUES (%s,%s) ON CONFLICT DO NOTHING RETURNING announced_at''',
+                    (item['key'], int(datetime.fromisoformat(timestamp).timestamp()))).fetchone()
+                new_publication = announcement is not None
+                if announcement is None:
+                    announcement = conn.execute('SELECT announced_at FROM legacy_event_announcements WHERE source_key=%s',
+                                                (item['key'],)).fetchone()
+            event_id = conn.execute('INSERT INTO events(title,description,location,starts_at,ends_at,start_time_known,end_time_known,end_date_known,published,updated_at,email_announced_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id',
                 (item['title'][:200], item['content'], event['location'][:300], event['starts_at'], event['ends_at'],
-                 event['start_time_known'], event['end_time_known'], event['end_date_known'], publish_content, timestamp)).fetchone()[0]
+                 event['start_time_known'], event['end_time_known'], event['end_date_known'], publish_content, timestamp,
+                 announcement[0] if announcement is not None else None)).fetchone()[0]
+            # Public preview and replacement records also cross the announcement
+            # boundary. The source ledger survives their deletion and reimport,
+            # including a previously announced event returning as a draft.
             destination = f'/kalendar/{event_id}'
             new_pages.append((event_id, None, item))
             audit(conn, 'event', event_id, timestamp)
@@ -334,7 +348,7 @@ def import_bundle(conn, root, publish_content=False, allow_incomplete=False, pag
                 VALUES (%s,%s,%s,%s,%s::jsonb)''',
                 (item['key'], notice_id, timestamp, preview_notices, json.dumps(notice_metadata, ensure_ascii=False)))
         if new_publication and not preview_notices and item['key'] not in notification_excluded_source_keys:
-            queue_publication(conn, timestamp, notice_id=notice_id, document_id=document_id)
+            queue_publication(conn, timestamp, notice_id=notice_id, document_id=document_id, event_id=event_id)
     unresolved = set()
     for page_id, page_slug, item in new_pages:
         def rewrite(match):

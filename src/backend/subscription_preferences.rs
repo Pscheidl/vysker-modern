@@ -17,6 +17,7 @@ struct CurrentSubscription {
     notice_category_ids: Vec<i64>,
     uncategorized_notices: bool,
     documents: bool,
+    events: bool,
 }
 
 async fn current(
@@ -28,7 +29,7 @@ async fn current(
         return Err(bad("Odkaz není platný nebo vypršel."));
     }
     sqlx::query_as(
-        "SELECT s.id,s.all_notice_categories,s.notice_category_ids,s.uncategorized_notices,s.documents
+        "SELECT s.id,s.all_notice_categories,s.notice_category_ids,s.uncategorized_notices,s.documents,s.events
          FROM subscribers s JOIN subscription_tokens t ON t.subscriber_id=s.id
          JOIN subscription_consents c ON c.id=t.consent_id AND c.subscriber_id=s.id
          WHERE t.hash=$1 AND t.purpose='unsubscribe' AND t.expires_at>$2
@@ -78,6 +79,7 @@ async fn settings_page(
         notice_category_ids: current.notice_category_ids,
         uncategorized_notices: current.uncategorized_notices,
         documents: current.documents,
+        events: current.events,
     });
     let all = checkbox(
         "all_notice_categories",
@@ -100,6 +102,7 @@ async fn settings_page(
         preferences.uncategorized_notices,
     );
     let documents = checkbox("documents", "Obecné dokumenty", preferences.documents);
+    let events = checkbox("events", "Kalendář akcí", preferences.events);
     let status = if saved {
         "<p role=\"status\">Výběr je uložený. Další novinky vám budeme posílat podle tohoto nastavení.</p>"
     } else {
@@ -111,7 +114,7 @@ async fn settings_page(
     Ok(subscriptions::page_document(
         "Nastavení odběru",
         &format!(
-            "<p>Vyberte si, které novinky z webu Vyskeř vám mají chodit v hodinovém e-mailovém souhrnu.</p>{status}{error}<form method=\"post\" action=\"/odber/nastaveni\"><input type=\"hidden\" name=\"token\" value=\"{token}\"><fieldset><legend>Úřední deska</legend>{all}<p>Pro výběr jednotlivých kategorií zrušte volbu „Všechny kategorie“ a zaškrtněte požadované kategorie níže.</p>{choices}{uncategorized}</fieldset><fieldset><legend>Další obsah</legend>{documents}</fieldset><p>Vyberte alespoň jedno téma. Pro ukončení všech zpráv použijte odhlášení odběru.</p><button class=\"button primary\" type=\"submit\">Uložit výběr</button></form><p><a href=\"/odber/odhlasit?token={token}\">Odhlásit celý odběr</a></p>"
+            "<p>Vyberte si, které nové dokumenty a akce z webu Vyskeř vám mají chodit společně v hodinovém e-mailovém souhrnu.</p>{status}{error}<form method=\"post\" action=\"/odber/nastaveni\"><input type=\"hidden\" name=\"token\" value=\"{token}\"><fieldset><legend>Úřední deska</legend>{all}<p>Pro výběr jednotlivých kategorií zrušte volbu „Všechny kategorie“ a zaškrtněte požadované kategorie níže.</p>{choices}{uncategorized}</fieldset><fieldset><legend>Další obsah</legend>{documents}{events}</fieldset><p>Vyberte alespoň jedno téma. Pro ukončení všech zpráv použijte odhlášení odběru.</p><button class=\"button primary\" type=\"submit\">Uložit výběr</button></form><p><a href=\"/odber/odhlasit?token={token}\">Odhlásit celý odběr</a></p>"
         ),
     ))
 }
@@ -150,6 +153,7 @@ pub async fn update(
         notice_category_ids: Vec::new(),
         uncategorized_notices: false,
         documents: false,
+        events: false,
     };
     for (name, value) in fields {
         if value != "on" {
@@ -159,6 +163,7 @@ pub async fn update(
             "all_notice_categories" => preferences.all_notice_categories = true,
             "uncategorized_notices" => preferences.uncategorized_notices = true,
             "documents" => preferences.documents = true,
+            "events" => preferences.events = true,
             _ => {
                 let id = name
                     .strip_prefix("category_")
@@ -182,12 +187,13 @@ pub async fn update(
     };
     sqlx::query(
         "UPDATE subscribers SET all_notice_categories=$1,notice_category_ids=$2,
-         uncategorized_notices=$3,documents=$4 WHERE id=$5",
+         uncategorized_notices=$3,documents=$4,events=$5 WHERE id=$6",
     )
     .bind(preferences.all_notice_categories)
     .bind(&preferences.notice_category_ids)
     .bind(preferences.uncategorized_notices)
     .bind(preferences.documents)
+    .bind(preferences.events)
     .bind(current.id)
     .execute(&mut *tx)
     .await?;

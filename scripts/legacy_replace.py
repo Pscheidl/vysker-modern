@@ -21,15 +21,20 @@ def require_staging():
 def publication_sources(conn):
     with conn.cursor(row_factory=dict_row) as cursor:
         return cursor.execute('''SELECT s.source_key,
-            CASE WHEN s.notice_id IS NOT NULL THEN 'notice' ELSE 'document' END AS kind,
-            coalesce(s.notice_id,s.document_id) AS entity_id,
+            CASE WHEN s.notice_id IS NOT NULL THEN 'notice'
+                WHEN s.document_id IS NOT NULL THEN 'document' ELSE 'event' END AS kind,
+            coalesce(s.notice_id,s.document_id,s.event_id) AS entity_id,
             coalesce(n.status IN ('published','archived','withdrawn'),FALSE)
-                OR coalesce(d.status='published',FALSE) AS public,
+                OR coalesce(d.status='published',FALSE)
+                OR coalesce(e.published AND NOT e.cancelled,FALSE) AS public,
             coalesce(n.status IN ('published','archived','withdrawn'),FALSE)
-                OR coalesce(d.status IN ('published','archived'),FALSE) AS was_public
+                OR coalesce(d.status IN ('published','archived'),FALSE)
+                OR coalesce(e.published,FALSE) OR e.email_announced_at IS NOT NULL AS was_public,
+            e.email_announced_at
             FROM legacy_sources s LEFT JOIN notices n ON n.id=s.notice_id
             LEFT JOIN documents d ON d.id=s.document_id
-            WHERE s.notice_id IS NOT NULL OR s.document_id IS NOT NULL
+            LEFT JOIN events e ON e.id=s.event_id
+            WHERE s.notice_id IS NOT NULL OR s.document_id IS NOT NULL OR s.event_id IS NOT NULL
             ORDER BY (s.attachment_id IS NOT NULL),s.source_key''').fetchall()
 
 
@@ -41,14 +46,16 @@ def publication_snapshot(conn, sources):
     # Refuse before any mutation instead of silently dropping or resending items.
     digest_exists = conn.execute('''SELECT EXISTS(SELECT 1 FROM mail_publication_items
         WHERE CASE WHEN notice_id IS NOT NULL THEN 'notice:'||notice_id
-            ELSE 'document:'||document_id END=ANY(%s))''', (list(entities),)).fetchone()[0]
+            WHEN document_id IS NOT NULL THEN 'document:'||document_id
+            ELSE 'event:'||event_id END=ANY(%s))''', (list(entities),)).fetchone()[0]
     if digest_exists:
         raise ValueError('Imported publications belong to retained email digests. '
                          'Replacement is not supported while this digest history exists.')
     with conn.cursor(row_factory=dict_row) as cursor:
         pending = cursor.execute('''SELECT * FROM publication_outbox
             WHERE CASE WHEN notice_id IS NOT NULL THEN 'notice:'||notice_id
-                ELSE 'document:'||document_id END=ANY(%s)''', (list(entities),)).fetchall()
+                WHEN document_id IS NOT NULL THEN 'document:'||document_id
+                ELSE 'event:'||event_id END=ANY(%s)''', (list(entities),)).fetchall()
         mails = cursor.execute('''SELECT * FROM mail_queue
             WHERE split_part(deduplication_key,':',1)||':'||
                 split_part(deduplication_key,':',2)=ANY(%s)
@@ -66,6 +73,9 @@ def restore_publications(conn, sources, pending, mails):
         target = destinations.get(source['source_key'])
         if target:
             remap.setdefault((source['kind'], source['entity_id']), (target['kind'], target['entity_id']))
+            if source['kind'] == target['kind'] == 'event' and source['email_announced_at'] is not None:
+                conn.execute('UPDATE events SET email_announced_at=%s WHERE id=%s',
+                             (source['email_announced_at'], target['entity_id']))
     for row in mails:
         kind, entity_id, recipient = row['deduplication_key'].split(':')
         target = remap.get((kind, int(entity_id)))
@@ -79,21 +89,24 @@ def restore_publications(conn, sources, pending, mails):
         if duplicate:
             conn.execute('UPDATE mail_queue SET cancelled=TRUE,body=NULL WHERE id=%s AND sent_at IS NULL', (row['id'],))
             continue
-        route = 'uredni-deska' if kind == 'notice' else 'dokumenty'
-        target_route = 'uredni-deska' if target_kind == 'notice' else 'dokumenty'
+        routes = {'notice': 'uredni-deska', 'document': 'dokumenty', 'event': 'kalendar'}
+        route = routes[kind]
+        target_route = routes[target_kind]
         body = row['body']
         if body is not None:
             body = body.replace(f'/{route}/{entity_id}\n', f'/{target_route}/{target_id}\n')
         conn.execute('UPDATE mail_queue SET deduplication_key=%s,body=%s WHERE id=%s', (key, body, row['id']))
     for row in pending:
-        source = ('notice', row['notice_id']) if row['notice_id'] is not None else ('document', row['document_id'])
+        source = next((kind, row[f'{kind}_id']) for kind in ('notice', 'document', 'event')
+                      if row[f'{kind}_id'] is not None)
         target = remap.get(source)
         if target:
             kind, entity_id = target
             conn.execute('''INSERT INTO publication_outbox
-                (notice_id,document_id,subscriber_id,consent_id,created_at)
-                VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING''',
+                (notice_id,document_id,event_id,subscriber_id,consent_id,created_at)
+                VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING''',
                 (entity_id if kind == 'notice' else None, entity_id if kind == 'document' else None,
+                 entity_id if kind == 'event' else None,
                  row['subscriber_id'], row['consent_id'], row['created_at']))
 
 

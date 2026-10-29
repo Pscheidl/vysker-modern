@@ -206,8 +206,13 @@ new content is private. The example's `--publish-content` publishes new ordinary
 pages, documents and events, while notices remain drafts for editorial review.
 Add `--archive-notices` to `legacy_sync.py run` to put new historical notices
 directly into the public archive instead.
-New published documents and new archived notices notify current confirmed
-subscribers. Added attachments, source changes awaiting review and moving a
+New published documents, new archived notices and new public calendar events
+notify current confirmed subscribers according to their selected topics. They
+join the same hourly email summary. Calendar imports record their first public
+appearance even if nobody currently subscribes to that topic. Repeated imports,
+later opt-ins and source changes do not backfill those events. Never-published
+imported drafts keep their announcement marker empty until first publication.
+Added attachments, source changes awaiting review and moving a
 previously published notice to the archive do not create another notification.
 Previously imported drafts keep their existing publication state.
 
@@ -398,8 +403,14 @@ and reimports content in one transaction, so a validation or import failure
 restores the previous state. Local edits to imported records are replaced too.
 Record sequences are not reset, and attachment IDs are retained by source identity
 where the same file remains in scope. Original source dates remain unchanged.
-Already public source identities are not announced again. Newly public documents
-and archived notices notify current confirmed subscribers. Verify the public
+Already public source identities are not announced again, including calendar
+events that were subsequently hidden. Pending event recipients and their original
+announcement time survive replacement. A separate source ledger also retains
+that boundary when an event is omitted from a replacement bundle and returns
+later, even if its event and source rows were deleted. Replacement refuses content referenced by
+retained email digests, including event items, before deleting anything.
+Newly public documents, archived notices and genuinely new public calendar events
+notify current confirmed subscribers according to their selected topics. Verify the public
 archive and attachment downloads,
 then re-enable the timer with `--archive-notices --skip-pages` selected.
 

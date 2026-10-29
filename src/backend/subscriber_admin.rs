@@ -13,7 +13,7 @@ use time::OffsetDateTime;
 // A legacy verified address without current consent must never appear as active.
 const SUBSCRIBERS: &str = "WITH classified AS (
     SELECT s.id,s.email,s.verified_at,s.unsubscribed_at,s.retention_started_at,
-        s.all_notice_categories,s.notice_category_ids,s.uncategorized_notices,s.documents,
+        s.all_notice_categories,s.notice_category_ids,s.uncategorized_notices,s.documents,s.events,
         CASE WHEN s.unsubscribed_at IS NOT NULL THEN 'unsubscribed'
              WHEN s.verified_at IS NOT NULL AND EXISTS (
                  SELECT 1 FROM subscription_consents c WHERE c.subscriber_id=s.id
@@ -46,6 +46,7 @@ pub struct Subscriber {
     notice_category_ids: Vec<i64>,
     uncategorized_notices: bool,
     documents: bool,
+    events: bool,
 }
 
 #[derive(Serialize)]
@@ -138,6 +139,8 @@ struct ConsentEvidence {
     notice_category_ids: Vec<i64>,
     uncategorized_notices: bool,
     documents: bool,
+    // Old snapshots predate this topic and do not establish its original selection.
+    events: Option<bool>,
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -187,7 +190,7 @@ pub async fn export(
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(missing)?;
-    let consents = sqlx::query_as("SELECT c.id,c.requested_at,c.confirmed_at,c.withdrawn_at,c.superseded_at,c.notice_fingerprint,n.version,n.consent_text,n.privacy_json,c.all_notice_categories,c.notice_category_ids,c.uncategorized_notices,c.documents FROM subscription_consents c JOIN consent_notices n ON n.fingerprint=c.notice_fingerprint WHERE c.subscriber_id=$1 ORDER BY c.id")
+    let consents = sqlx::query_as("SELECT c.id,c.requested_at,c.confirmed_at,c.withdrawn_at,c.superseded_at,c.notice_fingerprint,n.version,n.consent_text,n.privacy_json,c.all_notice_categories,c.notice_category_ids,c.uncategorized_notices,c.documents,c.events FROM subscription_consents c JOIN consent_notices n ON n.fingerprint=c.notice_fingerprint WHERE c.subscriber_id=$1 ORDER BY c.id")
         .bind(id).fetch_all(&mut *tx).await?;
     // Explicit allowlist excludes message bodies, tokens, lock secrets and their hashes.
     let mail_history = sqlx::query_as("SELECT id,consent_id,purpose,attempts,created_at,next_attempt_at,locked_until,sent_at,cancelled FROM mail_queue WHERE subscriber_id=$1 ORDER BY id")

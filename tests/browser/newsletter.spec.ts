@@ -5,7 +5,7 @@ const successMessage = 'Pokud je potřeba odběr potvrdit, pošleme vám ověřo
 
 async function openNewsletter(page: Page) {
   await page.goto('/odber')
-  await expect(page.locator('.newsletter-copy')).toContainText('Nové dokumenty posíláme v hodinovém souhrnu.')
+  await expect(page.locator('.newsletter-copy')).toContainText('Nové dokumenty a akce posíláme společně v hodinovém souhrnu.')
   const form = page.locator('.newsletter-form')
   const email = form.getByLabel('E-mailová adresa', { exact: true })
   const submit = form.getByRole('button')
@@ -39,6 +39,7 @@ test('newsletter validates email before sending, including direct submit events'
   expect(requests[0].get('preferences[all_notice_categories]')).toBe('true')
   expect(requests[0].get('preferences[uncategorized_notices]')).toBe('true')
   expect(requests[0].get('preferences[documents]')).toBe('true')
+  expect(requests[0].get('preferences[events]')).toBe('true')
   expect([...requests[0].keys()].filter(key => key.startsWith('preferences[notice_category_ids]'))).toEqual([])
 })
 
@@ -58,6 +59,7 @@ test('newsletter prevents duplicate pending requests and clears email with tempo
   await expect(form.getByLabel('Všechny kategorie úřední desky (i budoucí)', { exact: true })).toBeChecked()
   await expect(form.getByLabel('Úřední deska bez kategorie', { exact: true })).toBeChecked()
   await expect(form.getByLabel('Obecné dokumenty', { exact: true })).toBeChecked()
+  await expect(form.getByLabel('Kalendář akcí', { exact: true })).toBeChecked()
   await expect(form.getByLabel('Rozpočet', { exact: true })).toBeDisabled()
   await expect(form.getByLabel('Rozpočet', { exact: true })).toBeChecked()
   await email.fill('pending-subscriber@vysker.test')
@@ -94,7 +96,7 @@ test('newsletter prevents duplicate pending requests and clears email with tempo
   expect(requests).toHaveLength(1)
 })
 
-test('newsletter sends the selected categories and allows documents only', async ({ page }) => {
+test('newsletter sends the selected categories and allows documents or events only', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   const requests: URLSearchParams[] = []
   await page.route(subscriptionEndpoint, async route => {
@@ -108,6 +110,7 @@ test('newsletter sends the selected categories and allows documents only', async
   await form.getByLabel('Všechny kategorie úřední desky (i budoucí)', { exact: true }).uncheck()
   await form.getByLabel('Úřední deska bez kategorie', { exact: true }).uncheck()
   await form.getByLabel('Obecné dokumenty', { exact: true }).uncheck()
+  await form.getByLabel('Kalendář akcí', { exact: true }).uncheck()
   const budget = form.getByLabel('Rozpočet', { exact: true })
   await expect(budget).toBeEnabled()
   await budget.focus()
@@ -123,6 +126,7 @@ test('newsletter sends the selected categories and allows documents only', async
   expect(requests[0].get('preferences[notice_category_ids][0]')).toBe(categoryId)
   expect(requests[0].get('preferences[uncategorized_notices]')).toBe('false')
   expect(requests[0].get('preferences[documents]')).toBe('false')
+  expect(requests[0].get('preferences[events]')).toBe('false')
 
   await email.fill('documents-subscriber@vysker.test')
   await budget.uncheck()
@@ -133,7 +137,20 @@ test('newsletter sends the selected categories and allows documents only', async
   expect(requests[1].get('preferences[all_notice_categories]')).toBe('false')
   expect(requests[1].get('preferences[uncategorized_notices]')).toBe('false')
   expect(requests[1].get('preferences[documents]')).toBe('true')
+  expect(requests[1].get('preferences[events]')).toBe('false')
   expect([...requests[1].keys()].filter(key => key.startsWith('preferences[notice_category_ids]'))).toEqual([])
+
+  await email.fill('events-subscriber@vysker.test')
+  await form.getByLabel('Obecné dokumenty', { exact: true }).uncheck()
+  await form.getByLabel('Kalendář akcí', { exact: true }).check()
+  await submit.click()
+  await expect(form.getByRole('status')).toHaveText(successMessage)
+  expect(requests).toHaveLength(3)
+  expect(requests[2].get('preferences[all_notice_categories]')).toBe('false')
+  expect(requests[2].get('preferences[uncategorized_notices]')).toBe('false')
+  expect(requests[2].get('preferences[documents]')).toBe('false')
+  expect(requests[2].get('preferences[events]')).toBe('true')
+  expect([...requests[2].keys()].filter(key => key.startsWith('preferences[notice_category_ids]'))).toEqual([])
 })
 
 test('newsletter rejects an empty selection and preserves the email for correction', async ({ page }) => {
@@ -147,10 +164,11 @@ test('newsletter rejects an empty selection and preserves the email for correcti
   await form.getByLabel('Všechny kategorie úřední desky (i budoucí)', { exact: true }).uncheck()
   await form.getByLabel('Úřední deska bez kategorie', { exact: true }).uncheck()
   await form.getByLabel('Obecné dokumenty', { exact: true }).uncheck()
+  await form.getByLabel('Kalendář akcí', { exact: true }).uncheck()
   await form.locator('summary').click()
   await email.fill('empty-selection@vysker.test')
   await submit.click()
-  await expect(form.getByRole('alert')).toHaveText('Vyberte alespoň jednu kategorii úřední desky, úřední desku bez kategorie nebo obecné dokumenty.')
+  await expect(form.getByRole('alert')).toHaveText('Vyberte alespoň jednu kategorii úřední desky, úřední desku bez kategorie, obecné dokumenty nebo kalendář akcí.')
   await expect(form.locator('details')).toHaveAttribute('open', '')
   await expect(email).toHaveValue('empty-selection@vysker.test')
   await form.dispatchEvent('submit')

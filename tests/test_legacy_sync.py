@@ -190,10 +190,10 @@ class SyncTests(unittest.TestCase):
             category = conn.execute("SELECT id FROM categories WHERE name='Ostatní'").fetchone()[0]
             # Imported notice categories and general documents are independent choices.
             conn.execute('''UPDATE subscribers SET all_notice_categories=FALSE,
-                notice_category_ids=%s,uncategorized_notices=FALSE,documents=FALSE WHERE id=%s''',
+                notice_category_ids=%s,uncategorized_notices=FALSE,documents=FALSE,events=FALSE WHERE id=%s''',
                 ([category], subscribers['active'][0]))
             conn.execute('''UPDATE subscribers SET all_notice_categories=FALSE,
-                uncategorized_notices=FALSE,documents=TRUE WHERE id=%s''',
+                uncategorized_notices=FALSE,documents=TRUE,events=FALSE WHERE id=%s''',
                 (subscribers['active_other'][0],))
             import_bundle(conn, self.root, classify_navigation=True, publish_content=True,
                           archive_notices=True, sync=True)

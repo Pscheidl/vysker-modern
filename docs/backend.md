@@ -270,8 +270,12 @@ file contents and cannot be downloaded.
 
 Verification links are single-use and expire after 24 hours. Unverified
 addresses receive no publication notifications. Verified subscribers receive
-future notices and general documents. Republishing the same record does not
-enqueue duplicate notifications.
+future notices, general documents and calendar events according to their topic
+preferences, combined in the hourly summary. Republishing the same record does not
+enqueue duplicate notifications. The `events` preference defaults to `true`,
+including for older JSON clients that omit it. A calendar-only selection is valid.
+Current subscriber exports contain a boolean, while historical consent snapshots
+contain `null` when the calendar choice was not recorded.
 
 Repeated subscription requests are idempotent while a valid verification email
 is pending. Once sent, another email is allowed after 10 minutes, with at most
@@ -285,7 +289,7 @@ preventing automated email scanners from activating or cancelling subscriptions.
 New notification emails contain unsubscribe links without a fixed expiry date,
 usable while the associated subscription remains active.
 
-Every document publication, including scheduled notices and imports, saves its
+Every eligible document, notice or calendar-event publication, including scheduled notices and imports, saves its
 recipient snapshot in `publication_outbox` in the publication transaction. The
 mail worker atomically builds `mail_queue` messages and removes those requests.
 Unprocessed requests survive restart, and pending document emails are retained

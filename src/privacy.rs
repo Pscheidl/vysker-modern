@@ -139,11 +139,11 @@ impl PrivacyPolicy {
 }
 
 pub fn default_consent_text() -> String {
-    "Přihlášením žádáte o zasílání nových dokumentů včetně úřední desky na zadaný e-mail. Odhlásit se můžete kdykoli odkazem v každé zprávě.".into()
+    "Přihlášením žádáte o zasílání nových dokumentů včetně úřední desky a nově oznámených akcí na zadaný e-mail. Odhlásit se můžete kdykoli odkazem v každé zprávě.".into()
 }
 
 pub fn default_newsletter_terms() -> String {
-    "Na základě dobrovolného souhlasu podle čl. 6 odst. 1 písm. a) GDPR používáme e-mailovou adresu k zasílání nových dokumentů včetně úřední desky. Evidujeme přesné znění souhlasu a čas žádosti, potvrzení a případného odvolání. Bez poskytnutí adresy nelze odběr zajistit, používání ostatních částí webu tím není omezeno.\n\nSouhlas kdykoli odvoláte odkazem v každé novince bez přihlášení. Odvolání nemá vliv na zákonnost předchozího zpracování.\n\nVyhrazujeme si právo tyto podmínky změnit. Aktuální znění je vždy dostupné na této stránce.".into()
+    "Na základě dobrovolného souhlasu podle čl. 6 odst. 1 písm. a) GDPR používáme e-mailovou adresu k zasílání nových dokumentů včetně úřední desky a nově oznámených akcí. Evidujeme přesné znění souhlasu a čas žádosti, potvrzení a případného odvolání. Bez poskytnutí adresy nelze odběr zajistit, používání ostatních částí webu tím není omezeno.\n\nSouhlas kdykoli odvoláte odkazem v každé novince bez přihlášení. Odvolání nemá vliv na zákonnost předchozího zpracování.\n\nVyhrazujeme si právo tyto podmínky změnit. Aktuální znění je vždy dostupné na této stránce.".into()
 }
 
 pub fn default_rights_text() -> String {

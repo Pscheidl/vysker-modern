@@ -9,11 +9,11 @@ The selected service must allow the configured From address and provide SMTP
 credentials. A website-specific password or service credential can be rotated
 without changing a person's mailbox password.
 
-All new public documents and official notices save notification requests in
+All new public documents, official notices and calendar events save notification requests in
 `publication_outbox` in the same transaction as publication. This includes
 administration, scheduled publication and imports directly into the archive.
 The running web checks this table through its regular mail worker every 30 seconds.
-At each full hour it combines eligible notices and documents into one email per
+At each full hour it combines eligible notices, documents and events into one email per
 subscriber and consent. A publication at 10:15 is eligible from 11:00, while one
 at exactly 11:00 waits until 12:00. The worker may start a little later depending
 on its polling cycle and existing delivery work. It sends nothing when there is
@@ -31,12 +31,19 @@ each missed hour as a separate email.
 The worker atomically transfers the selected requests to `mail_queue` and records
 their individual identities in `mail_publication_items`. Both queues and digest
 membership survive web restarts. Only subscribers with active, confirmed consent
-when the document first becomes public receive the announcement. Every digest
+when the item first becomes public receive the announcement. Every digest
 delivery attempt rechecks consent, preferences and public visibility. Items that
 become ineligible are omitted and remain recorded as suppressed to prevent
 repeated notifications. An empty digest is cancelled. Repeated imports and moving
 an already published notice to the archive do not announce it again. Content pages
 do not send notifications.
+
+The **Kalendář akcí** topic is enabled for existing subscribers and selected by
+default for new subscription requests. It can be disabled through the private
+settings link in each digest, or selected on its own. Disabling it does not change
+the separate ICS calendar subscription. Enabling the topic does not backfill
+events that were already public. Changes to an already announced event do not
+create another email announcement.
 
 ## Transition from individual notifications
 
@@ -48,7 +55,24 @@ Pending requests still in `publication_outbox` enter the hourly digest path.
 Previously sent publications are not backfilled. The original per-publication
 keys and new digest membership both prevent repeat inclusion.
 
+The calendar topic extends the same digest, recipient checks and unsubscribe
+links. Its migration leaves historical consent evidence unchanged: exports use
+`null` for a calendar preference that was not recorded in an older consent.
+New requests store an explicit boolean. Confirming an older pending request
+enables the calendar topic while preserving that original evidence.
+
 Normal imports and recurring synchronization continue to use the same outbox.
+New public calendar imports record `events.email_announced_at` and a durable
+`legacy_event_announcements` entry keyed by source identity, then snapshot only
+currently eligible recipients in the import transaction. Unchanged source keys
+and edited imports do not create another announcement. The source ledger survives
+deletion during replacement, so an event omitted from one bundle and restored
+later is not announced again, including to people who subscribed in between.
+Public preview imports and
+replacement source keys excluded from notifications still record the boundary
+without creating mail. Never-published imported drafts leave the marker empty
+for a later native publication. An already announced source retains its original
+marker even when reimported as a draft.
 The separate staging replacement command refuses to replace imported content
 referenced by retained digest membership. This protects pending deliveries and
 their history from cascading deletion. An ordinary import does not need this

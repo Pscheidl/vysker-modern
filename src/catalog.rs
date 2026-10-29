@@ -140,6 +140,12 @@ pub struct SubscriptionPreferences {
     pub notice_category_ids: Vec<i64>,
     pub uncategorized_notices: bool,
     pub documents: bool,
+    #[serde(default = "default_subscription_events")]
+    pub events: bool,
+}
+
+fn default_subscription_events() -> bool {
+    true
 }
 
 impl Default for SubscriptionPreferences {
@@ -149,6 +155,7 @@ impl Default for SubscriptionPreferences {
             notice_category_ids: Vec::new(),
             uncategorized_notices: true,
             documents: true,
+            events: true,
         }
     }
 }

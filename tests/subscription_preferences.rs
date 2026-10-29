@@ -88,9 +88,9 @@ async fn form_with_fetch_metadata(
         .unwrap()
 }
 
-async fn preferences(app: &App, id: i64) -> (bool, Vec<i64>, bool, bool) {
+async fn preferences(app: &App, id: i64) -> (bool, Vec<i64>, bool, bool, bool) {
     sqlx::query_as(
-        "SELECT all_notice_categories,notice_category_ids,uncategorized_notices,documents FROM subscribers WHERE id=$1",
+        "SELECT all_notice_categories,notice_category_ids,uncategorized_notices,documents,events FROM subscribers WHERE id=$1",
     )
     .bind(id)
     .fetch_one(&app.state.pool)
@@ -127,12 +127,13 @@ async fn settings_get_is_private_read_only_and_shows_default_all_topics() {
         "all_notice_categories",
         "uncategorized_notices",
         "documents",
+        "events",
     ] {
         assert!(html.contains(&format!("name=\"{field}\" value=\"on\" checked")));
     }
     assert!(!html.contains("private-settings@example.test"));
     assert_eq!(preferences(&app, id).await, before);
-    assert_eq!(before, (true, vec![], true, true));
+    assert_eq!(before, (true, vec![], true, true, true));
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM audit_log")
             .fetch_one(&app.state.pool)
@@ -167,7 +168,7 @@ async fn saved_selection_reuses_link_and_export_preserves_original_consent() {
     assert!(String::from_utf8_lossy(&html).contains("Výběr je uložený."));
     assert_eq!(
         preferences(&app, id).await,
-        (false, vec![first, second], false, true)
+        (false, vec![first, second], false, true, false)
     );
     let evidence = body_json(
         app.call(
@@ -190,6 +191,8 @@ async fn saved_selection_reuses_link_and_export_preserves_original_consent() {
         serde_json::json!([])
     );
     assert_eq!(evidence["consents"][0]["documents"], true);
+    assert_eq!(evidence["subscriber"]["events"], false);
+    assert_eq!(evidence["consents"][0]["events"], true);
     assert!(
         evidence["audit_history"]
             .as_array()
@@ -208,7 +211,20 @@ async fn saved_selection_reuses_link_and_export_preserves_original_consent() {
         .status(),
         StatusCode::OK
     );
-    assert_eq!(preferences(&app, id).await, (false, vec![], true, false));
+    assert_eq!(
+        preferences(&app, id).await,
+        (false, vec![], true, false, false)
+    );
+    assert_eq!(
+        form(&app, format!("token={token}&events=on"), None)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        preferences(&app, id).await,
+        (false, vec![], false, false, true)
+    );
     subscriptions::use_token(&app.state, &token, false, OffsetDateTime::now_utc())
         .await
         .unwrap();
@@ -324,7 +340,10 @@ async fn null_origin_navigation_requires_same_origin_fetch_metadata_and_valid_to
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()["referrer-policy"], "no-referrer");
     assert_eq!(response.headers()["cache-control"], "no-store");
-    assert_eq!(preferences(&app, id).await, (false, vec![], false, true));
+    assert_eq!(
+        preferences(&app, id).await,
+        (false, vec![], false, true, false)
+    );
 }
 
 #[tokio::test]
@@ -463,5 +482,8 @@ async fn a_new_consent_does_not_reauthorize_an_old_management_link() {
             .status(),
         StatusCode::BAD_REQUEST
     );
-    assert_eq!(preferences(&app, id).await, (true, vec![], true, true));
+    assert_eq!(
+        preferences(&app, id).await,
+        (true, vec![], true, true, true)
+    );
 }

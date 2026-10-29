@@ -24,6 +24,22 @@ of opt-in and opt-out, with no additional step for the visitor. The historical
 information shown during confirmation matches the original request. Editing
 today's policy cannot expand the purpose of an earlier subscription.
 
+Subscription topics include official-notice categories, general documents and
+**Kalendář akcí**. All topics are selected by default, and the visitor may choose
+calendar events alone. The `events` preference is also enabled for existing
+subscribers. Their verified, pending or withdrawn state is unchanged. Current
+preferences can be changed using the private settings link in a newsletter.
+Selected content shares one hourly summary, with no separate calendar mailing.
+The independent ICS subscription is unaffected.
+
+Consent snapshots preserve the choice recorded at request time. Historical
+snapshots from before the calendar topic have `events: null` in subscriber
+exports, meaning the separate choice was not recorded. They are not rewritten
+to claim that events were originally selected or rejected. New snapshots contain
+the explicit boolean, and later preference edits leave that evidence unchanged.
+Older pending requests use the current calendar default when confirmed, while
+their original snapshot remains intact.
+
 `GET /api/v1/privacy` returns the current information and `fingerprint`.
 Subscribe using:
 
@@ -54,6 +70,14 @@ the fingerprint from that read, or `null` when no policy exists. The endpoint
 requires the same origin and administrator session, validates all fields and
 records an audit event. Historical consent snapshots are never rewritten.
 A subscription form with an outdated fingerprint must refresh before submitting.
+
+The calendar-email migration extends the current default consent text and
+newsletter terms to explicitly include newly announced events. Each saved field
+is updated only when it exactly matches its previous default. Custom wording,
+policy version, approval, controller details, retention and saved edit metadata
+are preserved. Missing fields use the new application defaults. Historical
+`consent_notices` and recorded consent evidence keep their original text, and
+the current notice fingerprint changes with the updated wording.
 
 `OBEC_PRIVACY_CONFIG` points to initial JSON matching `config/privacy.example.json`.
 It provides a fallback until the first administrator save. Saved database settings

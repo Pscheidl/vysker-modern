@@ -191,6 +191,9 @@ async fn apply_snapshot(
             report.created += 1;
             id
         };
+        super::events::announce_once(&mut tx, event_id, now)
+            .await
+            .map_err(|e| anyhow::anyhow!(e.1))?;
         sqlx::query("INSERT INTO cez_outage_imports(event_id,town_code,last_seen_at) VALUES ($1,$2,$3)
                      ON CONFLICT(event_id) DO UPDATE SET last_seen_at=EXCLUDED.last_seen_at,missing_since=NULL")
             .bind(event_id).bind(&config.town_code).bind(now).execute(&mut *tx).await?;

@@ -354,7 +354,7 @@ async fn export_preserves_exact_old_snapshots_and_retained_smtp_metadata_without
     let wording = "Původní souhlas\nse zvláštními znaky <>& a původním účelem.";
     sqlx::query("INSERT INTO consent_notices(fingerprint,version,consent_text,privacy_json) VALUES ('old-proof','old-version',$1,$2)")
         .bind(wording).bind(privacy).execute(&app.state.pool).await.unwrap();
-    let old: i64 = sqlx::query_scalar("INSERT INTO subscription_consents(subscriber_id,notice_fingerprint,requested_at,confirmed_at,withdrawn_at,superseded_at) VALUES ($1,'old-proof',10,20,30,40) RETURNING id")
+    let old: i64 = sqlx::query_scalar("INSERT INTO subscription_consents(subscriber_id,notice_fingerprint,requested_at,confirmed_at,withdrawn_at,superseded_at,events) VALUES ($1,'old-proof',10,20,30,40,NULL) RETURNING id")
         .bind(id).fetch_one(&app.state.pool).await.unwrap();
     sqlx::query("UPDATE mail_queue SET attempts=3,lock_token='private-smtp-lease',locked_until=99 WHERE subscriber_id=$1")
         .bind(id).execute(&app.state.pool).await.unwrap();
@@ -393,6 +393,8 @@ async fn export_preserves_exact_old_snapshots_and_retained_smtp_metadata_without
     assert_eq!(snapshot["confirmed_at"], 20);
     assert_eq!(snapshot["withdrawn_at"], 30);
     assert_eq!(snapshot["superseded_at"], 40);
+    assert!(snapshot["events"].is_null());
+    assert_eq!(evidence["subscriber"]["events"], true);
     assert_eq!(evidence["mail_history"].as_array().unwrap().len(), 2);
     assert_eq!(evidence["mail_history"][0]["attempts"], 3);
     assert_eq!(evidence["mail_history"][1]["sent_at"], 20);

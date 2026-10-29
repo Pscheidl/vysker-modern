@@ -329,7 +329,7 @@ async fn one_recipient_can_drop_notices_and_still_receive_documents_in_the_same_
             .await
             .unwrap()
     );
-    sqlx::query("UPDATE subscribers SET all_notice_categories=FALSE,uncategorized_notices=FALSE,notice_category_ids='{}',documents=TRUE WHERE id=$1")
+    sqlx::query("UPDATE subscribers SET all_notice_categories=FALSE,uncategorized_notices=FALSE,notice_category_ids='{}',documents=TRUE,events=FALSE WHERE id=$1")
         .bind(recipient.0).execute(&app.state.pool).await.unwrap();
     let mut capture = Capture::new(false).await;
     let state = capture.backend(&app);

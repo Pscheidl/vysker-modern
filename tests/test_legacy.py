@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from legacy import Capture, canonical, digest, extract, source_key, event_timing, markdown, dates
 from bs4 import BeautifulSoup
 from legacy_import import fingerprint, import_bundle, load_bundle, prepare, skipped_page_scope
+from legacy_notifications import queue_publication
 from legacy_reconcile import reconcile, require_local_preview
 from legacy_reimport import reset_import, reset_library
 from legacy_scope import notice_values
@@ -122,7 +123,23 @@ def subscription_fixture(conn):
     return records
 
 
+def calendar_bundle(root):
+    data = bundle(root, document_links=False)
+    data['assets'] = []
+    data['pages'][0].update(title='Setkání', content='Setkání na návsi.',
+        event=dict(event_timing('1.10.2026 19:00'), location='Náves'))
+    (Path(root) / 'manifest.json').write_text(json.dumps(data))
+    return data
+
+
 class ExtractionTests(unittest.TestCase):
+    def test_notification_requires_exactly_one_publication_target(self):
+        for targets in ({}, {'notice_id': 1, 'document_id': 2},
+                        {'notice_id': 1, 'event_id': 3}, {'document_id': 2, 'event_id': 3},
+                        {'notice_id': 1, 'document_id': 2, 'event_id': 3}):
+            with self.subTest(targets=targets), self.assertRaisesRegex(ValueError, 'exactly one'):
+                queue_publication(None, '2026-10-01T10:00:00+00:00', **targets)
+
     def test_skip_pages_preserves_images_owned_transitively_by_calendar_aliases(self):
         items = [
             dict(key='a:1', kind='page', content='Akce', event={'location': 'Náves'}),
@@ -754,6 +771,69 @@ class ImportTests(unittest.TestCase):
             self.assertIn('/api/v1/attachments/', conn.execute('SELECT description FROM events').fetchone()[0])
             self.assertEqual(conn.execute('SELECT count(*) FROM pages').fetchone()[0], 0)
             self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
+
+    def test_calendar_import_snapshots_matching_active_subscribers_once(self):
+        data = calendar_bundle(self.root)
+        with connect(self.url) as conn:
+            subscribers = subscription_fixture(conn)
+            conn.execute('UPDATE subscribers SET events=FALSE WHERE id=%s', (subscribers['active_other'][0],))
+            result = import_bundle(conn, self.root, publish_content=True, sync=True)
+            event, announced_at = conn.execute('SELECT id,email_announced_at FROM events').fetchone()
+            self.assertEqual(announced_at, int(datetime.fromisoformat(result['imported_at']).timestamp()))
+            self.assertEqual(conn.execute('''SELECT notice_id,document_id,event_id,subscriber_id,consent_id,created_at
+                FROM publication_outbox ORDER BY id''').fetchall(),
+                [(None, None, event, *subscribers['active'], announced_at)])
+            self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
+            # Consumed work, newly opted-in recipients and local edits never backfill.
+            conn.execute('DELETE FROM publication_outbox')
+            conn.execute('UPDATE subscribers SET events=TRUE WHERE id=%s', (subscribers['active_other'][0],))
+            conn.execute('UPDATE subscribers SET verified_at=4 WHERE id=%s', (subscribers['pending'][0],))
+            conn.execute('UPDATE subscription_consents SET confirmed_at=4 WHERE id=%s', (subscribers['pending'][1],))
+            conn.execute("UPDATE events SET title='Místní úprava'")
+            repeated = import_bundle(conn, self.root, publish_content=True, sync=True)
+            self.assertEqual(repeated['new'], [])
+            data['pages'][0]['title'] = 'Změna na původním webu'
+            (Path(self.root) / 'manifest.json').write_text(json.dumps(data))
+            changed = import_bundle(conn, self.root, publish_content=True, sync=True)
+            self.assertEqual(changed['new'], [])
+            self.assertEqual(changed['pending_reviews'], 1)
+            self.assertEqual(conn.execute('SELECT title,email_announced_at FROM events').fetchone(),
+                             ('Místní úprava', announced_at))
+            self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox').fetchone()[0], 0)
+
+    def test_calendar_drafts_exclusions_and_preview_do_not_queue_notifications(self):
+        data = calendar_bundle(self.root)
+        for mode in ('draft', 'excluded', 'preview'):
+            with self.subTest(mode=mode), patch.dict(os.environ, LOCAL_PREVIEW_ENV), connect(self.url) as conn:
+                subscription_fixture(conn)
+                options = dict(publish_content=mode != 'draft')
+                if mode == 'excluded':
+                    options['notification_excluded_source_keys'] = {data['pages'][0]['key']}
+                if mode == 'preview':
+                    options.update(preview_notices=True, classify_navigation=True)
+                import_bundle(conn, self.root, **options)
+                published, announced_at = conn.execute('SELECT published,email_announced_at FROM events').fetchone()
+                self.assertEqual(published, mode != 'draft')
+                self.assertEqual(announced_at is None, mode == 'draft')
+                self.assertEqual(conn.execute('SELECT count(*) FROM legacy_event_announcements').fetchone()[0],
+                                 0 if mode == 'draft' else 1)
+                import_bundle(conn, self.root, publish_content=True, sync=True)
+                self.assertEqual(conn.execute('SELECT published,email_announced_at FROM events').fetchone(),
+                                 (published, announced_at))
+                self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox').fetchone()[0], 0)
+                conn.rollback()
+
+    def test_failed_calendar_import_rolls_back_event_marker_and_recipients(self):
+        calendar_bundle(self.root)
+        with connect(self.url) as conn:
+            subscription_fixture(conn)
+        with self.assertRaisesRegex(RuntimeError, 'rollback'), connect(self.url) as conn:
+            import_bundle(conn, self.root, publish_content=True)
+            self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox').fetchone()[0], 2)
+            raise RuntimeError('rollback')
+        with connect(self.url) as conn:
+            for table in ('events', 'legacy_sources', 'publication_outbox', 'legacy_event_announcements'):
+                self.assertEqual(conn.execute('SELECT count(*) FROM ' + table).fetchone()[0], 0)
 
     def test_file_notices_reconcile_idempotently_without_changing_documents(self):
         data=bundle(self.root)

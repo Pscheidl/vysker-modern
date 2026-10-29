@@ -22,7 +22,7 @@ STAGING = {'OBEC_PRODUCTION': 'false', 'OBEC_VEREJNA_URL': 'https://staging.exam
 TABLES = ('pages', 'page_revisions', 'page_images', 'documents', 'notices', 'events',
           'attachments', 'notice_events', 'legacy_sources', 'legacy_notice_imports',
           'legacy_sync_reviews', 'audit_log', 'administrators', 'subscribers', 'mail_settings',
-          'mail_queue', 'publication_outbox', 'mail_publication_items')
+          'mail_queue', 'publication_outbox', 'mail_publication_items', 'legacy_event_announcements')
 
 
 class StagingGuardTests(unittest.TestCase):
@@ -89,21 +89,76 @@ class ReplaceTests(unittest.TestCase):
         new_file = copy.deepcopy(self.data['assets'][1])
         new_file.update(url=FILE.replace('123', '789'), title='Nový dokument')
         self.data['assets'].append(new_file)
+        new_event = add_page(self.root, self.data,
+            '<div id="stred"><h1>Nová akce</h1><p>Na návsi.</p></div>',
+            'https://vysker.cz/nova-akce/a-2')
+        new_event['event'] = dict(event_timing('2.10.2026 19:00'), location='Náves')
         (Path(self.root) / 'manifest.json').write_text(json.dumps(self.data))
         with connect(self.url) as conn:
             recipient, _ = self.subscriber(conn, 'original@example.test')
             # A document removed from the library is still an existing publication.
             conn.execute("UPDATE documents SET status='archived'")
+            # An event hidden after its first public appearance stays announced.
+            conn.execute('UPDATE events SET published=FALSE')
             first = replace_import(conn, self.root, self.source_count, archive_notices=True, skip_pages=True)
-            queued = conn.execute('''SELECT coalesce(n.title,d.title),o.subscriber_id
+            queued = conn.execute('''SELECT coalesce(n.title,d.title,e.title),o.subscriber_id
                 FROM publication_outbox o LEFT JOIN notices n ON n.id=o.notice_id
-                LEFT JOIN documents d ON d.id=o.document_id ORDER BY 1''').fetchall()
-            self.assertEqual(queued, [('Nový dokument', recipient), ('Zápis', recipient)])
+                LEFT JOIN documents d ON d.id=o.document_id LEFT JOIN events e ON e.id=o.event_id
+                ORDER BY 1''').fetchall()
+            self.assertEqual(queued, [('Nová akce', recipient), ('Nový dokument', recipient), ('Zápis', recipient)])
             self.subscriber(conn, 'later@example.test')
             replace_import(conn, self.root, first['resulting_source_count'], archive_notices=True, skip_pages=True)
-            self.assertEqual(conn.execute('''SELECT coalesce(n.title,d.title),o.subscriber_id
+            self.assertEqual(conn.execute('''SELECT coalesce(n.title,d.title,e.title),o.subscriber_id
                 FROM publication_outbox o LEFT JOIN notices n ON n.id=o.notice_id
-                LEFT JOIN documents d ON d.id=o.document_id ORDER BY 1''').fetchall(), queued)
+                LEFT JOIN documents d ON d.id=o.document_id LEFT JOIN events e ON e.id=o.event_id
+                ORDER BY 1''').fetchall(), queued)
+
+    def test_replacement_preserves_pending_event_recipients_and_original_announcement(self):
+        with connect(self.url) as conn:
+            subscriber, consent = self.subscriber(conn, 'calendar-pending@example.test')
+            conn.execute('''UPDATE subscribers SET all_notice_categories=FALSE,uncategorized_notices=FALSE,
+                documents=FALSE WHERE id=%s''', (subscriber,))
+            old_event, original_announcement = conn.execute('SELECT id,email_announced_at FROM events').fetchone()
+            conn.execute('''INSERT INTO publication_outbox(event_id,subscriber_id,consent_id,created_at)
+                VALUES (%s,%s,%s,11)''', (old_event, subscriber, consent))
+            self.subscriber(conn, 'calendar-later@example.test')
+            replace_import(conn, self.root, self.source_count, archive_notices=True, skip_pages=True)
+            new_event, announcement = conn.execute('SELECT id,email_announced_at FROM events').fetchone()
+            self.assertNotEqual(new_event, old_event)
+            self.assertEqual(announcement, original_announcement)
+            self.assertEqual(conn.execute('''SELECT event_id,subscriber_id,consent_id,created_at
+                FROM publication_outbox WHERE event_id IS NOT NULL''').fetchall(),
+                [(new_event, subscriber, consent, 11)])
+
+    def test_omitted_event_returning_after_late_subscription_keeps_announcement_history(self):
+        original_event = next(item for item in self.data['pages'] if item.get('event'))
+        for restored_mode in ('sync', 'replacement', 'draft'):
+            with self.subTest(restored_mode=restored_mode), connect(self.url) as conn:
+                self.assertEqual(conn.execute('SELECT count(*) FROM subscribers').fetchone()[0], 0)
+                original_announcement = conn.execute('SELECT email_announced_at FROM events').fetchone()[0]
+                self.assertIsNotNone(original_announcement)
+                omitted = copy.deepcopy(self.data)
+                omitted['pages'] = [item for item in omitted['pages'] if item['key'] != original_event['key']]
+                (Path(self.root) / 'manifest.json').write_text(json.dumps(omitted))
+                result = replace_import(conn, self.root, self.source_count, archive_notices=True, skip_pages=True)
+                self.assertEqual(conn.execute('SELECT count(*) FROM events').fetchone()[0], 0)
+                self.assertEqual(conn.execute('SELECT count(*) FROM legacy_sources WHERE source_key=%s',
+                                             (original_event['key'],)).fetchone()[0], 0)
+                self.assertEqual(conn.execute('SELECT announced_at FROM legacy_event_announcements WHERE source_key=%s',
+                                             (original_event['key'],)).fetchone()[0], original_announcement)
+                self.subscriber(conn, 'joined-after-removal@example.test')
+                (Path(self.root) / 'manifest.json').write_text(json.dumps(self.data))
+                if restored_mode == 'replacement':
+                    replace_import(conn, self.root, result['resulting_source_count'],
+                                   archive_notices=True, skip_pages=True)
+                else:
+                    import_bundle(conn, self.root, publish_content=restored_mode == 'sync',
+                                  classify_navigation=True, archive_notices=True, skip_pages=True, sync=True)
+                self.assertEqual(conn.execute('SELECT published,email_announced_at FROM events').fetchone(),
+                                 (restored_mode != 'draft', original_announcement))
+                self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox WHERE event_id IS NOT NULL').fetchone()[0], 0)
+                self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
+                conn.rollback()
 
     def test_replacement_preserves_pending_recipients_and_mail_links_and_deduplication(self):
         with connect(self.url) as conn:
@@ -155,7 +210,7 @@ class ReplaceTests(unittest.TestCase):
             self.assertEqual(self.snapshot(conn), before)
 
     def test_replacement_refuses_retained_digest_membership_without_changing_records(self):
-        for kind in ('notice', 'document'):
+        for kind in ('notice', 'document', 'event'):
             for state in ('pending', 'sent', 'cancelled'):
                 with self.subTest(kind=kind, state=state), connect(self.url) as conn:
                     subscriber, consent = self.subscriber(conn, f'{kind}-{state}@example.test')

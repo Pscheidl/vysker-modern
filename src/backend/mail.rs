@@ -5,6 +5,7 @@ use lettre::{
 };
 use sqlx::PgConnection;
 use time::OffsetDateTime;
+use time_tz::{OffsetDateTimeExt, timezones::db::europe::PRAGUE};
 
 pub fn transport(s: &Backend) -> anyhow::Result<AsyncSmtpTransport<Tokio1Executor>> {
     s.config.validate_smtp_capture()?;
@@ -62,6 +63,7 @@ impl Worker {
 pub enum PublicationTarget {
     Notice(i64),
     Document(i64),
+    Event(i64),
 }
 
 /// Snapshot recipients in the same transaction that makes the content public.
@@ -71,21 +73,23 @@ pub async fn enqueue_publication(
     target: PublicationTarget,
     now: OffsetDateTime,
 ) -> Result<()> {
-    let (notice_id, document_id) = match target {
-        PublicationTarget::Notice(id) => (Some(id), None),
-        PublicationTarget::Document(id) => (None, Some(id)),
+    let (notice_id, document_id, event_id) = match target {
+        PublicationTarget::Notice(id) => (Some(id), None, None),
+        PublicationTarget::Document(id) => (None, Some(id), None),
+        PublicationTarget::Event(id) => (None, None, Some(id)),
     };
     sqlx::query(
-        "INSERT INTO publication_outbox (notice_id,document_id,subscriber_id,consent_id,created_at)
-         SELECT $1,$2,s.id,c.id,$3 FROM subscribers s
+        "INSERT INTO publication_outbox (notice_id,document_id,event_id,subscriber_id,consent_id,created_at)
+         SELECT $1,$2,$3,s.id,c.id,$4 FROM subscribers s
          JOIN subscription_consents c ON c.subscriber_id=s.id
          WHERE s.verified_at IS NOT NULL AND s.unsubscribed_at IS NULL
            AND c.confirmed_at IS NOT NULL AND c.withdrawn_at IS NULL AND c.superseded_at IS NULL
-           AND subscription_matches_publication(s.id,$1,$2)
+           AND subscription_matches_publication(s.id,$1,$2,$3)
          ORDER BY s.id,c.id ON CONFLICT DO NOTHING",
     )
     .bind(notice_id)
     .bind(document_id)
+    .bind(event_id)
     .bind(now.unix_timestamp())
     .execute(conn)
     .await?;
@@ -97,11 +101,65 @@ struct PublicationRequest {
     id: i64,
     notice_id: Option<i64>,
     document_id: Option<i64>,
+    event_id: Option<i64>,
     title: String,
     allowed: bool,
 }
 
 const DIGEST_FOOTER: &str = "\n\nOdběr lze odhlásit zde:\n";
+
+#[derive(sqlx::FromRow)]
+struct EventPublication {
+    title: String,
+    location: String,
+    starts_at: OffsetDateTime,
+    ends_at: OffsetDateTime,
+    all_day: bool,
+    start_time_known: bool,
+    end_time_known: bool,
+    end_date_known: bool,
+    repeat_every_14_days: bool,
+    repeat_until: Option<time::Date>,
+}
+
+impl EventPublication {
+    fn line(self, id: i64, public_url: &str) -> String {
+        // Share the public calendar's labels so legacy placeholder times never
+        // become advertised start or end times in email.
+        let event = crate::events::Event {
+            id,
+            title: self.title,
+            location: self.location,
+            starts_at: super::timestamp(self.starts_at.to_timezone(PRAGUE)),
+            ends_at: super::timestamp(self.ends_at.to_timezone(PRAGUE)),
+            all_day: self.all_day,
+            start_time_known: self.start_time_known,
+            end_time_known: self.end_time_known,
+            end_date_known: self.end_date_known,
+            repeat_every_14_days: self.repeat_every_14_days,
+            repeat_until: self.repeat_until.map(|date| date.to_string()),
+            ..Default::default()
+        };
+        let mut lines = vec![event.title.replace(['\r', '\n'], " ")];
+        if event.all_day && event.starts_at[..10] == event.ends_at[..10] {
+            lines.push(format!("Termín: {}", event.start_label()));
+        } else {
+            lines.push(format!("Začátek: {}", event.start_label()));
+            lines.push(format!("Konec: {}", event.end_label()));
+        }
+        if let Some(recurrence) = event.recurrence_label() {
+            lines.push(recurrence);
+        }
+        if !event.location.trim().is_empty() {
+            lines.push(format!(
+                "Místo: {}",
+                event.location.replace(['\r', '\n'], " ")
+            ));
+        }
+        lines.push(format!("{public_url}/kalendar/{id}"));
+        lines.join("\n")
+    }
+}
 
 async fn publication_line(
     conn: &mut PgConnection,
@@ -109,6 +167,16 @@ async fn publication_line(
     public_url: &str,
     now: OffsetDateTime,
 ) -> Result<String> {
+    if let Some(id) = request.event_id {
+        let event = sqlx::query_as::<_, EventPublication>(
+            "SELECT title,location,starts_at,ends_at,all_day,start_time_known,end_time_known,
+                end_date_known,repeat_every_14_days,repeat_until FROM events WHERE id=$1",
+        )
+        .bind(id)
+        .fetch_one(&mut *conn)
+        .await?;
+        return Ok(event.line(id, public_url));
+    }
     let (title, route, id) = if let Some(id) = request.notice_id {
         let record =
             sqlx::query_as::<_, super::notices::NoticeRecord>("SELECT * FROM notices WHERE id=$1")
@@ -129,11 +197,16 @@ async fn publication_line(
     ))
 }
 
-fn digest_content(lines: &[String], footer: &str) -> (String, String) {
+fn digest_content(lines: &[String], footer: &str, has_events: bool) -> (String, String) {
+    let (subject, description) = if has_events {
+        ("Souhrn novinek", "tyto novinky")
+    } else {
+        ("Souhrn nových dokumentů", "tyto dokumenty")
+    };
     (
-        format!("Vyskeř: Souhrn nových dokumentů ({})", lines.len()),
+        format!("Vyskeř: {subject} ({})", lines.len()),
         format!(
-            "Dobrý den,\n\nna webu Vyskeř byly zveřejněny tyto dokumenty:\n\n{}{DIGEST_FOOTER}{footer}",
+            "Dobrý den,\n\nna webu Vyskeř byly zveřejněny {description}:\n\n{}{DIGEST_FOOTER}{footer}",
             lines.join("\n\n")
         ),
     )
@@ -162,24 +235,27 @@ pub async fn prepare_publications(s: &Backend, now: OffsetDateTime) -> Result<bo
         return Ok(false);
     };
     let publications: Vec<PublicationRequest> = sqlx::query_as(
-        "SELECT o.id,o.notice_id,o.document_id,coalesce(n.title,d.title) AS title,
+        "SELECT o.id,o.notice_id,o.document_id,o.event_id,coalesce(n.title,d.title,e.title) AS title,
             (s.verified_at IS NOT NULL AND s.unsubscribed_at IS NULL
              AND c.subscriber_id=s.id AND c.confirmed_at IS NOT NULL
              AND c.withdrawn_at IS NULL AND c.superseded_at IS NULL
-             AND subscription_matches_publication(s.id,o.notice_id,o.document_id)
+             AND subscription_matches_publication(s.id,o.notice_id,o.document_id,o.event_id)
              AND (coalesce(n.status IN ('published','archived','withdrawn'),FALSE)
-                  OR coalesce(d.status='published',FALSE))
+                  OR coalesce(d.status='published',FALSE)
+                  OR coalesce(e.published AND NOT e.cancelled,FALSE))
              AND NOT EXISTS (SELECT 1 FROM mail_queue m WHERE m.deduplication_key=
-                 concat(CASE WHEN o.notice_id IS NOT NULL THEN 'notice' ELSE 'document' END,
-                        ':',coalesce(o.notice_id,o.document_id),':',o.subscriber_id))
+                 concat(CASE WHEN o.notice_id IS NOT NULL THEN 'notice'
+                             WHEN o.document_id IS NOT NULL THEN 'document' ELSE 'event' END,
+                        ':',coalesce(o.notice_id,o.document_id,o.event_id),':',o.subscriber_id))
              AND NOT EXISTS (SELECT 1 FROM mail_publication_items i
                  WHERE i.subscriber_id=o.subscriber_id
-                   AND (i.notice_id=o.notice_id OR i.document_id=o.document_id))) AS allowed
+                   AND (i.notice_id=o.notice_id OR i.document_id=o.document_id OR i.event_id=o.event_id))) AS allowed
          FROM publication_outbox o
          JOIN subscribers s ON s.id=o.subscriber_id
          JOIN subscription_consents c ON c.id=o.consent_id
          LEFT JOIN notices n ON n.id=o.notice_id
          LEFT JOIN documents d ON d.id=o.document_id
+         LEFT JOIN events e ON e.id=o.event_id
          WHERE o.subscriber_id=$1 AND o.consent_id=$2 AND o.created_at<$3
          ORDER BY o.created_at,o.id FOR UPDATE OF o",
     )
@@ -205,10 +281,13 @@ pub async fn prepare_publications(s: &Backend, now: OffsetDateTime) -> Result<bo
         .execute(&mut *tx)
         .await?;
         let footer = format!(
-            "{}/odber/odhlasit?token={secret}\n\nKategorie a obecné dokumenty si můžete vybrat zde:\n{}/odber/nastaveni?token={secret}",
+            "{}/odber/odhlasit?token={secret}\n\nTémata odběru si můžete vybrat zde:\n{}/odber/nastaveni?token={secret}",
             s.config.public_url, s.config.public_url
         );
-        let (subject, body) = digest_content(&lines, &footer);
+        let has_events = publications
+            .iter()
+            .any(|r| r.allowed && r.event_id.is_some());
+        let (subject, body) = digest_content(&lines, &footer, has_events);
         let mail_id: i64 = sqlx::query_scalar(
             "INSERT INTO mail_queue(subscriber_id,purpose,deduplication_key,subject,body,
                 next_attempt_at,created_at,consent_id,digest_cutoff)
@@ -225,13 +304,14 @@ pub async fn prepare_publications(s: &Backend, now: OffsetDateTime) -> Result<bo
         .await?;
         for request in publications.iter().filter(|r| r.allowed) {
             sqlx::query(
-                "INSERT INTO mail_publication_items(mail_id,subscriber_id,notice_id,document_id)
-                 VALUES ($1,$2,$3,$4)",
+                "INSERT INTO mail_publication_items(mail_id,subscriber_id,notice_id,document_id,event_id)
+                 VALUES ($1,$2,$3,$4,$5)",
             )
             .bind(mail_id)
             .bind(recipient)
             .bind(request.notice_id)
             .bind(request.document_id)
+            .bind(request.event_id)
             .execute(&mut *tx)
             .await?;
         }
@@ -284,12 +364,14 @@ async fn refresh_digest(
         return Ok(false);
     }
     let items: Vec<PublicationRequest> = sqlx::query_as(
-        "SELECT i.id,i.notice_id,i.document_id,coalesce(n.title,d.title) AS title,
-            (subscription_matches_publication(i.subscriber_id,i.notice_id,i.document_id)
+        "SELECT i.id,i.notice_id,i.document_id,i.event_id,coalesce(n.title,d.title,e.title) AS title,
+            (subscription_matches_publication(i.subscriber_id,i.notice_id,i.document_id,i.event_id)
              AND (coalesce(n.status IN ('published','archived','withdrawn'),FALSE)
-                  OR coalesce(d.status='published',FALSE))) AS allowed
+                  OR coalesce(d.status='published',FALSE)
+                  OR coalesce(e.published AND NOT e.cancelled,FALSE))) AS allowed
          FROM mail_publication_items i
          LEFT JOIN notices n ON n.id=i.notice_id LEFT JOIN documents d ON d.id=i.document_id
+         LEFT JOIN events e ON e.id=i.event_id
          WHERE i.mail_id=$1 AND i.subscriber_id=$2 AND i.suppressed=FALSE ORDER BY i.id",
     )
     .bind(message.id)
@@ -308,7 +390,8 @@ async fn refresh_digest(
         }
     }
     if !lines.is_empty() {
-        let (subject, body) = digest_content(&lines, &footer);
+        let has_events = items.iter().any(|r| r.allowed && r.event_id.is_some());
+        let (subject, body) = digest_content(&lines, &footer, has_events);
         sqlx::query("UPDATE mail_queue SET subject=$1,body=$2 WHERE id=$3 AND lock_token=$4")
             .bind(&subject)
             .bind(&body)
@@ -349,6 +432,7 @@ impl Pending {
         match kind {
             "notice" => Some(PublicationTarget::Notice(id)),
             "document" => Some(PublicationTarget::Document(id)),
+            "event" => Some(PublicationTarget::Event(id)),
             _ => None,
         }
     }
@@ -358,16 +442,18 @@ async fn matches_preferences(s: &Backend, message: &Pending) -> anyhow::Result<b
     if message.purpose != "document" {
         return Ok(true);
     }
-    let (notice_id, document_id) = match message.publication_target() {
-        Some(PublicationTarget::Notice(id)) => (Some(id), None),
-        Some(PublicationTarget::Document(id)) => (None, Some(id)),
+    let (notice_id, document_id, event_id) = match message.publication_target() {
+        Some(PublicationTarget::Notice(id)) => (Some(id), None, None),
+        Some(PublicationTarget::Document(id)) => (None, Some(id), None),
+        Some(PublicationTarget::Event(id)) => (None, None, Some(id)),
         None => return Ok(false),
     };
     Ok(
-        sqlx::query_scalar("SELECT subscription_matches_publication($1,$2,$3)")
+        sqlx::query_scalar("SELECT subscription_matches_publication($1,$2,$3,$4)")
             .bind(message.subscriber_id)
             .bind(notice_id)
             .bind(document_id)
+            .bind(event_id)
             .fetch_one(&s.pool)
             .await?,
     )

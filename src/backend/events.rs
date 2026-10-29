@@ -287,6 +287,38 @@ async fn require_editable(conn: &mut sqlx::PgConnection, id: i64) -> Result<()> 
     Ok(())
 }
 
+/// Claim the first public announcement even when it has no recipients yet.
+/// Edits, restored publications and later subscribers must not revive old news.
+pub(super) async fn announce_once(
+    conn: &mut sqlx::PgConnection,
+    id: i64,
+    now: OffsetDateTime,
+) -> Result<()> {
+    let claimed: Option<i64> = sqlx::query_scalar(
+        "UPDATE events SET email_announced_at=$2
+         WHERE id=$1 AND published AND NOT cancelled AND email_announced_at IS NULL
+         RETURNING id",
+    )
+    .bind(id)
+    .bind(now.unix_timestamp())
+    .fetch_optional(&mut *conn)
+    .await?;
+    if claimed.is_some() {
+        sqlx::query(
+            "INSERT INTO legacy_event_announcements(source_key,announced_at)
+             SELECT source_key,$2 FROM legacy_sources WHERE event_id=$1
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(id)
+        .bind(now.unix_timestamp())
+        .execute(&mut *conn)
+        .await?;
+        super::mail::enqueue_publication(conn, super::mail::PublicationTarget::Event(id), now)
+            .await?;
+    }
+    Ok(())
+}
+
 pub async fn create(
     State(s): State<Backend>,
     admin: Admin,
@@ -304,6 +336,7 @@ pub async fn create(
         .bind(timestamp(now)).bind(&input.category).bind(input.all_day)
         .bind(input.repeat_every_14_days).bind(value.repeat_until).fetch_one(&mut *tx).await?;
     audit(&mut tx, Some(admin.id), "created", "event", record.id, now).await?;
+    announce_once(&mut tx, record.id, now).await?;
     tx.commit().await?;
     Ok((StatusCode::CREATED, Json(record.into())))
 }
@@ -338,6 +371,7 @@ pub async fn update(
         return Err(version_mismatch(&mut tx, id).await?);
     };
     audit(&mut tx, Some(admin.id), "updated", "event", id, now).await?;
+    announce_once(&mut tx, id, now).await?;
     tx.commit().await?;
     Ok(Json(record.into()))
 }

@@ -28,7 +28,7 @@ pub fn Home() -> impl IntoView {
                     <div class="section-tools"><div class="segmented" role="group" aria-label="Zobrazit dokumenty">
                         <button class:active=move || !archive.get() aria-pressed=move || (!archive.get()).to_string() on:click=move |_| archive.set(false)>"Aktuální"</button>
                         <button class:active=move || archive.get() aria-pressed=move || archive.get().to_string() on:click=move |_| archive.set(true)>"Archiv"</button>
-                    </div><A href=super::site_url("/uredni-deska") attr:class="text-link">"Všechny dokumenty"<Icon name="external"/></A></div>
+                    </div><A href=super::site_url("/dokumenty") attr:class="text-link">"Všechny dokumenty"<Icon name="external"/></A></div>
                 </div>
                 <Suspense fallback=Loading>{move || board.get().map(|result| match result {
                     Ok(b) => {

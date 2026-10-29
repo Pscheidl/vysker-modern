@@ -44,7 +44,7 @@ async fn preferences(
     uncategorized: bool,
     documents: bool,
 ) {
-    sqlx::query("UPDATE subscribers SET all_notice_categories=$2,notice_category_ids=$3,uncategorized_notices=$4,documents=$5 WHERE id=$1")
+    sqlx::query("UPDATE subscribers SET all_notice_categories=$2,notice_category_ids=$3,uncategorized_notices=$4,documents=$5,events=FALSE WHERE id=$1")
         .bind(subscriber).bind(all_categories).bind(categories).bind(uncategorized).bind(documents)
         .execute(&app.state.pool).await.unwrap();
 }
@@ -370,6 +370,8 @@ async fn consent_preference_snapshot_is_immutable_before_and_after_confirmation(
             "UPDATE subscription_consents SET all_notice_categories=FALSE",
             "UPDATE subscription_consents SET uncategorized_notices=FALSE",
             "UPDATE subscription_consents SET documents=FALSE",
+            "UPDATE subscription_consents SET events=FALSE",
+            "UPDATE subscription_consents SET events=NULL",
         ] {
             let error = sqlx::query(statement)
                 .execute(&app.state.pool)
@@ -384,8 +386,8 @@ async fn consent_preference_snapshot_is_immutable_before_and_after_confirmation(
             .unwrap_err();
         assert!(error.to_string().contains("consent evidence is immutable"));
     }
-    let snapshot: (bool, Vec<i64>, bool, bool) = sqlx::query_as(
-        "SELECT all_notice_categories,notice_category_ids,uncategorized_notices,documents FROM subscription_consents")
+    let snapshot: (bool, Vec<i64>, bool, bool, Option<bool>) = sqlx::query_as(
+        "SELECT all_notice_categories,notice_category_ids,uncategorized_notices,documents,events FROM subscription_consents")
         .fetch_one(&app.state.pool).await.unwrap();
-    assert_eq!(snapshot, (true, vec![], true, true));
+    assert_eq!(snapshot, (true, vec![], true, true, Some(true)));
 }

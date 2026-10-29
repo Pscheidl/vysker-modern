@@ -401,7 +401,7 @@ pub fn Newsletter() -> impl IntoView {
     let privacy = Resource::new(|| (), |_| crate::catalog::load_privacy_notice());
     view! {<section class="newsletter" aria-labelledby="newsletter-title">
         <Icon name="mail" class="newsletter-icon"/>
-        <div class="newsletter-copy"><h2 id="newsletter-title">"Nové dokumenty do e-mailu"</h2><p>"Nové dokumenty posíláme v hodinovém souhrnu. Odběr je dobrovolný a aktivujete jej potvrzením e-mailové adresy."</p></div>
+        <div class="newsletter-copy"><h2 id="newsletter-title">"Nové dokumenty a akce do e-mailu"</h2><p>"Nové dokumenty a akce posíláme společně v hodinovém souhrnu. Odběr je dobrovolný a aktivujete jej potvrzením e-mailové adresy."</p></div>
         <Suspense fallback=||view!{<p role="status">"Načítám informace o odběru…"</p>}>
             {move || privacy.get().map(|result|match result {
                 Ok(Some(notice))=>view!{<NewsletterForm notice/>}.into_any(),
@@ -451,7 +451,7 @@ fn NewsletterForm(notice: crate::privacy::PrivacyNotice) -> impl IntoView {
             if input.report_validity() {
                 let selected = preferences.get_untracked();
                 if !selected.all_notice_categories && selected.notice_category_ids.is_empty()
-                    && !selected.uncategorized_notices && !selected.documents {
+                    && !selected.uncategorized_notices && !selected.documents && !selected.events {
                     selection_error.set(true);
                     if let Some(details) = preference_details.get_untracked() {
                         let _ = details.set_attribute("open", "");
@@ -469,7 +469,7 @@ fn NewsletterForm(notice: crate::privacy::PrivacyNotice) -> impl IntoView {
         <details node_ref=preference_details class="newsletter-preferences">
             <summary>"Co chcete dostávat"<span>{move ||{
                 let selected = preferences.get();
-                if selected.all_notice_categories && selected.uncategorized_notices && selected.documents {
+                if selected.all_notice_categories && selected.uncategorized_notices && selected.documents && selected.events {
                     "Všechny novinky"
                 } else { "Vlastní výběr" }
             }}</span></summary>
@@ -496,16 +496,17 @@ fn NewsletterForm(notice: crate::privacy::PrivacyNotice) -> impl IntoView {
                                     });
                                 }/><span>{category.name}</span></label>}
                             }).collect_view().into_any(),
-                            Err(_)=>view!{<p role="alert">"Jednotlivé kategorie se nepodařilo načíst. Můžete odebírat všechny kategorie nebo obecné dokumenty."</p>}.into_any(),
+                            Err(_)=>view!{<p role="alert">"Jednotlivé kategorie se nepodařilo načíst. Můžete odebírat všechny kategorie, obecné dokumenty nebo kalendář akcí."</p>}.into_any(),
                         })}
                     </Suspense>
                 </div>
                 <label class="newsletter-option"><input type="checkbox" name="uncategorized_notices" checked prop:checked=move ||preferences.get().uncategorized_notices on:change=move |ev|preferences.update(|selected|selected.uncategorized_notices = event_target_checked(&ev))/><span>"Úřední deska bez kategorie"</span></label>
                 <label class="newsletter-option"><input type="checkbox" name="documents" checked prop:checked=move ||preferences.get().documents on:change=move |ev|preferences.update(|selected|selected.documents = event_target_checked(&ev))/><span>"Obecné dokumenty"</span></label>
+                <label class="newsletter-option"><input type="checkbox" name="events" checked prop:checked=move ||preferences.get().events on:change=move |ev|preferences.update(|selected|selected.events = event_target_checked(&ev))/><span>"Kalendář akcí"</span></label>
             </fieldset>
             <p class="newsletter-preferences-help">"Výběr můžete později změnit odkazem v každém oznámení."</p>
         </details>
-        {move ||selection_error.get().then(||view!{<p role="alert" class="newsletter-message">"Vyberte alespoň jednu kategorii úřední desky, úřední desku bez kategorie nebo obecné dokumenty."</p>})}
+        {move ||selection_error.get().then(||view!{<p role="alert" class="newsletter-message">"Vyberte alespoň jednu kategorii úřední desky, úřední desku bez kategorie, obecné dokumenty nebo kalendář akcí."</p>})}
         <p class="newsletter-consent">{notice.consent_text}" "<A href=site_url("/ochrana-udaju")>"Ochrana údajů"</A></p>
         {move ||request.value().get().map(|result|view!{<p role=if result.is_ok(){"status"}else{"alert"} class="newsletter-message">{match &result{Ok(())=>"Pokud je potřeba odběr potvrdit, pošleme vám ověřovací e-mail. Zkontrolujte svou schránku.".to_owned(),Err(error)=>error.to_string()}}</p>})}
         <noscript><p>"Pro odeslání formuláře zapněte JavaScript."</p></noscript>

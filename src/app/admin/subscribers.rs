@@ -180,6 +180,7 @@ fn SubscriberDetail(
                     let evidence_json = serde_json::to_string_pretty(&value).unwrap_or_default();
                     view!{<p><strong>{address}</strong>" · "{state}</p>
                         <p>"Export obsahuje původní znění souhlasů, informace o soukromí platné při žádosti a uchovanou historii pošty. Nahlédnutí i stažení se zaznamenává do auditu."</p>
+                        <p>"U starších souhlasů hodnota events: null znamená, že se odběr kalendáře akcí v původní žádosti samostatně nevolil. Aktuální výběr je uložený zvlášť u odběratele."</p>
                         <p class="admin-caption">{note}</p>
                         <details><summary>"Zobrazit úplné důkazy v JSON"</summary><pre style="white-space: pre-wrap; overflow-wrap: anywhere">{evidence_json}</pre></details>
                         <a class="button secondary" href=format!("/api/v1/admin/subscribers/{id}/export?download=true") download=format!("odberatel-{id}.json") target="_blank" rel="noopener noreferrer">"Stáhnout soukromý export JSON"</a>
