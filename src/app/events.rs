@@ -15,6 +15,21 @@ use leptos_router::{
     hooks::{use_params_map, use_query_map},
 };
 
+const EVENT_MONTH_NAMES: [&str; 12] = [
+    "leden",
+    "únor",
+    "březen",
+    "duben",
+    "květen",
+    "červen",
+    "červenec",
+    "srpen",
+    "září",
+    "říjen",
+    "listopad",
+    "prosinec",
+];
+
 #[component]
 fn EventLoading() -> impl IntoView {
     view! {<div class="loading-state" role="status"><span class="loading-dot"></span>"Načítám akce…"</div>}
@@ -26,7 +41,11 @@ fn EventFailure(on_retry: Callback<()>) -> impl IntoView {
 }
 
 #[component]
-fn EventTimes(event: Event) -> impl IntoView {
+fn EventTimes(
+    event: Event,
+    #[prop(default = false)] detailed: bool,
+    #[prop(default = false)] compact: bool,
+) -> impl IntoView {
     let start = event.start_label();
     let end = event.end_label();
     let start_datetime = if event.start_time_known && !event.all_day {
@@ -41,7 +60,63 @@ fn EventTimes(event: Event) -> impl IntoView {
     } else {
         Some(event.display_end().chars().take(10).collect::<String>())
     };
-    view! {<p class="event-times"><span>"Začátek: "<time datetime=start_datetime>{start}</time></span><br/><span>"Konec: "<time datetime=end_datetime>{end}</time></span></p>}
+    if compact {
+        let same_day = event.display_start().get(..10) == event.display_end().get(..10);
+        let show_end = !(event.all_day && same_day && event.end_date_known);
+        let end = if same_day && event.end_date_known && event.end_time_known && !event.all_day {
+            time::OffsetDateTime::parse(
+                event.display_end(),
+                &time::format_description::well_known::Rfc3339,
+            )
+            .map(|date| format!("{:02}:{:02}", date.hour(), date.minute()))
+            .unwrap_or(end)
+        } else {
+            end
+        };
+        let end_prefix = if event.end_date_known {
+            "do "
+        } else {
+            "Konec: "
+        };
+        view! {<p class="event-times event-row-times"><Icon name="clock"/>
+            <span><span class="sr-only">"Začátek: "</span><time datetime=start_datetime>{start}</time>
+            {show_end.then(||view!{<span class="event-row-end">" "{end_prefix}<time datetime=end_datetime>{end}</time></span>})}</span>
+        </p>}.into_any()
+    } else if detailed {
+        view! {<dl class="event-times event-detail-times">
+            <div><dt><Icon name="clock"/>"Začátek"</dt><dd><time datetime=start_datetime>{start}</time></dd></div>
+            <div><dt><Icon name="clock"/>"Konec"</dt><dd><time datetime=end_datetime>{end}</time></dd></div>
+        </dl>}.into_any()
+    } else {
+        view! {<p class="event-times"><span>"Začátek: "<time datetime=start_datetime>{start}</time></span><br/><span>"Konec: "<time datetime=end_datetime>{end}</time></span></p>}.into_any()
+    }
+}
+
+#[component]
+fn EventDateTile(event: Event) -> impl IntoView {
+    let date = time::OffsetDateTime::parse(
+        event.display_start(),
+        &time::format_description::well_known::Rfc3339,
+    )
+    .ok();
+    date.map(|date| {
+        let month = EVENT_MONTH_NAMES[usize::from(u8::from(date.month())) - 1];
+        let weekday = [
+            "pondělí",
+            "úterý",
+            "středa",
+            "čtvrtek",
+            "pátek",
+            "sobota",
+            "neděle",
+        ][date.weekday().number_days_from_monday() as usize];
+        view! {<div class="event-date-tile" aria-hidden="true">
+            <span class="event-date-month">{month}</span>
+            <strong>{date.day()}</strong>
+            <span class="event-date-weekday">{weekday}</span>
+            <span class="event-date-year">{date.year()}</span>
+        </div>}
+    })
 }
 
 #[component]
@@ -49,25 +124,78 @@ fn EventRow(event: Event) -> impl IntoView {
     let href = site_url(&event.href());
     let export_url = site_url(&format!("/api/v1/events/{}/calendar.ics", event.id));
     let export_label = format!("Přidat do kalendáře: {}", event.title);
+    let detail_label = format!("Detail akce: {}", event.title);
+    let detail_href = href.clone();
     let times = event.clone();
+    let tile = event.clone();
     let recurrence = event.recurrence_label();
+    let category_icon = match event.category.as_str() {
+        "waste" => "bin",
+        "council" => "board",
+        "power_outage" => "info",
+        _ => "calendar",
+    };
     let export_hint = if event.repeat_every_14_days {
         "Jednorázová kopie celé řady opakování do kalendáře"
     } else {
         "Jednorázová kopie akce do kalendáře"
     };
-    view! {<article class="site-result event-row" class:is-cancelled=event.cancelled>
-        <div>{event.cancelled.then(||view!{<span class="status-badge warning">"Zrušeno"</span>})}
-            <h2><A href>{event.title}</A></h2>
-            {(event.category != "other").then(||view!{<p class="event-category">{category_label(&event.category)}</p>})}
-            <EventTimes event=times/>
-            {recurrence.map(|label|view!{<p class="event-recurrence field-note">{label}</p>})}
-            {(!event.location.is_empty()).then(||view!{<p><Icon name="pin"/>{event.location}</p>})}
-            <a class="button secondary event-row-calendar" href=export_url rel="external" type="text/calendar" aria-label=export_label title=export_hint>
+    view! {<article class="event-row" class:is-cancelled=event.cancelled>
+        <EventDateTile event=tile/>
+        <div class="event-row-main">
+            <div class="event-row-badges">
+                {(event.category != "other").then(||view!{<p class="event-category"><Icon name=category_icon/>{category_label(&event.category)}</p>})}
+                {event.cancelled.then(||view!{<span class="status-badge warning">"Zrušeno"</span>})}
+            </div>
+            <h3><A href>{event.title}</A></h3>
+            <div class="event-row-meta">
+                <EventTimes event=times compact=true/>
+                <p class="event-row-location"><Icon name="pin"/><span>{if event.location.is_empty() {"Místo bude upřesněno".into()} else {event.location}}</span></p>
+            </div>
+            {recurrence.map(|label|view!{<p class="event-recurrence"><Icon name="refresh"/><span>{label}</span></p>})}
+        </div>
+        <div class="event-row-actions">
+            <A href=detail_href attr:class="event-row-detail" attr:aria-label=detail_label>"Detail akce"<Icon/></A>
+            <a class="event-row-calendar" href=export_url rel="external" type="text/calendar" aria-label=export_label title=export_hint>
                 <Icon name="calendar"/>"Přidat do kalendáře"
             </a>
-        </div><Icon/>
+        </div>
     </article>}
+}
+
+#[component]
+fn CalendarAgenda(items: Vec<Event>) -> impl IntoView {
+    let mut months: Vec<(String, Vec<Event>)> = Vec::new();
+    for event in items.into_iter().take(EVENT_PAGE_SIZE as usize) {
+        let month = time::OffsetDateTime::parse(
+            event.display_start(),
+            &time::format_description::well_known::Rfc3339,
+        )
+        .map(|date| {
+            let name = EVENT_MONTH_NAMES[usize::from(u8::from(date.month())) - 1];
+            let mut letters = name.chars();
+            let capitalized = format!(
+                "{}{}",
+                letters.next().unwrap().to_uppercase(),
+                letters.as_str()
+            );
+            format!("{capitalized} {}", date.year())
+        })
+        .unwrap_or_else(|_| "Další termíny".into());
+        if let Some((_, events)) = months.last_mut().filter(|(label, _)| *label == month) {
+            events.push(event);
+        } else {
+            months.push((month, vec![event]));
+        }
+    }
+    view! {<div class="calendar-events">
+        {months.into_iter().map(|(month,events)|view!{
+            <section class="calendar-month" aria-label=month.clone()>
+                <h2 class="calendar-month-title">{month.clone()}</h2>
+                <div class="calendar-month-events">{events.into_iter().map(|event|view!{<EventRow event/>}).collect_view()}</div>
+            </section>
+        }).collect_view()}
+    </div>}
 }
 
 fn calendar_link(archived: bool, page: i64) -> String {
@@ -125,7 +253,7 @@ fn CalendarSubscriptions() -> impl IntoView {
     let url = Resource::new(|| (), |_| load_calendar_url());
     let query = use_query_map();
     view! {<details class="calendar-subscriptions" id="odber-kalendare" open=move ||query.get().get("odber").as_deref()==Some("1")>
-        <summary><Icon name="calendar"/><span>"Odebírat kalendář"</span></summary>
+        <summary aria-label="Odebírat kalendář"><Icon name="calendar"/><span class="calendar-subscription-label"><strong>"Odebírat kalendář"</strong><small>"Nové akce i změny ve vaší aplikaci"</small></span></summary>
         <div class="calendar-subscription-body">
             <p>"Odběr průběžně přenáší nové akce, změny termínů i zrušení. Vyberte celý kalendář nebo jen téma, které vás zajímá."</p>
             <Suspense fallback=||view!{<p role="status">"Načítám adresu kalendáře…"</p>}>
@@ -166,28 +294,33 @@ pub fn Calendar() -> impl IntoView {
                 .map(|items| (archived, page, items))
         },
     );
-    view! {<Title text="Kalendář akcí · Vyskeř"/><div class="page-width interior">
-        <PageHeading title="Dění na Vyskři." description="Setkání, události a praktické termíny na jednom místě." eyebrow="KALENDÁŘ AKCÍ"/>
+    view! {<Title text="Kalendář akcí · Vyskeř"/><div class="page-width interior calendar-page">
+        <div class="calendar-heading">
+            <PageHeading title="Dění na Vyskři." description="Setkání, události a praktické termíny na jednom místě." eyebrow="KALENDÁŘ AKCÍ"/>
+            <CalendarSubscriptions/>
+        </div>
         <Suspense fallback=|| ()>{move ||intro.get().and_then(Result::ok).flatten().map(|page|view!{
             <div class="markdown-content calendar-intro" inner_html=crate::markdown::render(&page.content)></div>
         })}</Suspense>
-        <CalendarSubscriptions/>
-        <nav class="page-tabs" aria-label="Období akcí">
+        <nav class="page-tabs calendar-periods" aria-label="Období akcí">
             <A href=site_url("/kalendar") attr:class=move ||if !query.get().0 {"selected"} else {""}>"Nadcházející a probíhající"</A>
             <A href=site_url("/kalendar?stav=archiv") attr:class=move ||if query.get().0 {"selected"} else {""}>"Archiv akcí"</A>
         </nav>
-        <p class="field-note">"Časy uvádíme v místním čase pro Vyskeř (Europe/Prague). U opakovaných akcí zobrazujeme nejbližší probíhající nebo nadcházející termín, v archivu poslední. Zrušené akce jsou označené."</p>
         <Suspense fallback=EventLoading>{move ||events.get().map(|result|match result {
             Err(_)=>view!{<EventFailure on_retry=Callback::new(move |_|events.refetch())/>}.into_any(),
             Ok((archived,page,items))=>{
                 let more=items.len()>EVENT_PAGE_SIZE as usize;
                 view!{
                     {if items.is_empty() {view!{<div class="empty-state"><Icon name="calendar"/><h2>{if archived {"V archivu zatím nejsou žádné akce"} else {"Nejsou zveřejněné žádné nadcházející akce"}}</h2>{(page>1).then(||view!{<A href=calendar_link(archived,1) attr:class="text-link">"Zpět na první stranu"</A>})}</div>}.into_any()}
-                    else {view!{<div class="document-list calendar-events">{items.into_iter().take(EVENT_PAGE_SIZE as usize).map(|event|view!{<EventRow event/>}).collect_view()}</div>}.into_any()}}
-                    <EventPager archived page more/>
+                    else {view!{<CalendarAgenda items/>}.into_any()}}
+                    {(page>1 || more).then(||view!{<EventPager archived page more/>})}
                 }.into_any()
             }
         })}</Suspense>
+        <div class="calendar-footnote">
+            <p><Icon name="clock"/>"Časy uvádíme v místním čase pro Vyskeř."</p>
+            <details class="calendar-notes"><summary>"Jak se zobrazují termíny"</summary><p>"U opakovaných akcí zobrazujeme nejbližší probíhající nebo nadcházející termín, v archivu poslední. Zrušené akce jsou označené. Časové pásmo je Europe/Prague."</p></details>
+        </div>
     </div>}
 }
 
@@ -204,32 +337,55 @@ pub fn EventDetail() -> impl IntoView {
         },
         load_event,
     );
-    view! {<div class="page-width interior prose event-detail">
+    view! {<div class="page-width interior event-detail">
         <A href=site_url("/kalendar") attr:class="back-link"><Icon name="back"/>"Zpět na kalendář"</A>
         <Suspense fallback=EventLoading>{move ||event.get().map(|result|match result {
             Err(_)=>view!{<EventFailure on_retry=Callback::new(move |_|event.refetch())/>}.into_any(),
             Ok(None)=>view!{<NotFound/>}.into_any(),
             Ok(Some(item))=>{
                 let times=item.clone();
+                let tile=item.clone();
                 let recurrence=item.recurrence_label();
                 let export_url=site_url(&format!("/api/v1/events/{}/calendar.ics",item.id));
                 view!{<Title text=format!("{} · Kalendář · Vyskeř", item.title)/>
-                    <header class="page-heading"><p class="eyebrow">"KALENDÁŘ AKCÍ"</p><h1>{item.title}</h1></header>
-                    {item.cancelled.then(||view!{<p class="info-banner warning"><Icon name="info"/><strong>{if item.repeat_every_14_days {"Celá řada opakování je zrušena."} else {"Akce je zrušena."}}</strong>" Termín ponecháváme pro informaci."</p>})}
-                    <EventTimes event=times/>
-                    {recurrence.map(|label|view!{<p class="event-recurrence field-note">{label}</p>})}
-                    <p class="event-category">{category_label(&item.category)}</p>
-                    <p class="field-note">"Místní čas pro Vyskeř (Europe/Prague)."</p>
-                    <p><strong>"Místo: "</strong>{if item.location.is_empty() {"Místo bude upřesněno".into()} else {item.location}}</p>
-                    <div class="event-description-text markdown-content" inner_html=crate::markdown::render(&item.description)></div>
-                    {item.source_url.map(|url|view!{<p class="field-note">"Zdroj: "<a class="text-link" href=url rel="external">"ČEZ Distribuce"</a></p>})}
-                    <section class="event-calendar-action" aria-label="Uložit akci do kalendáře">
-                        <a class="button secondary" href=export_url rel="external" type="text/calendar"><Icon name="calendar"/>"Přidat do kalendáře"</a>
-                        {item.repeat_every_14_days.then(||view!{<p>"Do kalendáře se přidá celá řada opakování každých 14 dní."</p>})}
-                        <p>"Akci můžete otevřít v kalendářové aplikaci. Pokud prohlížeč soubor ICS stáhne, otevřete jej. Ukládáte jednorázovou kopii, do které se pozdější změny automaticky nepřenesou."</p>
-                        {(!item.all_day && !item.start_time_known).then(||view!{<p>"Čas začátku není známý, proto bude kopie v kalendáři uvedena bez času."</p>})}
-                        <A href=site_url("/kalendar?odber=1#odber-kalendare") attr:class="text-link">"Chci odebírat kalendář i se změnami"<Icon name="external"/></A>
-                    </section>
+                    <header class="event-detail-heading">
+                        <EventDateTile event=tile/>
+                        <div class="event-heading-copy">
+                            <p class="eyebrow">"KALENDÁŘ AKCÍ"</p>
+                            <h1>{item.title}</h1>
+                            <p class="event-category"><Icon name="calendar"/>{category_label(&item.category)}</p>
+                        </div>
+                    </header>
+                    {item.cancelled.then(||view!{<div class="info-banner warning event-cancelled"><Icon name="info"/><div><strong>{if item.repeat_every_14_days {"Celá řada opakování je zrušena."} else {"Akce je zrušena."}}</strong><p>"Termín ponecháváme pro informaci."</p></div></div>})}
+                    <div class="event-detail-layout">
+                        <aside class="event-details-panel" aria-labelledby="event-facts-title">
+                            <h2 id="event-facts-title">"Kdy a kde"</h2>
+                            <EventTimes event=times detailed=true/>
+                            <dl class="event-location"><div><dt><Icon name="pin"/>"Místo konání"</dt><dd>{if item.location.is_empty() {"Místo bude upřesněno".into()} else {item.location}}</dd></div></dl>
+                            {recurrence.map(|label|view!{<p class="event-recurrence"><Icon name="refresh"/><span>{label}</span></p>})}
+                            <p class="event-timezone">"Místní čas pro Vyskeř (Europe/Prague)."</p>
+                            <section class="event-calendar-action" aria-label="Uložit akci do kalendáře">
+                                <a class="button primary event-save-calendar" href=export_url rel="external" type="text/calendar"><Icon name="calendar"/>"Přidat do kalendáře"</a>
+                                {item.repeat_every_14_days.then(||view!{<p>"Do kalendáře se přidá celá řada opakování každých 14 dní."</p>})}
+                                <p>"Uložíte jednorázovou kopii akce bez pozdějších změn."</p>
+                                <details class="event-calendar-help">
+                                    <summary>"Jak přidání do kalendáře funguje?"</summary>
+                                    <p>"Akci můžete otevřít v kalendářové aplikaci. Pokud prohlížeč soubor ICS stáhne, otevřete jej. Ukládáte jednorázovou kopii, do které se pozdější změny automaticky nepřenesou."</p>
+                                </details>
+                                {(!item.all_day && !item.start_time_known).then(||view!{<p>"Čas začátku není známý, proto bude kopie v kalendáři uvedena bez času."</p>})}
+                                <A href=site_url("/kalendar?odber=1#odber-kalendare") attr:class="text-link">"Chci odebírat kalendář i se změnami"<Icon name="external"/></A>
+                            </section>
+                        </aside>
+                        <section class="event-detail-content" aria-labelledby="event-description-title">
+                            <h2 id="event-description-title">"O akci"</h2>
+                            {if item.description.trim().is_empty() {
+                                view!{<p class="event-description-empty">"Podrobnosti o akci zatím nejsou zveřejněné."</p>}.into_any()
+                            } else {
+                                view!{<div class="event-description-text markdown-content" inner_html=crate::markdown::render(&item.description)></div>}.into_any()
+                            }}
+                            {item.source_url.map(|url|view!{<p class="event-source">"Zdroj: "<a href=url rel="external">"ČEZ Distribuce"<Icon name="external"/></a></p>})}
+                        </section>
+                    </div>
                 }.into_any()
             }
         })}</Suspense>
