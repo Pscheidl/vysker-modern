@@ -1,6 +1,7 @@
 //! Backendové API. SQL, hesla a SMTP jsou dostupné výhradně ve feature ssr.
 pub mod accounts;
 pub mod auth;
+pub mod calendar;
 pub mod documents;
 pub mod events;
 pub mod legacy;
@@ -190,6 +191,8 @@ pub fn router(state: Backend) -> Router {
             get(events::get).put(events::update).delete(events::delete),
         )
         .route("/api/v1/events", get(events::public_list))
+        .route("/api/v1/calendar.ics", get(calendar::feed))
+        .route("/api/v1/events/{id}/calendar.ics", get(calendar::single))
         .route("/api/v1/report-addresses", get(report_addresses::search))
         .route(
             "/api/v1/report-submission-token",

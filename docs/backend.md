@@ -420,9 +420,50 @@ Page, navigation, category and event updates require `expected_version`.
 | `GET, PUT, DELETE /admin/events/{id}` | Versioned event management |
 | `GET /events` | Published upcoming or archived events, pagination |
 | `GET /events/{id}` | Published event details |
+| `GET /events/{id}/calendar.ics` | One published event as inline iCalendar for the device to open |
+| `GET /calendar.ics` | Public calendar subscription, optionally filtered by `category` |
 | `GET /admin/subscribers` | Search, status filter, paginated list and count |
 | `GET /admin/subscribers/{id}/export` | Audited private JSON evidence export |
 | `POST /admin/subscribers/{id}/withdraw` | Withdraw with current password |
 | `DELETE /admin/subscribers/{id}` | Erase with current password |
+
+Calendar categories are `waste`, `culture`, `council` and `other` (the default).
+The optional `all_day` event field defaults to `false`. With `all_day=true`,
+`starts_at` and `ends_at` accept `YYYY-MM-DD` values and the end is the inclusive
+last date. Responses keep RFC3339 timestamps in Europe/Prague for compatibility.
+The iCalendar representation uses DATE values and an exclusive end date.
+Nonrepeating timed iCalendar values use UTC instants converted from the Prague input rules.
+
+`repeat_every_14_days` defaults to `false`. When enabled, `repeat_until` accepts
+an optional inclusive last start date in `YYYY-MM-DD` format. No end date means
+an indefinite series. The first occurrence remains in `starts_at` and `ends_at`.
+Public API responses add `occurrence_starts_at` and `occurrence_ends_at` for the
+nearest ongoing or future occurrence, or the final past occurrence for a finished
+series. Public pagination and ordering use those projected dates. Admin responses
+retain the original anchor without projection. Only finished finite series enter
+the archive. Changes and cancellation apply to the complete series.
+
+Repeating exports contain a single master VEVENT with the same stable UID and
+`RRULE:FREQ=WEEKLY;INTERVAL=2`. All-day repetitions preserve local date spans.
+Timed repetitions preserve the Prague start time and original elapsed duration
+across DST, with a `Europe/Prague` timezone definition. Nonexistent spring start
+times are omitted and ambiguous autumn starts use the first instant. Timed
+recurring anchors or explicit end dates outside 1996–2099, fractional seconds and
+the second instant of an ambiguous initial start are rejected. Each occurrence must be shorter than the
+14-day interval and an optional last start date cannot precede the anchor.
+
+Calendar feeds include published history as well as upcoming events, independent
+of the calendar page's pagination. Events have a stored UID that survives edits
+and changes to the site's public URL. Updates carry a new sequence and modification
+timestamp. Published cancelled events remain in the feed with `STATUS:CANCELLED`.
+Withdrawal, deletion and category changes leave minimal cancellation records for
+affected subscriptions. They carry no former title, description, location or URL.
+Never-published drafts do not appear in feeds or single-event exports.
+
+The configured `OBEC_VEREJNA_URL` supplies absolute subscription and detail links.
+Keep this address reachable for existing subscribers. Moving to a new hostname
+also requires preserving or redirecting old subscription URLs. Calendar providers
+control polling and display of cancellations, so verify actual provider behavior
+after the feed is available on a suitable public HTTPS address.
 
 See [editorial.md](editorial.md) for user workflows and [mail.md](mail.md) for SMTP.

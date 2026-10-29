@@ -157,6 +157,44 @@ when visitors need to know that an announced event will not take place.
 Drafts are not public. Introductory calendar text remains editable as the
 `kalendar` content page.
 
+Choose one calendar category when saving an event: **Svozy odpadu**, **Kulturní
+a společenské akce**, **Zasedání zastupitelstva** or **Ostatní**. These fixed
+calendar topics are separate from notice-board categories. Existing events
+start in **Ostatní** and can be classified in the same event editor.
+For a **Celodenní akce**, enter its first and last calendar dates, including the
+last day. A one-day event uses the same date in both fields.
+
+For a regular waste collection, enable **Opakovat každých 14 dní** and enter the
+first collection date. **Opakovat do** optionally limits the last permitted start
+date, including that date. Leave it empty for an ongoing schedule. The calendar,
+homepage and detail show the nearest upcoming or ongoing occurrence. A series
+enters the archive only after its last occurrence finishes. Editing or cancelling
+the record affects the whole series, individual exceptions are not supported.
+All-day events keep their local calendar dates. Timed events keep their Prague
+start time across clock changes and the original elapsed duration. A nonexistent
+spring start time is skipped and an ambiguous autumn start uses its first instant.
+
+**Přidat do kalendáře** in the calendar overview or on a public detail opens
+one iCalendar (`.ics`) event, including its repetition rule, without forcing a download. The browser and device
+settings determine whether it opens in a calendar application or downloads for
+the reader to open manually. It is a one-time copy. **Odebírat kalendář** on the
+calendar offers the whole calendar or one of the three topics above. The feed is generated from the same
+published event records and carries later edits and cancellations. No citizen
+registration or access to a reader's private calendar is needed.
+
+The reader's calendar provider controls refresh timing, so updates are not
+immediate. Reminders depend on the reader's application and settings. iPhone
+supports subscribing through a calendar link. Google Calendar requires the
+initial subscription through **Other calendars → From URL** in a desktop web
+browser, after which it can appear on the phone. Downloading and importing the
+whole feed as a file does not establish a subscription.
+
+Use a publicly reachable HTTPS address for remote subscriptions. A local preview
+can verify the interface and generated files, but cannot establish that Google's
+servers can retrieve the feed. Provider guidance:
+[Apple](https://support.apple.com/cs-cz/guide/iphone/iph3d1110d4/ios),
+[Google Calendar](https://support.google.com/calendar/answer/37100?co=GENIE.Platform%3DDesktop&hl=cs).
+
 ## Subscribers
 
 **Odběratelé** supports literal email search, status filters and pagination.

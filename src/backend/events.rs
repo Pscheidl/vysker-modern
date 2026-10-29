@@ -11,7 +11,10 @@ use axum::{
 };
 use serde::Deserialize;
 use sqlx::PgPool;
-use time::{OffsetDateTime, PrimitiveDateTime, UtcOffset, format_description::well_known::Rfc3339};
+use time::{
+    Date, Duration, OffsetDateTime, PrimitiveDateTime, UtcOffset,
+    format_description::well_known::Rfc3339,
+};
 use time_tz::{
     Offset, OffsetDateTimeExt, OffsetResult, PrimitiveDateTimeExt, TimeZone,
     timezones::db::europe::PRAGUE,
@@ -23,6 +26,10 @@ struct EventRecord {
     title: String,
     description: String,
     location: String,
+    category: String,
+    all_day: bool,
+    repeat_every_14_days: bool,
+    repeat_until: Option<Date>,
     starts_at: OffsetDateTime,
     ends_at: OffsetDateTime,
     start_time_known: bool,
@@ -41,6 +48,12 @@ impl From<EventRecord> for Event {
             title: record.title,
             description: record.description,
             location: record.location,
+            category: record.category,
+            all_day: record.all_day,
+            repeat_every_14_days: record.repeat_every_14_days,
+            repeat_until: record.repeat_until.map(|date| date.to_string()),
+            occurrence_starts_at: None,
+            occurrence_ends_at: None,
             starts_at: timestamp(record.starts_at.to_timezone(PRAGUE)),
             ends_at: timestamp(record.ends_at.to_timezone(PRAGUE)),
             start_time_known: record.start_time_known,
@@ -60,6 +73,7 @@ struct ValidatedEvent {
     location: String,
     starts_at: OffsetDateTime,
     ends_at: OffsetDateTime,
+    repeat_until: Option<Date>,
 }
 
 fn bounded_text(value: &str, limit: usize, required: bool, multiline: bool) -> Result<String> {
@@ -144,10 +158,85 @@ fn validate(input: &EventInput) -> Result<ValidatedEvent> {
     let title = bounded_text(&input.title, EVENT_TITLE_LIMIT, true, false)?;
     let location = bounded_text(&input.location, EVENT_LOCATION_LIMIT, false, false)?;
     let description = bounded_text(&input.description, EVENT_DESCRIPTION_LIMIT, false, true)?;
-    let starts_at = parse_event_datetime(&input.starts_at)?;
-    let ends_at = parse_event_datetime(&input.ends_at)?;
+    if !crate::events::EVENT_CATEGORIES
+        .iter()
+        .any(|(key, _)| *key == input.category)
+    {
+        return Err(bad("Vyberte platnou kategorii akce."));
+    }
+    let (starts_at, ends_at) = if input.all_day {
+        let start = time::Date::parse(
+            &input.starts_at,
+            time::macros::format_description!("[year]-[month]-[day]"),
+        )
+        .map_err(|_| bad("Zadejte platné datum celodenní akce."))?;
+        let end = time::Date::parse(
+            &input.ends_at,
+            time::macros::format_description!("[year]-[month]-[day]"),
+        )
+        .map_err(|_| bad("Zadejte platné datum celodenní akce."))?;
+        if end.next_day().is_none_or(|date| date.year() > 9999) {
+            return Err(bad("Konec akce přesahuje podporovaný rozsah."));
+        }
+        (
+            parse_event_datetime(&format!("{start}T00:00"))?,
+            parse_event_datetime(&format!("{end}T23:59:59"))?,
+        )
+    } else {
+        (
+            parse_event_datetime(&input.starts_at)?,
+            parse_event_datetime(&input.ends_at)?,
+        )
+    };
     if ends_at < starts_at {
         return Err(bad("Konec akce nesmí být před začátkem."));
+    }
+    let repeat_until = input
+        .repeat_until
+        .as_deref()
+        .map(|value| {
+            Date::parse(
+                value,
+                time::macros::format_description!("[year]-[month]-[day]"),
+            )
+            .map_err(|_| bad("Zadejte platné datum ukončení opakování."))
+        })
+        .transpose()?;
+    if !input.repeat_every_14_days && repeat_until.is_some() {
+        return Err(bad("Datum ukončení lze nastavit pouze u opakované akce."));
+    }
+    if input.repeat_every_14_days {
+        let start = starts_at.to_timezone(PRAGUE);
+        let end = ends_at.to_timezone(PRAGUE);
+        let local_start = PrimitiveDateTime::new(start.date(), start.time());
+        let local_end = PrimitiveDateTime::new(end.date(), end.time());
+        if local_end - local_start >= Duration::days(14)
+            || (input.all_day && (end.date() - start.date()).whole_days() + 1 >= 14)
+        {
+            return Err(bad("Opakovaná akce musí trvat méně než 14 dní."));
+        }
+        if repeat_until.is_some_and(|until| until < start.date() || until.year() > 9999) {
+            return Err(bad("Opakování nesmí končit před prvním termínem akce."));
+        }
+        if !input.all_day {
+            if !(1996..=2099).contains(&start.year())
+                || repeat_until.is_some_and(|until| until.year() > 2099)
+            {
+                return Err(bad(
+                    "U opakované akce s časem zadejte začátek a případné ukončení v letech 1996 až 2099.",
+                ));
+            }
+            if start.nanosecond() != 0 || end.nanosecond() != 0 {
+                return Err(bad("Časy opakované akce musí být uvedeny na celé sekundy."));
+            }
+            if let OffsetResult::Ambiguous(first, second) = local_start.assume_timezone(PRAGUE) {
+                if start != first.min(second) {
+                    return Err(bad(
+                        "Opakovaná akce při změně na zimní čas musí začínat v prvním výskytu daného času (+02:00).",
+                    ));
+                }
+            }
+        }
     }
     Ok(ValidatedEvent {
         title,
@@ -155,6 +244,7 @@ fn validate(input: &EventInput) -> Result<ValidatedEvent> {
         location,
         starts_at,
         ends_at,
+        repeat_until,
     })
 }
 
@@ -189,10 +279,11 @@ pub async fn create(
     }
     let now = OffsetDateTime::now_utc();
     let mut tx = crate::db::begin_write(&s.pool).await?;
-    let record: EventRecord = sqlx::query_as("INSERT INTO events(title,description,location,starts_at,ends_at,published,cancelled,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *")
+    let record: EventRecord = sqlx::query_as("INSERT INTO events(title,description,location,starts_at,ends_at,published,cancelled,updated_at,category,all_day,repeat_every_14_days,repeat_until) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *")
         .bind(value.title).bind(value.description).bind(value.location)
         .bind(value.starts_at).bind(value.ends_at).bind(input.published).bind(input.cancelled)
-        .bind(timestamp(now)).fetch_one(&mut *tx).await?;
+        .bind(timestamp(now)).bind(&input.category).bind(input.all_day)
+        .bind(input.repeat_every_14_days).bind(value.repeat_until).fetch_one(&mut *tx).await?;
     audit(&mut tx, Some(admin.id), "created", "event", record.id, now).await?;
     tx.commit().await?;
     Ok((StatusCode::CREATED, Json(record.into())))
@@ -208,10 +299,21 @@ pub async fn update(
     let version = expected_version(input.expected_version)?;
     let now = OffsetDateTime::now_utc();
     let mut tx = crate::db::begin_write(&s.pool).await?;
-    let record: Option<EventRecord> = sqlx::query_as("UPDATE events SET title=$1,description=$2,location=$3,start_time_known=start_time_known OR starts_at IS DISTINCT FROM $4,end_time_known=end_time_known OR ends_at IS DISTINCT FROM $5,end_date_known=end_date_known OR ends_at IS DISTINCT FROM $5,starts_at=$4,ends_at=$5,published=$6,cancelled=$7,updated_at=$8,version=version+1 WHERE id=$9 AND version=$10 RETURNING *")
+    if input.repeat_every_14_days && !input.all_day {
+        let unknown_precision: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM events WHERE id=$1 AND version=$2 AND (NOT (start_time_known OR starts_at IS DISTINCT FROM $3 OR all_day) OR NOT (end_time_known OR ends_at IS DISTINCT FROM $4 OR all_day) OR NOT (end_date_known OR ends_at IS DISTINCT FROM $4)))"
+        ).bind(id).bind(version).bind(value.starts_at).bind(value.ends_at).fetch_one(&mut *tx).await?;
+        if unknown_precision {
+            return Err(bad(
+                "Před zapnutím opakování doplňte přesný začátek a konec akce, nebo zvolte celodenní akci.",
+            ));
+        }
+    }
+    let record: Option<EventRecord> = sqlx::query_as("UPDATE events SET title=$1,description=$2,location=$3,start_time_known=start_time_known OR starts_at IS DISTINCT FROM $4 OR all_day IS DISTINCT FROM $12 OR $12,end_time_known=end_time_known OR ends_at IS DISTINCT FROM $5 OR all_day IS DISTINCT FROM $12 OR $12,end_date_known=end_date_known OR ends_at IS DISTINCT FROM $5 OR $12,starts_at=$4,ends_at=$5,published=$6,cancelled=$7,updated_at=$8,version=version+1,category=$11,all_day=$12,repeat_every_14_days=$13,repeat_until=$14 WHERE id=$9 AND version=$10 RETURNING *")
         .bind(value.title).bind(value.description).bind(value.location)
         .bind(value.starts_at).bind(value.ends_at).bind(input.published).bind(input.cancelled)
-        .bind(timestamp(now)).bind(id).bind(version).fetch_optional(&mut *tx).await?;
+        .bind(timestamp(now)).bind(id).bind(version).bind(&input.category).bind(input.all_day)
+        .bind(input.repeat_every_14_days).bind(value.repeat_until).fetch_optional(&mut *tx).await?;
     let Some(record) = record else {
         return Err(version_mismatch(&mut tx, id).await?);
     };
@@ -295,27 +397,139 @@ pub async fn public_events_from_pool(
         offset: Some(offset),
     }
     .bounds()?;
+    // Project recurring series before final ordering and pagination. The first
+    // limit + offset individual events are enough to fill the combined page.
     let query = if archived {
-        "SELECT * FROM events WHERE published=TRUE AND ends_at<$1 ORDER BY starts_at DESC,id DESC LIMIT $2 OFFSET $3"
+        "(SELECT * FROM events WHERE published=TRUE AND repeat_every_14_days=FALSE AND ends_at<$1 ORDER BY starts_at DESC,id DESC LIMIT $2) UNION ALL (SELECT * FROM events WHERE published=TRUE AND repeat_every_14_days=TRUE)"
     } else {
-        "SELECT * FROM events WHERE published=TRUE AND ends_at>=$1 ORDER BY starts_at,id LIMIT $2 OFFSET $3"
+        "(SELECT * FROM events WHERE published=TRUE AND repeat_every_14_days=FALSE AND ends_at>=$1 ORDER BY starts_at,id LIMIT $2) UNION ALL (SELECT * FROM events WHERE published=TRUE AND repeat_every_14_days=TRUE)"
     };
     let records: Vec<EventRecord> = sqlx::query_as(query)
         .bind(now)
-        .bind(limit)
-        .bind(offset)
+        .bind(limit + offset)
         .fetch_all(pool)
         .await?;
-    Ok(records.into_iter().map(Into::into).collect())
+    let mut occurrences: Vec<_> = records
+        .into_iter()
+        .filter_map(|record| {
+            let (start, end) = displayed_occurrence(&record, now);
+            if (end < now) != archived {
+                return None;
+            }
+            let event = public_event(record, start, end);
+            Some((start, event.id, event))
+        })
+        .collect();
+    occurrences.sort_unstable_by(|a, b| {
+        let order = a.0.cmp(&b.0).then(a.1.cmp(&b.1));
+        if archived { order.reverse() } else { order }
+    });
+    Ok(occurrences
+        .into_iter()
+        .skip(offset as usize)
+        .take(limit as usize)
+        .map(|(_, _, event)| event)
+        .collect())
 }
 
-pub async fn public_event_from_pool(pool: &PgPool, id: i64) -> Result<Option<Event>> {
+fn public_event(record: EventRecord, start: OffsetDateTime, end: OffsetDateTime) -> Event {
+    let repeating = record.repeat_every_14_days;
+    let mut event: Event = record.into();
+    if repeating {
+        event.occurrence_starts_at = Some(timestamp(start.to_timezone(PRAGUE)));
+        event.occurrence_ends_at = Some(timestamp(end.to_timezone(PRAGUE)));
+    }
+    event
+}
+
+/// RFC 5545 ignores nonexistent recurrence starts and chooses the first instant
+/// when the wall clock repeats. Timed instances retain the original exact duration.
+fn recurrence_at(record: &EventRecord, index: i64) -> Option<(OffsetDateTime, OffsetDateTime)> {
+    if index == 0 {
+        return Some((record.starts_at, record.ends_at));
+    }
+    let anchor = record.starts_at.to_timezone(PRAGUE);
+    let date = anchor
+        .date()
+        .checked_add(Duration::days(index.checked_mul(14)?))?;
+    if date.year() > 9999 {
+        return None;
+    }
+    let start = match PrimitiveDateTime::new(date, anchor.time()).assume_timezone(PRAGUE) {
+        OffsetResult::Some(value) => value,
+        OffsetResult::Ambiguous(first, second) => first.min(second),
+        OffsetResult::None => return None,
+    };
+    let end = if record.all_day {
+        let anchor_end = record.ends_at.to_timezone(PRAGUE);
+        let end_date = date.checked_add(anchor_end.date() - anchor.date())?;
+        match PrimitiveDateTime::new(end_date, anchor_end.time()).assume_timezone(PRAGUE) {
+            OffsetResult::Some(value) => value,
+            OffsetResult::Ambiguous(first, second) => first.min(second),
+            OffsetResult::None => return None,
+        }
+    } else {
+        start.checked_add(record.ends_at - record.starts_at)?
+    };
+    if end.to_timezone(PRAGUE).year() > 9999 {
+        return None;
+    }
+    Some((start, end))
+}
+
+fn displayed_occurrence(
+    record: &EventRecord,
+    now: OffsetDateTime,
+) -> (OffsetDateTime, OffsetDateTime) {
+    if !record.repeat_every_14_days {
+        return (record.starts_at, record.ends_at);
+    }
+    let anchor_date = record.starts_at.to_timezone(PRAGUE).date();
+    let final_date = record
+        .repeat_until
+        .unwrap_or(time::macros::date!(9999 - 12 - 31));
+    let last_index = ((final_date - anchor_date).whole_days() / 14).max(0);
+    // Include the preceding instance because the current instance may not have
+    // started yet, while a long previous one is still ongoing around a DST shift.
+    let estimate = ((now.to_timezone(PRAGUE).date() - anchor_date)
+        .whole_days()
+        .div_euclid(14))
+    .max(0)
+    .saturating_sub(1)
+    .min(last_index);
+    for index in estimate..=last_index {
+        if let Some((start, end)) = recurrence_at(record, index) {
+            if end >= now {
+                return (start, end);
+            }
+        }
+    }
+    for index in (0..=last_index).rev() {
+        if let Some(occurrence) = recurrence_at(record, index) {
+            return occurrence;
+        }
+    }
+    (record.starts_at, record.ends_at)
+}
+
+pub async fn public_event_from_pool_at(
+    pool: &PgPool,
+    id: i64,
+    now: OffsetDateTime,
+) -> Result<Option<Event>> {
     let record: Option<EventRecord> =
         sqlx::query_as("SELECT * FROM events WHERE id=$1 AND published=TRUE")
             .bind(id)
             .fetch_optional(pool)
             .await?;
-    Ok(record.map(Into::into))
+    Ok(record.map(|record| {
+        let (start, end) = displayed_occurrence(&record, now);
+        public_event(record, start, end)
+    }))
+}
+
+pub async fn public_event_from_pool(pool: &PgPool, id: i64) -> Result<Option<Event>> {
+    public_event_from_pool_at(pool, id, OffsetDateTime::now_utc()).await
 }
 
 pub async fn public_list(

@@ -23,7 +23,8 @@ internal `_sqlx_migrations` table are exceptions. Municipal content stays Czech.
 | `page_images` | Page-owned image bytes, decoded dimensions, MIME type, SHA-256 and uploader |
 | `page_revisions` | Immutable authored versions and author references |
 | `navigation_items` | Ordered links to local pages, with optional `parent_id` for one submenu level |
-| `events` | Structured calendar, publication and cancellation |
+| `events` | Structured calendar, category, all-day dates, fortnightly repetition, stable calendar UID, publication and cancellation |
+| `calendar_withdrawals` | Minimal cancellation records for removed events and former calendar topics |
 | `password_resets` | Hashed single-use recovery tokens |
 | `recovery_mail` | Durable security mail and 30-day SMTP history |
 | `administrators` | Accounts with salted Argon2id password hashes |
