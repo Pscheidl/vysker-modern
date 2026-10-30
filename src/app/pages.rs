@@ -17,7 +17,7 @@ pub fn Home() -> impl IntoView {
         <div class="page-width">
             <section class="hero hero-chapel" aria-labelledby="home-title">
                 <div class="hero-copy"><h1 id="home-title">"Vyskeř"<span>"."</span></h1><p>"Obec v Českém ráji"</p></div>
-                <div class="terrain terrain-chapel" aria-hidden="true"><img class="terrain-light" src=super::site_url("/images/chapel-ceramic-light.png") alt="" width="1536" height="1024" fetchpriority="high"/><img class="terrain-dark" src=super::site_url("/images/chapel-ceramic-dark.png") alt="" width="1536" height="1024"/></div>
+                <div class="terrain terrain-chapel" aria-hidden="true"><img class="terrain-light" src=super::site_url("/images/chapel-hura-light.webp") alt="" width="1420" height="1108" fetchpriority="high"/><img class="terrain-dark" src=super::site_url("/images/chapel-hura-dark.webp") alt="" width="1420" height="1108"/></div>
                 <div class="hero-date"><Suspense fallback=|| ()>{move || board.get().and_then(Result::ok).map(|b| b.today)}</Suspense></div>
             </section>
             <SearchBox/><Shortcuts/>
