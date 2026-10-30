@@ -6,12 +6,12 @@ Revision of the approved ceramic illustration style, dated 29 September 2026.
 
 - [Light relief](../../public/images/relief-vysker-light.png), 2172 × 724 px, transparent PNG.
 - [Dark relief](../../public/images/relief-vysker-dark.png), 2171 × 724 px, transparent PNG.
-- [Coat of arms proposal](../../public/images/vysker-znak-render.webp) and [favicon](../../public/images/vysker-znak-favicon-128.png), a rendered interpretation of the municipal coat of arms.
+- [Coat of arms proposal](../../public/images/vysker-znak-mat-render.webp) and [favicon](../../public/images/vysker-znak-mat-favicon-128.png), a rendered interpretation of the municipal coat of arms.
 - [Green relief filter](../../public/images/relief-accent.svg), shared with Za Vyskeř.
 
 Since 1 October 2026, the site uses the green identity from
 [Za Vyskeř](https://zavysker.cz/). The relief filter was copied from the local `zavysker/assets/img` directory.
-The current mark is a rendered interpretation of the municipal coat of arms,
+The current mark is a matte, softly shaded interpretation of the municipal coat of arms,
 using its green field, silver crenellated chief, pointed arch and fleur-de-lis.
 The same motif is used in the public header, administration, favicon and touch
 icon. The design is a local proposal, not an official municipal rendering.

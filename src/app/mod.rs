@@ -50,9 +50,9 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <meta charset="utf-8"/>
                 <meta name="viewport" content="width=device-width, initial-scale=1"/>
                 <meta name="color-scheme" content="light dark"/>
-                <link rel="icon" type="image/png" sizes="32x32" href="/images/vysker-znak-favicon-32.png"/>
-                <link rel="icon" type="image/png" sizes="128x128" href="/images/vysker-znak-favicon-128.png"/>
-                <link rel="apple-touch-icon" href="/images/vysker-znak-apple-touch-icon.png"/>
+                <link rel="icon" type="image/png" sizes="32x32" href="/images/vysker-znak-mat-favicon-32.png"/>
+                <link rel="icon" type="image/png" sizes="128x128" href="/images/vysker-znak-mat-favicon-128.png"/>
+                <link rel="apple-touch-icon" href="/images/vysker-znak-mat-apple-touch-icon.png"/>
                 <link rel="manifest" href="/manifest.webmanifest"/>
                 <meta name="theme-color" content="#fdfdfd"/>
                 <script src="/install.js" defer></script>

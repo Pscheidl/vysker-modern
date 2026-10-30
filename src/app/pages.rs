@@ -54,7 +54,7 @@ pub fn InstallApp() -> impl IntoView {
         <div class="page-width interior install-page">
             <PageHeading title="Vyskeř na ploše telefonu." description="Přidejte si web na plochu a mějte informace o obci vždy po ruce." eyebrow="PŘIDAT NA PLOCHU"/>
             <div class="install-intro">
-                <img src=super::site_url("/images/vysker-znak-apple-touch-icon.png") width="88" height="88" alt="Ikona webu Vyskeř"/>
+                <img src=super::site_url("/images/vysker-znak-mat-apple-touch-icon.png") width="88" height="88" alt="Ikona webu Vyskeř"/>
                 <div><h2>"Vyskeř"</h2><p>"Na ploše telefonu se zobrazí ikona se znakem Vyskeře. Web otevřete klepnutím stejně jako ostatní aplikace."</p></div>
             </div>
             <button type="button" class="app-install-button" data-app-install-button hidden><Icon name="download"/>"Nainstalovat jako aplikaci"</button>
