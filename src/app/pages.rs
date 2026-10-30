@@ -13,10 +13,10 @@ pub fn Home() -> impl IntoView {
     let board = expect_context::<BoardResource>();
     let archive = RwSignal::new(false);
     view! {
-        <Title text="Vyskeř · Obec v Českém ráji"/>
+        <Title text="Vyskeř · Srdce Českého ráje"/>
         <div class="page-width">
             <section class="hero hero-chapel" aria-labelledby="home-title">
-                <div class="hero-copy"><h1 id="home-title">"Vyskeř"<span>"."</span></h1><p>"Obec v Českém ráji"</p></div>
+                <div class="hero-copy"><h1 id="home-title">"Vyskeř"<span>"."</span></h1><p>"Srdce Českého ráje"</p></div>
                 <div class="terrain terrain-chapel" aria-hidden="true"><img class="terrain-light" src=super::site_url("/images/chapel-hura-light.webp") alt="" width="1420" height="1108" fetchpriority="high"/><img class="terrain-dark" src=super::site_url("/images/chapel-hura-dark.webp") alt="" width="1420" height="1108"/></div>
                 <div class="hero-date"><Suspense fallback=|| ()>{move || board.get().and_then(Result::ok).map(|b| b.today)}</Suspense></div>
             </section>
@@ -42,6 +42,95 @@ pub fn Home() -> impl IntoView {
             </div>
         </section>
         <div class="page-width"><Newsletter/><HomeEvents/></div>
+    }
+}
+
+#[component]
+pub fn Relief() -> impl IntoView {
+    view! {
+        <Title text="Vyskeř z výšky · Vyskeř"/>
+        <div class="page-width interior relief-page">
+            <PageHeading title="Vyskeř z výšky." description="Prohlédněte si krajinu obce a jejích šesti částí v prostorovém modelu." eyebrow="NAŠE OBEC V PROSTORU"/>
+            <ReliefWidget/>
+            <section class="relief-details" aria-labelledby="relief-about"><h2 id="relief-about">"O modelu"</h2>
+                <p>"Zelená čára vyznačuje hranici obce. Půdorysy budov vycházejí z katastrální mapy, podlaží u části domů z mapových dat. Střechy, okna a barvy jsou stylizované. Výšky terénu jsou zvýrazněné."</p>
+                <p>"Podklady: "<a href="https://ags.cuzk.gov.cz/opendata/">"ČÚZK"</a>" · "<a href="https://creativecommons.org/licenses/by/4.0/deed.cs">"CC BY 4.0"</a>" a "<a href="https://www.openstreetmap.org/copyright">"© přispěvatelé OpenStreetMap, ODbL"</a>". Model používá "<a href=super::site_url("/relief/THREE-LICENSE.txt")>"Three.js"</a>"."</p>
+            </section>
+        </div>
+    }
+}
+
+// One widget per page keeps the map controls and their accessible labels unique.
+#[component]
+fn ReliefWidget() -> impl IntoView {
+    let container = NodeRef::<leptos::html::Div>::new();
+    // The scene changes its DOM, so wait until Leptos has connected the widget.
+    container.on_load(|element| {
+        let _ = element.set_attribute("data-relief-ready", "");
+    });
+    view! {
+            <div node_ref=container class="relief-layout" data-relief=super::site_url("/relief/scene.js")>
+                <section class="relief-card" aria-labelledby="relief-title">
+                    <div class="relief-card-heading"><h2 id="relief-title">"Krajina obce a okolí"</h2></div>
+                    <div id="relief-viewport" class="relief-viewport" role="region" tabindex="0" aria-label="Prostorový model terénu" aria-describedby="relief-instructions">
+                        <div id="relief-fallback" class="relief-fallback"><img class="relief-fallback-light" src=super::site_url("/images/chapel-hura-light.webp") alt="Stylizovaný obrázek kaple a Hůry"/><img class="relief-fallback-dark" src=super::site_url("/images/chapel-hura-dark.webp") alt=""/><p>"Interaktivní model vyžaduje JavaScript a podporu 3D grafiky. Pokud se nenačte, zůstane zde obrázek kaple a Hůry."</p></div>
+                        <div id="relief-labels" class="relief-labels" aria-hidden="true"></div>
+                        <div id="relief-compass" class="relief-compass" role="img" aria-label="Směr na sever" title="Sever" hidden><span id="relief-compass-arrow" aria-hidden="true"><span>"S"</span><span>"▲"</span></span></div>
+                    </div>
+                    <section id="relief-place-info" class="relief-place-info" aria-live="polite" hidden>
+                        <p class="relief-info-label">"VYBRANÉ MÍSTO"</p><h3 id="relief-info-name"></h3><p id="relief-info-text"></p><p class="relief-info-source">"Zdroj: "<a id="relief-info-source" href="https://www.openstreetmap.org/copyright"></a></p>
+                    </section>
+                    <div class="relief-legend" role="group" aria-label="Legenda komunikací">
+                        <span><i class="relief-legend-regional" aria-hidden="true"></i>"Silnice III. třídy"</span>
+                        <span><i class="relief-legend-local" aria-hidden="true"></i>"Místní a obytné cesty"</span>
+                        <span><i class="relief-legend-minor" aria-hidden="true"></i>"Příjezdové, polní a pěší cesty"</span>
+                        <small>"Orientační rozlišení podle OpenStreetMap, bez určení vlastnictví."</small>
+                    </div>
+                    <div id="relief-controls" class="relief-controls" hidden>
+                        <p id="relief-instructions">"Levým tlačítkem nebo jedním prstem otáčíte. Pravým tlačítkem, dvěma prsty nebo šipkami na klávesnici posouváte. Kolečkem nebo roztažením prstů přibližujete. Pro ovládání klávesnicí nejprve klikněte na model nebo ho vyberte klávesou Tab."</p>
+                        <fieldset class="relief-trails" aria-describedby="relief-trails-note">
+                            <legend>"Turistické trasy"</legend>
+                            <label class="relief-trails-toggle"><input id="relief-trails" type="checkbox" checked/>"Zobrazit značené pěší trasy"</label>
+                            <div class="relief-trails-key" aria-label="Barvy turistických značek"><span><i class="trail-red" aria-hidden="true"></i>"Červená"</span><span><i class="trail-blue" aria-hidden="true"></i>"Modrá"</span><span><i class="trail-green" aria-hidden="true"></i>"Zelená"</span><span><i class="trail-yellow" aria-hidden="true"></i>"Žlutá"</span></div>
+                            <p id="relief-trails-note">"Bílý okraj odlišuje turistické značky od silnic. Trasy vycházejí z OpenStreetMap, mohou být neúplné a zobrazují se jen v rozsahu modelu."</p>
+                        </fieldset>
+                        <div role="group" aria-label="Ovládání pohledu">
+                            <button id="relief-left" type="button" aria-label="Otočit pohled doleva">"↶"</button>
+                            <button id="relief-right" type="button" aria-label="Otočit pohled doprava">"↷"</button>
+                            <button id="relief-in" type="button" aria-label="Přiblížit">"+"</button>
+                            <button id="relief-out" type="button" aria-label="Oddálit">"−"</button>
+                            <button id="relief-pan-left" type="button" aria-label="Posunout pohled doleva">"←"</button>
+                            <button id="relief-pan-right" type="button" aria-label="Posunout pohled doprava">"→"</button>
+                            <button id="relief-pan-up" type="button" aria-label="Posunout pohled nahoru">"↑"</button>
+                            <button id="relief-pan-down" type="button" aria-label="Posunout pohled dolů">"↓"</button>
+                            <button id="relief-reset" type="button">"Celý pohled"</button>
+                        </div>
+                    </div>
+                    <p class="relief-attribution">"Podklady: "<a href="https://cuzk.gov.cz/Uvod/Produkty-a-sluzby/Otevrena-data/Otevrena-data-zakladni-informace.aspx">"ČÚZK, CC BY 4.0"</a>" · "<a href="https://www.openstreetmap.org/copyright">"© přispěvatelé OpenStreetMap, ODbL"</a></p>
+                </section>
+                <aside class="relief-places"><h2>"Vyberte místo"</h2><p>"Přibližte si část obce nebo zajímavé místo."</p><div id="relief-places" aria-label="Výběr části obce"></div><details class="relief-more-places"><summary>"Místní názvy a zajímavosti"</summary><div id="relief-localities" aria-label="Výběr dalších míst"></div></details><p class="relief-note">"Hranice a půdorysy budov vycházejí z mapových podkladů. Střechy a okna jsou stylizované, výšky terénu jsou zvýrazněné. Kaple, kostel a Pekařova brána jsou také stylizované a velikostí zvýrazněné. Další místní názvy se objevují při přiblížení."</p></aside>
+            </div>
+    }
+}
+
+#[component]
+pub(super) fn PageBody(content: String, #[prop(default = false)] preview: bool) -> impl IntoView {
+    let blocks = crate::markdown::render_page(&content, preview);
+    view! {
+        <div class="page-body">
+            {blocks.into_iter().map(|block| match block {
+                crate::markdown::PageBlock::Markup(html) => view! {
+                    <div class="markdown-content" inner_html=html></div>
+                }.into_any(),
+                crate::markdown::PageBlock::Relief if preview => view! {
+                    <div class="relief-preview"><strong>"3D reliéf obce"</strong>
+                        <p>"Na stránce se zde zobrazí interaktivní model."</p>
+                        <a href=super::site_url("/relief") target="_blank" rel="noopener noreferrer">"Otevřít model v novém okně"</a>
+                    </div>
+                }.into_any(),
+                crate::markdown::PageBlock::Relief => view! {<ReliefWidget/>}.into_any(),
+            }).collect_view()}
+        </div>
     }
 }
 
@@ -329,7 +418,7 @@ fn ManagedPage(slug: &'static str, children: ChildrenFn) -> impl IntoView {
     let page = Resource::new(move || slug, |slug| crate::catalog::load_page(slug.into()));
     view! {<Suspense fallback=Loading>{move||{
         match (info.get(),page.get()) {
-            (_,Some(Ok(Some(page))))=>view!{<Title text=format!("{} · Vyskeř",page.title)/><div class="page-width interior prose"><h1>{page.title}</h1><div class="markdown-content" inner_html=crate::markdown::render(&page.content)></div></div>}.into_any(),
+            (_,Some(Ok(Some(page))))=>view!{<Title text=format!("{} · Vyskeř",page.title)/><div class="page-width interior prose"><h1>{page.title}</h1><PageBody content=page.content/></div>}.into_any(),
             (Some(Ok(i)),Some(Ok(None))) if !i.production=>children().into_any(),
             (Some(_),Some(_))=>view!{<div class="page-width interior prose"><h1>"Informace nejsou dostupné"</h1><p>"Stránku se nepodařilo načíst. Zkuste to později."</p></div>}.into_any(),
             _=>view!{<Loading/>}.into_any()

@@ -300,7 +300,7 @@ pub fn Calendar() -> impl IntoView {
             <CalendarSubscriptions/>
         </div>
         <Suspense fallback=|| ()>{move ||intro.get().and_then(Result::ok).flatten().map(|page|view!{
-            <div class="markdown-content calendar-intro" inner_html=crate::markdown::render(&page.content)></div>
+            <div class="calendar-intro"><super::pages::PageBody content=page.content/></div>
         })}</Suspense>
         <nav class="page-tabs calendar-periods" aria-label="Období akcí">
             <A href=site_url("/kalendar") attr:class=move ||if !query.get().0 {"selected"} else {""}>"Nadcházející a probíhající"</A>

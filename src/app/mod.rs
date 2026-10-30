@@ -54,6 +54,7 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <link rel="apple-touch-icon" href="/images/chapel-cutout.png"/>
                 <link rel="preload" href="/fonts/geist.woff2" r#as="font" type="font/woff2" crossorigin="anonymous"/>
                 <script src="/theme.js"></script>
+                <script src="/relief-loader.js" defer></script>
                 <AutoReload options=options.clone()/>
                 <HashedStylesheet id="leptos" options=options.clone()/>
                 <HydrationScripts options/>
@@ -94,6 +95,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("dokumenty/:id") view=catalog::DocumentDetail ssr=leptos_router::SsrMode::Async/>
                     <Route path=path!("stranky/:slug") view=catalog::ContentPage ssr=leptos_router::SsrMode::Async/>
                     <Route path=path!("hledat") view=SearchResults ssr=leptos_router::SsrMode::InOrder/>
+                    <Route path=path!("relief") view=Relief ssr=leptos_router::SsrMode::InOrder/>
                     <Route path=path!("obec") view=Contact ssr=leptos_router::SsrMode::InOrder/>
                     <Route path=path!("povinne-informace") view=RequiredInformation ssr=leptos_router::SsrMode::InOrder/>
                     <Route path=path!("stranky") view=PagesIndex ssr=leptos_router::SsrMode::InOrder/>

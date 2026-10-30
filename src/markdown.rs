@@ -49,9 +49,72 @@ pub fn render_preview(source: &str) -> String {
     render_content(source, true)
 }
 
+/// Render a page body, recognizing one standalone relief marker at top level.
+/// Other Markdown uses, including code samples, remain literal text.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PageBlock {
+    Markup(String),
+    Relief,
+}
+
+pub fn render_page(source: &str, preview: bool) -> Vec<PageBlock> {
+    let mut depth = 0usize;
+    let mut found = false;
+    let mut skipping = false;
+    let mut before = Vec::new();
+    let mut after = Vec::new();
+    for (event, range) in parser(source).into_offset_iter() {
+        if skipping {
+            if matches!(event, Event::End(TagEnd::Paragraph)) {
+                skipping = false;
+            }
+            continue;
+        }
+        if !found
+            && depth == 0
+            && matches!(event, Event::Start(Tag::Paragraph))
+            && source
+                .get(range)
+                .is_some_and(|text| text.trim() == "{{relief}}")
+        {
+            found = true;
+            skipping = true;
+            continue;
+        }
+        match &event {
+            Event::Start(_) => depth += 1,
+            Event::End(_) => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        if found {
+            after.push(event);
+        } else {
+            before.push(event);
+        }
+    }
+    let mut blocks = Vec::new();
+    if !before.is_empty() || !found {
+        blocks.push(PageBlock::Markup(render_events(
+            before.into_iter(),
+            preview,
+        )));
+    }
+    if found {
+        blocks.push(PageBlock::Relief);
+        if !after.is_empty() {
+            blocks.push(PageBlock::Markup(render_events(after.into_iter(), preview)));
+        }
+    }
+    blocks
+}
+
 fn render_content(source: &str, preview: bool) -> String {
+    render_events(parser(source), preview)
+}
+
+fn render_events<'a>(events: impl Iterator<Item = Event<'a>>, preview: bool) -> String {
     let mut local_images = Vec::new();
-    let events = parser(source).filter_map(|event| match event {
+    let events = events.filter_map(|event| match event {
         Event::Html(value) | Event::InlineHtml(value) => Some(Event::Text(value)),
         Event::Start(Tag::HtmlBlock) | Event::End(TagEnd::HtmlBlock) => None,
         // Embed only application-owned images with publication-aware endpoints.
@@ -110,6 +173,50 @@ fn render_content(source: &str, preview: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn relief_marker_is_a_standalone_page_block_only() {
+        let blocks = render_page("# Nadpis\n\nÚvod.\n\n{{relief}}\n\n**Za modelem**", false);
+        assert_eq!(blocks.len(), 3);
+        assert!(
+            matches!(&blocks[0], PageBlock::Markup(html) if html.contains("<h2>Nadpis</h2>") && html.contains("Úvod."))
+        );
+        assert_eq!(blocks[1], PageBlock::Relief);
+        assert!(
+            matches!(&blocks[2], PageBlock::Markup(html) if html.contains("<strong>Za modelem</strong>"))
+        );
+        for source in [
+            "`{{relief}}`",
+            "```text\n{{relief}}\n```",
+            "> {{relief}}",
+            "- {{relief}}",
+            "Před {{relief}} za",
+            "\\{{relief}}",
+            "text\n{{relief}}",
+        ] {
+            assert!(
+                matches!(
+                    render_page(source, false).as_slice(),
+                    [PageBlock::Markup(_)]
+                ),
+                "{source}"
+            );
+        }
+        let repeated = render_page("{{relief}}\n\n{{relief}}", true);
+        assert_eq!(
+            repeated
+                .iter()
+                .filter(|b| matches!(b, PageBlock::Relief))
+                .count(),
+            1
+        );
+        assert!(matches!(&repeated[1], PageBlock::Markup(html) if html.contains("{{relief}}")));
+        let references = render_page("[odkaz][ref]\n\n{{relief}}\n\n[ref]: /obec", false);
+        assert!(
+            matches!(&references[0], PageBlock::Markup(html) if html.contains("href=\"/obec\""))
+        );
+        // The standard renderer is also used for privacy texts and emails.
+        assert!(render("{{relief}}").contains("{{relief}}"));
+    }
     #[test]
     fn editor_previews_imports_privately_without_changing_public_urls() {
         let source = "![Old](/api/v1/legacy-media/7) ![New](/api/v1/page-images/7) ![Remote](https://tracker.test/a.png)";

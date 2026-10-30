@@ -238,7 +238,11 @@ pub async fn response_headers(
         || request.uri().path() == "/"
         || request.uri().path() == "/hledat";
     let frontend_asset = request.uri().path().starts_with("/pkg/")
-        || matches!(request.uri().path(), "/theme.js" | "/subscription-page.js");
+        || request.uri().path().starts_with("/relief/")
+        || matches!(
+            request.uri().path(),
+            "/theme.js" | "/subscription-page.js" | "/relief-loader.js"
+        );
     let route = request
         .extensions()
         .get::<axum::extract::MatchedPath>()

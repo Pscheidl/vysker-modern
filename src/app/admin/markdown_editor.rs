@@ -133,6 +133,12 @@ pub fn MarkdownEditor(
                         on:mousedown=move |ev|ev.prevent_default()
                         on:click=move |_|insert.run((prefix.into(),suffix.into(),placeholder.into()))>{label}</button>
                 }).collect_view()}
+                <button class="button secondary" type="button" disabled=move||busy.get()
+                    on:mousedown=move |ev|ev.prevent_default()
+                    on:click=move |_|{
+                        if let Some(el)=textarea.get(){let end=el.selection_end().ok().flatten().unwrap_or(0);let _=el.set_selection_range(end,end);}
+                        insert.run(("\n\n{{relief}}\n\n".into(),String::new(),String::new()));
+                    }>"Vložit 3D reliéf"</button>
             </div>
             <label class="admin-field" for="page-content"><span>"Obsah stránky *"</span>
                 <textarea node_ref=textarea id="page-content" required maxlength="100000" rows="16"
@@ -143,6 +149,7 @@ pub fn MarkdownEditor(
                 <p>"Označte text a použijte tlačítko formátování, nebo pište Markdown přímo. Podporované jsou nadpisy, tučný text, kurzíva, seznamy, odkazy, citace, kód, tabulky a přeškrtnutí."</p>
                 <pre>{"## Nadpis\n**Tučně** a *kurzíva*\n- Položka seznamu\n[Kontakt](/obec)\n> Citace\n`Kód` a ~~přeškrtnutí~~\n\n| Den | Hodiny |\n| --- | --- |\n| Pondělí | 8–12 |"}</pre>
                 <p>"Obrázky nahrajte níže. Jejich popis slouží čtečkám obrazovky. HTML se zobrazí jako text."</p>
+                <p>"Tlačítko Vložit 3D reliéf vloží značku {{relief}}. Značku lze také napsat samostatně a oddělit od okolního textu prázdnými řádky. Model lze na jednu stránku vložit jednou."</p>
             </details>
             <ErrorMessage error/>
             <section class="page-image-upload" aria-label="Obrázky stránky">
@@ -196,7 +203,7 @@ pub fn MarkdownEditor(
                 }.into_any()}}
             </section>
             <button class="button secondary" type="button" aria-expanded=move||preview.get().to_string() on:click=move |_|preview.update(|v|*v=!*v)>{move||if preview.get(){"Zavřít náhled"}else{"Náhled textu"}}</button>
-            <Show when=move||preview.get()><section class="admin-page-preview" aria-label="Náhled textu stránky"><h2>{move||title.get()}</h2><div class="markdown-content" inner_html=move||crate::markdown::render_preview(&content.get())></div></section></Show>
+            <Show when=move||preview.get()><section class="admin-page-preview" aria-label="Náhled textu stránky"><h2>{move||title.get()}</h2>{move||view!{<super::super::pages::PageBody content=content.get() preview=true/>}}</section></Show>
         </div>
     }
 }
