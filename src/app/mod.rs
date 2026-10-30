@@ -55,6 +55,7 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <link rel="preload" href="/fonts/geist.woff2" r#as="font" type="font/woff2" crossorigin="anonymous"/>
                 <script src="/theme.js"></script>
                 <script src="/relief-loader.js" defer></script>
+                <script src="/chapel-seasons.js" defer></script>
                 <AutoReload options=options.clone()/>
                 <HashedStylesheet id="leptos" options=options.clone()/>
                 <HydrationScripts options/>

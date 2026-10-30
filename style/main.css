@@ -649,6 +649,13 @@
 
 /* Blocks inside an editable page keep the relief independent of prose styles. */
 .page-body>*+*{margin-top:1.5rem}
+.chapel-weather{position:absolute;inset:0;overflow:hidden;pointer-events:none}
+.chapel-particle{position:absolute;top:-4%;left:var(--x);opacity:var(--opacity);animation:chapel-fall var(--duration) linear var(--delay) infinite;will-change:transform}
+.chapel-snow{width:var(--size);height:var(--size);border-radius:50%;background:#fff;box-shadow:0 0 2px 1px #73899990}
+.chapel-leaf{width:var(--size);height:calc(var(--size)*.62);background:var(--color);border-radius:85% 0 85% 0;box-shadow:0 0 1px #57401f;animation-name:chapel-leaf-fall}
+@keyframes chapel-fall{from{transform:translate3d(0,-10px,0)}to{transform:translate3d(var(--drift),350px,0)}}
+@keyframes chapel-leaf-fall{0%{transform:translate3d(-16px,-10px,0) rotate(-35deg)}25%{transform:translate3d(30px,78px,0) rotate(100deg)}50%{transform:translate3d(-8px,165px,0) rotate(220deg)}75%{transform:translate3d(42px,255px,0) rotate(370deg)}100%{transform:translate3d(var(--drift),350px,0) rotate(560deg)}}
+@media(prefers-reduced-motion:reduce){.chapel-weather{display:none}}
 .relief-preview{padding:20px;border:1px solid var(--border);border-radius:12px;background:var(--soft)}
 .relief-preview p{margin:6px 0}
 .relief-preview a{color:var(--accent);text-decoration:underline;text-underline-offset:3px}
