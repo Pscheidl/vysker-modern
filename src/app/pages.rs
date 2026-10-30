@@ -46,6 +46,27 @@ pub fn Home() -> impl IntoView {
 }
 
 #[component]
+pub fn InstallApp() -> impl IntoView {
+    #[cfg(any(feature = "hydrate", feature = "demo"))]
+    Effect::new(move |_| window().scroll_to_with_x_and_y(0.0, 0.0));
+    view! {
+        <Title text="Přidat web na plochu · Vyskeř"/>
+        <div class="page-width interior install-page">
+            <PageHeading title="Vyskeř na ploše telefonu." description="Přidejte si web na plochu a mějte informace o obci vždy po ruce." eyebrow="PŘIDAT NA PLOCHU"/>
+            <div class="install-intro">
+                <img src=super::site_url("/images/vysker-znak-apple-touch-icon.png") width="88" height="88" alt="Ikona webu Vyskeř"/>
+                <div><h2>"Vyskeř"</h2><p>"Na ploše telefonu se zobrazí ikona se znakem Vyskeře. Web otevřete klepnutím stejně jako ostatní aplikace."</p></div>
+            </div>
+            <button type="button" class="app-install-button" data-app-install-button hidden><Icon name="download"/>"Nainstalovat jako aplikaci"</button>
+            <div class="install-instructions">
+                <section><h2>"iPhone"</h2><ol><li>"Otevřete web v Safari a klepněte na Sdílet."</li><li>"Vyberte Přidat na plochu."</li><li>"Pokud vidíte volbu Otevřít jako webovou aplikaci, zapněte ji a potvrďte Přidat."</li></ol></section>
+                <section><h2>"Android"</h2><ol><li>"Otevřete nabídku prohlížeče."</li><li>"Vyberte Nainstalovat aplikaci nebo Přidat na plochu."</li><li>"Potvrďte přidání. Názvy položek se mohou podle prohlížeče lišit."</li></ol></section>
+            </div>
+        </div>
+    }
+}
+
+#[component]
 pub fn Relief() -> impl IntoView {
     view! {
         <Title text="Vyskeř z výšky · Vyskeř"/>

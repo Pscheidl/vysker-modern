@@ -50,8 +50,12 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <meta charset="utf-8"/>
                 <meta name="viewport" content="width=device-width, initial-scale=1"/>
                 <meta name="color-scheme" content="light dark"/>
-                <link rel="icon" type="image/png" href="/images/chapel-cutout.png"/>
-                <link rel="apple-touch-icon" href="/images/chapel-cutout.png"/>
+                <link rel="icon" type="image/png" sizes="32x32" href="/images/vysker-znak-favicon-32.png"/>
+                <link rel="icon" type="image/png" sizes="128x128" href="/images/vysker-znak-favicon-128.png"/>
+                <link rel="apple-touch-icon" href="/images/vysker-znak-apple-touch-icon.png"/>
+                <link rel="manifest" href="/manifest.webmanifest"/>
+                <meta name="theme-color" content="#fdfdfd"/>
+                <script src="/install.js" defer></script>
                 <link rel="preload" href="/fonts/geist.woff2" r#as="font" type="font/woff2" crossorigin="anonymous"/>
                 <script src="/theme.js"></script>
                 <script src="/relief-loader.js" defer></script>
@@ -90,6 +94,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("admin") view=admin::Administration/>
                     <Route path=path!("admin/*path") view=admin::Administration/>
                     <Route path=path!("") view=Home ssr=leptos_router::SsrMode::InOrder/>
+                    <Route path=path!("instalace") view=InstallApp ssr=leptos_router::SsrMode::InOrder/>
                     <Route path=path!("uredni-deska") view=NoticeBoard ssr=leptos_router::SsrMode::InOrder/>
                     <Route path=path!("uredni-deska/:id") view=NoticeDetail ssr=leptos_router::SsrMode::Async/>
                     <Route path=path!("dokumenty") view=Documents ssr=leptos_router::SsrMode::InOrder/>

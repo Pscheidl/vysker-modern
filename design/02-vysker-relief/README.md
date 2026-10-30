@@ -6,15 +6,15 @@ Revision of the approved ceramic illustration style, dated 29 September 2026.
 
 - [Light relief](../../public/images/relief-vysker-light.png), 2172 × 724 px, transparent PNG.
 - [Dark relief](../../public/images/relief-vysker-dark.png), 2171 × 724 px, transparent PNG.
-- [Chapel mark and favicon](../../public/images/chapel-cutout.png), transparent PNG from Za Vyskeř.
+- [Coat of arms proposal](../../public/images/vysker-znak-render.webp) and [favicon](../../public/images/vysker-znak-favicon-128.png), a rendered interpretation of the municipal coat of arms.
 - [Green relief filter](../../public/images/relief-accent.svg), shared with Za Vyskeř.
 
 Since 1 October 2026, the site uses the green identity from
-[Za Vyskeř](https://zavysker.cz/). The chapel cutout and relief filter were copied
-from the local `zavysker/assets/img` directory. The cutout was created with
-ImageGen from the user's chapel reference for that project. Its alpha channel
-forms a CSS mask, so the public header and administration use the current
-theme's green. The same PNG serves as the favicon and touch icon.
+[Za Vyskeř](https://zavysker.cz/). The relief filter was copied from the local `zavysker/assets/img` directory.
+The current mark is a rendered interpretation of the municipal coat of arms,
+using its green field, silver crenellated chief, pointed arch and fleur-de-lis.
+The same motif is used in the public header, administration, favicon and touch
+icon. The design is a local proposal, not an official municipal rendering.
 
 The light theme uses `#26734d` and the dark theme uses `#85d4a4`, with matching
 surfaces and button text colours. The reliefs appear on the homepage, in the
@@ -36,7 +36,8 @@ warm window lights and transparency. The source PNGs remain unchanged.
 
 This is a stylized illustration based on photographs, not a surveyed terrain
 model. Individual buildings and contour lines are simplified for the composition.
-The mark is a website identity proposal, not the municipality's official coat of arms.
+The mark is a website identity proposal based on the municipal coat of arms,
+not an official rendering approved by the municipality.
 
 ## References
 
@@ -56,6 +57,8 @@ website's public assets. Materials and illustration style follow the approved co
 
 Raster reliefs were produced with the built-in imagegen tool. The original SVG
 mark and favicon were replaced by the shared chapel cutout on 1 October 2026.
+A vector mark replaced that cutout on 30 October 2026. It was subsequently replaced by a crop of the homepage chapel illustration,
+and later by a rendered interpretation of the municipal coat of arms.
 
 Original prompts, in order:
 

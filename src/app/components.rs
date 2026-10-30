@@ -20,6 +20,7 @@ pub fn Icon(
         "logout" => "M9 4H3v16h6M9 12h12m-5-5 5 5-5 5",
         "refresh" => "M3 11a9 9 0 0 1 15-7l3 3M21 2v5h-5M21 13a9 9 0 0 1-15 7l-3-3M3 22v-5h5",
         "upload" => "M12 16V3m-5 5 5-5 5 5M3 16v5h18v-5",
+        "download" => "M12 3v13m-5-5 5 5 5-5M3 17v4h18v-4",
         "search" => "M21 21l-4.4-4.4M19 10.5a8.5 8.5 0 1 1-17 0 8.5 8.5 0 0 1 17 0",
         "paper" => {
             "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zM14 2v6h6M8 13h8M8 17h5"
@@ -137,11 +138,20 @@ pub fn Header() -> impl IntoView {
                 </div>
             </div>
             <nav id="mobile-menu" class="mobile-nav page-width" aria-label="Mobilní navigace" hidden=move || !menu.get()><Navigation prefix="mobile" menu/><A href=site_url("/obec") attr:class="mobile-contact" on:click=move |_|menu.set(false)>"Kontakt"<Icon name="external"/></A></nav>
-            <noscript><style>
-                ".nav-submenu[hidden]{display:block!important;position:static;box-shadow:none}.nav-submenu-toggle,.menu-toggle{display:none!important}.desktop-nav .nav-list{align-items:flex-start}.header-inner{height:auto;min-height:76px}@media(max-width:1050px){.site-header .mobile-nav[hidden]{display:block!important}}"
-            </style></noscript>
+            <NoScriptNavigation/>
         </header>
     }
+}
+
+#[component]
+fn NoScriptNavigation() -> impl IntoView {
+    #[cfg(not(feature = "demo"))]
+    return view! {<noscript><style>
+        ".nav-submenu[hidden]{display:block!important;position:static;box-shadow:none}.nav-submenu-toggle,.menu-toggle{display:none!important}.desktop-nav .nav-list{align-items:flex-start}.header-inner{height:auto;min-height:76px}@media(max-width:1050px){.site-header .mobile-nav[hidden]{display:block!important}}"
+    </style></noscript>};
+
+    #[cfg(feature = "demo")]
+    ()
 }
 
 #[component]
@@ -518,7 +528,7 @@ pub fn Footer() -> impl IntoView {
     view! {
         <footer class="site-footer page-width">
             <span>"Obec Vyskeř"</span>
-            <nav aria-label="Patička"><A href=site_url("/povinne-informace")>"Povinné informace"</A><A href=site_url("/stranky")>"Informace obce"</A><A href=site_url("/pristupnost")>"Přístupnost"</A><A href=site_url("/ochrana-udaju")>"Ochrana údajů"</A><A href=site_url("/obec")>"Kontakt"</A>{(!cfg!(feature="demo")).then(||view!{<A href="/admin">"Správa webu"</A>})}</nav>
+            <nav aria-label="Patička"><A href=site_url("/povinne-informace")>"Povinné informace"</A><A href=site_url("/stranky")>"Informace obce"</A><A href=site_url("/pristupnost")>"Přístupnost"</A><A href=site_url("/ochrana-udaju")>"Ochrana údajů"</A><A href=site_url("/obec")>"Kontakt"</A><span class="app-install-link" data-app-install-link hidden><A href=site_url("/instalace") on:click=move |_| window().scroll_to_with_x_and_y(0.0, 0.0)>"Přidat na plochu"</A></span>{(!cfg!(feature="demo")).then(||view!{<A href="/admin">"Správa webu"</A>})}</nav>
             <p class="site-footer-note">"Neoficiální web obce Vyskeř. Informace o obci přehledněji."</p>
         </footer>
     }
