@@ -19,6 +19,8 @@ mod privacy;
 #[cfg(not(feature = "demo"))]
 mod recovery;
 #[cfg(not(feature = "demo"))]
+mod report_comments;
+#[cfg(not(feature = "demo"))]
 mod reports;
 #[cfg(not(feature = "demo"))]
 mod subscribers;

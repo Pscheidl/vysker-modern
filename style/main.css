@@ -682,3 +682,20 @@
     .install-instructions { grid-template-columns: 1fr; gap: 14px; margin-top: 28px; }
     .install-instructions section { padding: 20px; }
 }
+
+/* Signed municipal replies on report details and in administration. */
+.report-comments{margin-top:36px;padding-top:28px;border-top:1px solid var(--line);min-width:0}
+.report-comments>h2{font-size:24px;font-weight:500;margin-bottom:18px}
+.report-comments-list,.report-comment-list{list-style:none;padding:0;margin:22px 0;display:grid;gap:18px}
+.report-comment,.admin-report-comment{padding:24px;border:1px solid var(--line);border-radius:12px;background:var(--surface);min-width:0;overflow-wrap:anywhere}
+.report-comment-header,.report-comment-meta{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 18px}
+.report-comment-header>strong,.report-comment-meta>strong{font-size:16px;color:var(--text)}
+.report-comment-header>time,.report-comment-header>.field-note,.report-comment-meta>time{font-size:12px;color:var(--muted);margin:0}
+.report-comment-body{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.75;margin:16px 0 0}
+.report-comment .report-detail-photos,.admin-report-comment .report-detail-photos{margin-top:18px}
+.report-comments .admin-actions{flex-wrap:wrap}
+.report-comments .admin-panel-heading{margin-bottom:14px}
+.report-comments form{margin-top:24px}
+.report-legacy-resolution{margin-top:28px;border-top:1px solid var(--line);padding-top:20px}
+.report-legacy-resolution>summary{cursor:pointer;font-weight:500;min-height:44px;padding:10px 0}
+@media(max-width:600px){.report-comments>h2{font-size:21px}.report-comment,.admin-report-comment{padding:18px}.report-comment-header{gap:6px 12px}.report-comments .admin-actions>.button{flex:1;white-space:normal}}

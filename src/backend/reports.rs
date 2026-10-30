@@ -26,7 +26,7 @@ const RECIPIENT_LIMIT: usize = 20;
 // bytes, while serialization limits concurrent decoded buffers on the VPS.
 static IMAGE_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
-fn optional_text(value: String, max: usize, multiline: bool) -> Result<Option<String>> {
+pub(super) fn optional_text(value: String, max: usize, multiline: bool) -> Result<Option<String>> {
     let value = value.replace("\r\n", "\n");
     let value = value.trim();
     if value.chars().count() > max
@@ -152,7 +152,7 @@ fn sanitize_photo(bytes: &[u8]) -> Result<Vec<u8>> {
     Ok(result)
 }
 
-async fn read_photo(
+pub(super) async fn read_photo(
     field: &mut axum::extract::multipart::Field<'_>,
     upload_bytes: &mut usize,
     processed_bytes: &mut usize,
@@ -195,7 +195,7 @@ async fn read_photo(
     Ok(Some(photo))
 }
 
-async fn read_text_field(
+pub(super) async fn read_text_field(
     field: &mut axum::extract::multipart::Field<'_>,
     limit: usize,
 ) -> Result<String> {
@@ -829,7 +829,7 @@ async fn photo_response(s: &Backend, id: i64, position: i64, admin: bool) -> Res
     Ok(image_response(bytes))
 }
 
-fn image_response(bytes: Vec<u8>) -> Response {
+pub(super) fn image_response(bytes: Vec<u8>) -> Response {
     (
         [
             (header::CONTENT_TYPE, "image/jpeg"),

@@ -1,4 +1,4 @@
-//! Account lifecycle. Every browser mutation requires CSRF and reauthentication.
+//! Account lifecycle. Credential and access changes also require reauthentication.
 use super::{Backend, Result, audit, auth, conflict, missing};
 use axum::{
     Json,
@@ -44,6 +44,54 @@ pub struct PasswordChange {
 pub struct AccountState {
     active: bool,
     current_password: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Profile {
+    display_name: Option<String>,
+}
+
+/// A public signature default belongs to the authenticated account only.
+pub async fn update_profile(
+    State(s): State<Backend>,
+    admin: auth::Admin,
+    Json(input): Json<Profile>,
+) -> Result<Json<Profile>> {
+    let display_name = input
+        .display_name
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    if display_name.as_ref().is_some_and(|name| {
+        name.chars().count() > crate::reports::REPORT_NAME_LIMIT
+            || name.chars().any(char::is_control)
+    }) {
+        return Err(super::bad(
+            "Jméno může mít nejvýše 120 znaků a nesmí obsahovat řídicí znaky.",
+        ));
+    }
+    let mut tx = crate::db::begin_write(&s.pool).await?;
+    let changed = sqlx::query("UPDATE administrators SET display_name=$1 WHERE id=$2 AND active=TRUE AND EXISTS(SELECT 1 FROM sessions WHERE administrator_id=$2 AND token_hash=$3 AND expires_at>$4)")
+        .bind(&display_name)
+        .bind(admin.id)
+        .bind(&admin.token_hash)
+        .bind(OffsetDateTime::now_utc().unix_timestamp())
+        .execute(&mut *tx)
+        .await?;
+    if changed.rows_affected() != 1 {
+        return Err(auth::denied());
+    }
+    audit(
+        &mut tx,
+        Some(admin.id),
+        "profile_updated",
+        "administrator",
+        admin.id,
+        OffsetDateTime::now_utc(),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(Profile { display_name }))
 }
 
 // Expensive Argon2 work happens before taking the PostgreSQL advisory write lock.

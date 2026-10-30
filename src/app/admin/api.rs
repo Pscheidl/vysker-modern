@@ -20,6 +20,8 @@ pub type Result<T> = std::result::Result<T, Failure>;
 pub struct Session {
     pub administrator_id: i64,
     pub email: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
     pub csrf_token: String,
     pub minimum_password_length: usize,
 }

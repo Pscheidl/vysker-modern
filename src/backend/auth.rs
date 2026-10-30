@@ -192,6 +192,7 @@ pub struct Login {
 pub struct Session {
     pub administrator_id: i64,
     pub email: String,
+    pub display_name: Option<String>,
     pub csrf_token: String,
     pub minimum_password_length: usize,
 }
@@ -252,6 +253,11 @@ pub async fn login(
     if !current {
         return Err(denied());
     }
+    let display_name: Option<String> =
+        sqlx::query_scalar("SELECT display_name FROM administrators WHERE id=$1")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
     sqlx::query(
         "INSERT INTO sessions(token_hash,csrf_hash,administrator_id,expires_at) VALUES ($1,$2,$3,$4)",
     )
@@ -276,6 +282,7 @@ pub async fn login(
         Json(Session {
             administrator_id: id,
             email: address,
+            display_name,
             csrf_token: csrf,
             minimum_password_length: s.config.minimum_password_length,
         }),
@@ -286,6 +293,7 @@ pub async fn login(
 pub struct Admin {
     pub id: i64,
     pub email: String,
+    pub display_name: Option<String>,
     pub(super) token_hash: String,
     csrf: String,
 }
@@ -306,9 +314,9 @@ impl FromRequestParts<Backend> for Admin {
             return Err(denied());
         }
         let token_hash = hash(secret);
-        let row: Option<(i64, String, String)> = sqlx::query_as("SELECT r.administrator_id,r.csrf_hash,a.email FROM sessions r JOIN administrators a ON a.id=r.administrator_id WHERE r.token_hash=$1 AND r.expires_at>$2 AND a.active=TRUE")
+        let row: Option<(i64, String, String, Option<String>)> = sqlx::query_as("SELECT r.administrator_id,r.csrf_hash,a.email,a.display_name FROM sessions r JOIN administrators a ON a.id=r.administrator_id WHERE r.token_hash=$1 AND r.expires_at>$2 AND a.active=TRUE")
             .bind(&token_hash).bind(OffsetDateTime::now_utc().unix_timestamp()).fetch_optional(&s.pool).await?;
-        let (id, csrf_hash, email) = row.ok_or_else(denied)?;
+        let (id, csrf_hash, email, display_name) = row.ok_or_else(denied)?;
         if !matches!(parts.method, Method::GET | Method::HEAD | Method::OPTIONS) {
             check_origin(&parts.headers, s)?;
             let supplied = parts
@@ -323,6 +331,7 @@ impl FromRequestParts<Backend> for Admin {
         Ok(Self {
             id,
             email,
+            display_name,
             token_hash,
             csrf: hash(format!("csrf:{secret}")),
         })
@@ -332,6 +341,7 @@ pub async fn session(State(s): State<Backend>, admin: Admin) -> Json<Session> {
     Json(Session {
         administrator_id: admin.id,
         email: admin.email,
+        display_name: admin.display_name,
         csrf_token: admin.csrf,
         minimum_password_length: s.config.minimum_password_length,
     })

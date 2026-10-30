@@ -418,3 +418,57 @@ Browser tests use the local disposable server and synthetic data. Do not run
 them against production or rely on them to prove delivery to a real mailbox.
 This document describes implementation and test coverage, not a completed
 verification run or a deployment.
+
+## Signed administrator comments
+
+Each report has a chronological public comment thread. Only authenticated
+administrators can create, edit or delete comments, including photographs.
+Visitors can read replies on the public report detail. Hiding a report also
+makes its comments and photographs unavailable through public endpoints.
+The existing resolution summary remains available in a collapsible section.
+
+Administrators can save their own optional default signature under **Účty →
+Moje jméno u komentářů**. A new comment pre-fills that signature. Without a
+saved signature, the name starts empty for every new reply and must be entered
+manually. Both the author name (120 characters) and comment text (5,000
+characters) are required. Each comment stores its signature independently,
+so changing a profile does not rewrite previous replies. The original account
+ID stays internal and audit records identify who created, edited or deleted it.
+All administrators may manage replies, matching report moderation permissions.
+
+New photograph uploads accept JPG, PNG and WebP with a combined admission limit
+of 100,000,000 bytes. The existing report image processing resizes large images
+to 2,560 pixels and removes source metadata. An edited comment can retain or
+remove existing photos and append new ones, with stored processed images also
+limited to 100,000,000 bytes in total. Comment text and photo changes commit
+atomically. Removing a comment removes all of its stored photographs.
+
+Comment edits and deletions require the last seen `updated_at` value.
+Conflicting changes return HTTP 409 without replacing newer contents. The
+administration preserves unsaved text and photos after a failed request, and
+refreshing the comment list leaves the draft intact. A network error can mean
+that an operation succeeded without the browser receiving its response, so the
+UI asks the administrator to refresh and check before repeating the request.
+
+API routes:
+
+- `PUT /api/v1/admin/profile`, JSON `{ "display_name": "Name" }`, with `null`
+  or an empty string clearing the default for the authenticated account only.
+- `GET /api/v1/reports/{id}/comments` and the corresponding admin route.
+- `POST /api/v1/admin/reports/{id}/comments`, multipart `author_name`, `body`
+  and repeated `photo` fields.
+- `PUT /api/v1/admin/reports/{id}/comments/{comment_id}`, the same multipart
+  fields plus `expected_updated_at` and optional JSON `remove_photo_ids`.
+- `DELETE /api/v1/admin/reports/{id}/comments/{comment_id}`, JSON
+  `{ "expected_updated_at": "..." }`.
+- `GET /api/v1/reports/{id}/comments/{comment_id}/photos/{photo_id}` and the
+  corresponding admin route.
+
+Writes require a valid administrator session and CSRF/origin checks.
+Authorization is rechecked transactionally after processing uploads. Public
+responses contain the chosen signature, never an administrator email or account
+ID. Migrations 0027 and 0028 add comments, photographs and optional signatures
+without changing existing report or resolution data. Coverage is in
+`tests/report_comments.rs`, `tests/accounts.rs`,
+`tests/browser/report-comments.spec.ts` and
+`tests/browser/account-profile.spec.ts`.

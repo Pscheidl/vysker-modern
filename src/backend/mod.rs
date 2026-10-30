@@ -18,6 +18,7 @@ pub mod privacy;
 pub mod recovery;
 pub mod report_abuse;
 pub mod report_addresses;
+pub mod report_comments;
 pub mod reports;
 pub mod search;
 pub mod server;
@@ -211,6 +212,34 @@ pub fn router(state: Backend) -> Router {
         )
         .route("/api/v1/reports/map", get(reports::public_map))
         .route("/api/v1/reports/{id}", get(reports::detail))
+        .route(
+            "/api/v1/reports/{id}/comments",
+            get(report_comments::public_list),
+        )
+        .route(
+            "/api/v1/reports/{id}/comments/{comment_id}/photos/{photo_id}",
+            get(report_comments::photo),
+        )
+        .route(
+            "/api/v1/admin/reports/{id}/comments",
+            get(report_comments::admin_list)
+                .post(report_comments::create)
+                .layer(DefaultBodyLimit::max(
+                    crate::reports::REPORT_UPLOAD_BYTES + 64 * 1024,
+                )),
+        )
+        .route(
+            "/api/v1/admin/reports/{id}/comments/{comment_id}",
+            axum::routing::put(report_comments::update)
+                .delete(report_comments::delete)
+                .layer(DefaultBodyLimit::max(
+                    crate::reports::REPORT_UPLOAD_BYTES + 64 * 1024,
+                )),
+        )
+        .route(
+            "/api/v1/admin/reports/{id}/comments/{comment_id}/photos/{photo_id}",
+            get(report_comments::admin_photo),
+        )
         .route("/api/v1/reports/{id}/photo", get(reports::photo))
         .route(
             "/api/v1/reports/{id}/photos/{position}",
@@ -297,6 +326,10 @@ pub fn router(state: Backend) -> Router {
         .route(
             "/api/v1/admin/password",
             axum::routing::put(accounts::change_password),
+        )
+        .route(
+            "/api/v1/admin/profile",
+            axum::routing::put(accounts::update_profile),
         )
         .route("/api/v1/admin/login", post(auth::login))
         .route("/api/v1/admin/password-policy", get(recovery::policy))

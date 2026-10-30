@@ -10,6 +10,29 @@ pub const REPORT_UPLOAD_BYTES: usize = 100_000_000;
 pub const REPORT_SEARCH_LIMIT: usize = 200;
 pub const REPORT_MAP_LIMIT: i64 = 2_000;
 pub const REPORT_RESOLUTION_LIMIT: usize = 5_000;
+pub const REPORT_COMMENT_LIMIT: usize = 5_000;
+
+/// Public replies retain the author's chosen signature even if their profile changes.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ssr", derive(sqlx::FromRow))]
+pub struct ReportComment {
+    pub id: i64,
+    pub report_id: i64,
+    pub author_name: String,
+    pub body: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub photo_ids: Vec<i64>,
+}
+
+impl ReportComment {
+    pub fn photo_url(&self, photo_id: i64) -> String {
+        format!(
+            "/api/v1/reports/{}/comments/{}/photos/{photo_id}",
+            self.report_id, self.id
+        )
+    }
+}
 
 /// Public overview selection. Resolved reports remain directly accessible by URL.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -268,6 +291,21 @@ pub async fn load_report(id: i64) -> Result<Option<Report>, ServerFnError> {
     crate::backend::reports::public_report_from_pool(&pool, id)
         .await
         .map_err(|error| ServerFnError::new(error.1))
+}
+
+#[cfg(not(feature = "demo"))]
+#[server]
+pub async fn load_report_comments(id: i64) -> Result<Vec<ReportComment>, ServerFnError> {
+    let pool = use_context::<sqlx::PgPool>()
+        .ok_or_else(|| ServerFnError::new("Databáze není dostupná."))?;
+    crate::backend::report_comments::public_comments_from_pool(&pool, id)
+        .await
+        .map_err(|error| ServerFnError::new(error.1))
+}
+
+#[cfg(feature = "demo")]
+pub async fn load_report_comments(_id: i64) -> Result<Vec<ReportComment>, ServerFnError> {
+    Ok(Vec::new())
 }
 
 #[cfg(not(feature = "demo"))]

@@ -96,6 +96,7 @@ test('administrators see private report details and can update status and visibi
   page.on('pageerror', error => errors.push(error.message))
   await page.route('**/api/v1/admin/report-settings', route => route.fulfill({ json: { recipients: [] } }))
   await page.route('**/api/v1/admin/reports?*', route => route.fulfill({ json: [current] }))
+  await page.route('**/api/v1/admin/reports/41/comments', route => route.fulfill({ json: [] }))
   await page.route('**/api/v1/admin/reports/41/photos/*', route => route.fulfill({ contentType: 'image/png', body: photograph }))
   await page.route('**/api/v1/admin/reports/41', async route => {
     expect(route.request().headers()['x-csrf-token']).toBeTruthy()
@@ -204,6 +205,7 @@ test('an administrator saves a repair comment and photograph, resolves the repor
   const publicHtml = await page.request.get(`/hlaseni-zavad/${id}`)
   const html = await publicHtml.text()
   for (const value of privateValues) expect(html).not.toContain(value)
+  await page.getByText('Závěrečné shrnutí řešení (nepovinné)', { exact: true }).click()
   const resolution = page.getByRole('region', { name: 'Řešení hlášení', exact: true })
   const comment = 'Uvolněná prkna jsme vyměnili a lavičku znovu natřeli.'
   await resolution.getByLabel('Komentář k řešení (nepovinné)', { exact: true }).fill(comment)

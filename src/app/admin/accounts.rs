@@ -2,6 +2,7 @@ use super::{Access, AdminContext, api, ui::*};
 use leptos::prelude::*;
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::BTreeSet;
 
 #[derive(Clone, Deserialize)]
 struct Account {
@@ -9,6 +10,74 @@ struct Account {
     email: String,
     active: bool,
     sessions: i64,
+}
+
+#[derive(Deserialize)]
+struct Profile {
+    display_name: Option<String>,
+}
+
+#[component]
+fn ProfileSettings(dirty: RwSignal<bool>) -> impl IntoView {
+    let ctx = expect_context::<AdminContext>();
+    let initial = match ctx.access.get_untracked() {
+        Access::Ready(session) => session.display_name.unwrap_or_default(),
+        _ => String::new(),
+    };
+    let saved_name = RwSignal::new(initial.clone());
+    let display_name = RwSignal::new(initial);
+    let error = RwSignal::new(None);
+    let save = Action::new_local(move |_: &()| {
+        let input = json!({"display_name": display_name.get_untracked()});
+        async move {
+            error.set(None);
+            let result = api::save("PUT", "/api/v1/admin/profile", Some(input)).await;
+            match result {
+                Ok(value) => match serde_json::from_value::<Profile>(value) {
+                    Ok(profile) => {
+                        let name = profile.display_name.clone().unwrap_or_default();
+                        saved_name.set(name.clone());
+                        display_name.set(name);
+                        ctx.changed("Výchozí jméno u komentářů bylo uloženo.");
+                        // Keep the mounted account forms and their unsaved values.
+                        // The next page reads this updated session when it mounts.
+                        ctx.access.update_untracked(|access| {
+                            if let Access::Ready(session) = access {
+                                session.display_name = profile.display_name;
+                            }
+                        });
+                    }
+                    Err(_) => error.set(Some(api::Failure {
+                        status: 0,
+                        message: "Server vrátil neočekávanou odpověď. Obnovte stránku a ověřte uložené jméno.".into(),
+                    })),
+                },
+                Err(failure) => error.set(Some(failure)),
+            }
+        }
+    });
+    Effect::new(move |_| {
+        dirty.set(display_name.get() != saved_name.get() || save.pending().get());
+    });
+    view! {
+        <section class="admin-panel admin-form-section" id="moje-jmeno">
+            <h2>"Moje jméno u komentářů"</h2>
+            <p>"Toto jméno se předvyplní u nových komentářů k podnětům a závadám a zobrazí se veřejně. U každého komentáře ho můžete změnit."</p>
+            <form on:submit=move |ev| { ev.prevent_default(); if !save.pending().get_untracked() { save.dispatch(()); } }>
+                <fieldset disabled=move || save.pending().get()>
+                    <label class="admin-field" for="account-display-name">
+                        <span>"Výchozí jméno autora"</span>
+                        <input id="account-display-name" type="text" autocomplete="name" maxlength="120" aria-describedby="account-display-name-help"
+                            prop:value=move || display_name.get()
+                            on:input=move |ev| display_name.set(event_target_value(&ev))/>
+                    </label>
+                    <p id="account-display-name-help" class="admin-caption">"Pokud necháte jméno prázdné, budete ho vyplňovat u každého nového komentáře. Uložené komentáře se tím nezmění."</p>
+                    <ErrorMessage error/>
+                    <button class="button primary" type="submit">{move || if save.pending().get() { "Ukládám…" } else { "Uložit výchozí jméno" }}</button>
+                </fieldset>
+            </form>
+        </section>
+    }
 }
 
 #[component]
@@ -34,6 +103,8 @@ pub fn Accounts() -> impl IntoView {
         _ => 0,
     };
     let refresh = RwSignal::new(0u64);
+    let profile_dirty = RwSignal::new(false);
+    let dirty_rows = RwSignal::new(BTreeSet::<i64>::new());
     let accounts = LocalResource::new(move || {
         refresh.get();
         async { api::get::<Vec<Account>>("/api/v1/admin/accounts").await }
@@ -81,7 +152,6 @@ pub fn Accounts() -> impl IntoView {
             match result {
                 Ok(_) => {
                     email.set(String::new());
-                    ctx.dirty.set(false);
                     refresh.update(|v| *v += 1);
                     ctx.changed("Účet správce byl vytvořen.");
                 }
@@ -89,8 +159,23 @@ pub fn Accounts() -> impl IntoView {
             }
         }
     });
+    Effect::new(move |_| {
+        ctx.dirty.set(
+            profile_dirty.get()
+                || !dirty_rows.get().is_empty()
+                || !current.get().is_empty()
+                || !new_password.get().is_empty()
+                || !repeat.get().is_empty()
+                || !email.get().is_empty()
+                || !initial.get().is_empty()
+                || !authorize.get().is_empty()
+                || change.pending().get()
+                || create.pending().get(),
+        );
+    });
     view! {
         <Heading title="Účty a hesla" description="Správci mají plný přístup ke správě webu. Změny účtů se zaznamenávají do auditu."/>
+        <ProfileSettings dirty=profile_dirty/>
         <section class="admin-panel admin-form-section"><h2>"Moje heslo"</h2><p>"Po změně hesla se všechna vaše přihlášení ukončí. Přihlaste se znovu novým heslem."</p>
             <form on:submit=move |ev|{ev.prevent_default(); if !change.pending().get_untracked(){change.dispatch(());}}><fieldset disabled=move ||change.pending().get()>
                 <PasswordInput id="account-current" label="Současné heslo" value=current/>
@@ -102,7 +187,7 @@ pub fn Accounts() -> impl IntoView {
         <section class="admin-panel admin-form-section"><h2>"Správci webu"</h2>
             <Suspense fallback=move ||view!{<Pending/>}>{move ||accounts.get().map(|result|match result {
                 Err(error)=>view!{<FailureView error/>}.into_any(),
-                Ok(items)=>view!{<div class="admin-accounts">{items.into_iter().map(|account|view!{<AccountRow account own_id refresh/>}).collect_view()}</div>}.into_any(),
+                Ok(items)=>view!{<div class="admin-accounts">{items.into_iter().map(|account|view!{<AccountRow account own_id refresh dirty_rows/>}).collect_view()}</div>}.into_any(),
             })}</Suspense>
         </section>
         <section class="admin-panel admin-form-section"><h2>"Nový správce"</h2><p>"Počáteční heslo předejte příjemci bezpečnou cestou. Po přihlášení si ho může změnit."</p>
@@ -118,7 +203,12 @@ pub fn Accounts() -> impl IntoView {
 }
 
 #[component]
-fn AccountRow(account: Account, own_id: i64, refresh: RwSignal<u64>) -> impl IntoView {
+fn AccountRow(
+    account: Account,
+    own_id: i64,
+    refresh: RwSignal<u64>,
+    dirty_rows: RwSignal<BTreeSet<i64>>,
+) -> impl IntoView {
     let ctx = expect_context::<AdminContext>();
     let password = RwSignal::new(String::new());
     let error = RwSignal::new(None);
@@ -156,6 +246,21 @@ fn AccountRow(account: Account, own_id: i64, refresh: RwSignal<u64>) -> impl Int
     });
     let password_id = format!("account-reauth-{id}");
     let disabled = Signal::derive(move || action.pending().get() || password.get().is_empty());
+    Effect::new(move |_| {
+        let dirty = !password.get().is_empty() || action.pending().get();
+        dirty_rows.update(|rows| {
+            if dirty {
+                rows.insert(id);
+            } else {
+                rows.remove(&id);
+            }
+        });
+    });
+    on_cleanup(move || {
+        let _ = dirty_rows.try_update(|rows| {
+            rows.remove(&id);
+        });
+    });
     view! {<details class="admin-account"><summary><strong>{account.email}</strong>" · "{if active {"Aktivní"} else {"Neaktivní"}}{(id==own_id).then_some(" · váš účet")}<span>{format!(" · {} přihlášení",account.sessions)}</span></summary>
         <p>"Deaktivace zabrání přihlášení a ukončí všechny relace. Posledního aktivního správce nelze deaktivovat."</p>
         <label class="admin-field" for=password_id.clone()><span>"Vaše současné heslo pro potvrzení"</span><input id=password_id.clone() type="password" autocomplete="current-password" maxlength="1024" prop:value=move ||password.get() on:input=move |ev|password.set(event_target_value(&ev))/></label>

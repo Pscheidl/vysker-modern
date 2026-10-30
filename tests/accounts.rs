@@ -8,6 +8,121 @@ use serde_json::json;
 const PASSWORD: &str = "Testovaci-dlouhe-heslo-123456!";
 
 #[tokio::test]
+async fn own_display_name_is_optional_validated_persisted_and_protected() {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+
+    let app = App::new().await;
+    let path = "/api/v1/admin/profile";
+    let second_id =
+        obecni_web::backend::auth::create_admin(&app.state, "other@vysker.test", PASSWORD.into())
+            .await
+            .unwrap();
+    let session = body_json(app.call("GET", "/api/v1/admin/session", None, true).await).await;
+    assert!(session["display_name"].is_null());
+    let input = json!({"display_name":"  Jana Nováková  "});
+    assert_eq!(
+        app.call("PUT", path, Some(input.clone()), false)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    for (csrf, origin) in [
+        (None, None),
+        (Some(app.csrf.as_str()), Some("https://outside.test")),
+    ] {
+        let mut request = Request::builder()
+            .method("PUT")
+            .uri(path)
+            .header("cookie", &app.cookie)
+            .header("content-type", "application/json");
+        if let Some(csrf) = csrf {
+            request = request.header("x-csrf-token", csrf);
+        }
+        if let Some(origin) = origin {
+            request = request.header("origin", origin);
+        }
+        let response = app
+            .router
+            .clone()
+            .oneshot(request.body(Body::from(input.to_string())).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+    let response = app.call("PUT", path, Some(input), true).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(response).await,
+        json!({"display_name":"Jana Nováková"})
+    );
+    let session = body_json(app.call("GET", "/api/v1/admin/session", None, true).await).await;
+    assert_eq!(session["display_name"], "Jana Nováková");
+    let login = app
+        .call(
+            "POST",
+            "/api/v1/admin/login",
+            Some(json!({
+                "email":"admin@vysker.test", "password":PASSWORD
+            })),
+            false,
+        )
+        .await;
+    assert_eq!(login.status(), StatusCode::OK);
+    assert_eq!(body_json(login).await["display_name"], "Jana Nováková");
+
+    for name in [
+        "ž".repeat(121),
+        "Jana\nNováková".into(),
+        "Jana\u{0}Nováková".into(),
+    ] {
+        assert_eq!(
+            app.call("PUT", path, Some(json!({"display_name":name})), true)
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert_eq!(
+        app.call(
+            "PUT",
+            path,
+            Some(json!({"display_name":"Someone else", "administrator_id":second_id})),
+            true
+        )
+        .await
+        .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let session = body_json(app.call("GET", "/api/v1/admin/session", None, true).await).await;
+    assert_eq!(session["display_name"], "Jana Nováková");
+    let other_name: Option<String> =
+        sqlx::query_scalar("SELECT display_name FROM administrators WHERE id=$1")
+            .bind(second_id)
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap();
+    assert_eq!(other_name, None);
+
+    let boundary = "ž".repeat(120);
+    let response = app
+        .call("PUT", path, Some(json!({"display_name":boundary})), true)
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["display_name"], boundary);
+    for cleared in [json!("  "), json!(null)] {
+        let response = app
+            .call("PUT", path, Some(json!({"display_name":cleared})), true)
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(body_json(response).await["display_name"].is_null());
+    }
+    let audit_count: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_log WHERE operation='profile_updated' AND actor_id=$1 AND entity_type='administrator' AND entity_id=$1")
+        .bind(app.admin_id).fetch_one(&app.state.pool).await.unwrap();
+    assert_eq!(audit_count, 4);
+}
+
+#[tokio::test]
 async fn accounts_require_authentication_reauthentication_and_protect_last_admin() {
     let app = App::new().await;
     assert_eq!(

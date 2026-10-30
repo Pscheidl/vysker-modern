@@ -5,8 +5,8 @@ use super::{
     site_url,
 };
 use crate::reports::{
-    Report, ReportMap, ReportStatusFilter, load_report, load_report_map, load_reports,
-    report_excerpt, status_label,
+    Report, ReportMap, ReportStatusFilter, load_report, load_report_comments, load_report_map,
+    load_reports, report_excerpt, status_label,
 };
 use leptos::prelude::*;
 use leptos_meta::{Stylesheet, Title};
@@ -332,6 +332,51 @@ fn DetailMap(latitude: f64, longitude: f64) -> impl IntoView {
 }
 
 #[component]
+fn ReportComments(report_id: i64) -> impl IntoView {
+    let comments = Resource::new(move || report_id, load_report_comments);
+    view! {
+        <section class="report-comments" aria-labelledby="report-comments-title">
+            <h2 id="report-comments-title">"Komentáře obce"</h2>
+            <Suspense fallback=move || view! { <p class="field-note" role="status">"Načítám komentáře…"</p> }>
+                {move || comments.get().map(|result| match result {
+                    Err(_) => view! {
+                        <p role="alert">"Komentáře se nepodařilo načíst."</p>
+                        <button class="button secondary" type="button" on:click=move |_| comments.refetch()>"Načíst komentáře znovu"</button>
+                    }.into_any(),
+                    Ok(items) => {
+                        if items.is_empty() {
+                            return view! { <p class="field-note">"Obec zatím nepřidala žádný komentář."</p> }.into_any();
+                        }
+                        view! { <ol class="report-comments-list">{items.into_iter().map(|comment| {
+                            let edited = comment.updated_at != comment.created_at;
+                            let created = crate::events::date_label(&comment.created_at);
+                            let updated = crate::events::date_label(&comment.updated_at);
+                            let id = comment.id;
+                            view! {
+                                <li><article class="report-comment">
+                                    <header class="report-comment-header">
+                                        <strong>{comment.author_name}</strong>
+                                        <time datetime=comment.created_at>{created}</time>
+                                        {edited.then(|| view! { <span class="field-note">"Upraveno "<time datetime=comment.updated_at>{updated}</time></span> })}
+                                    </header>
+                                    <p class="report-comment-body">{comment.body}</p>
+                                    {(!comment.photo_ids.is_empty()).then(|| view! {
+                                        <div class="report-detail-photos" aria-label="Fotografie komentáře">{comment.photo_ids.into_iter().enumerate().map(|(index, photo)| {
+                                            let url = format!("/api/v1/reports/{report_id}/comments/{id}/photos/{photo}");
+                                            view! { <a class="report-detail-photo" href=url.clone() target="_blank" rel="noopener noreferrer" aria-label=format!("Otevřít fotografii {} komentáře", index + 1)><img src=url.clone() alt=format!("Fotografie {} ke komentáři obce", index + 1) loading="lazy"/></a> }
+                                        }).collect_view()}</div>
+                                    })}
+                                </article></li>
+                            }
+                        }).collect_view()}</ol> }.into_any()
+                    }
+                })}
+            </Suspense>
+        </section>
+    }
+}
+
+#[component]
 pub fn ReportDetail() -> impl IntoView {
     let params = use_params_map();
     let query = use_query_map();
@@ -370,6 +415,7 @@ pub fn ReportDetail() -> impl IntoView {
                     {item.address.map(|address|view!{<p><strong>"Místo: "</strong>{address}</p>})}
                     {item.latitude.zip(item.longitude).map(|(latitude,longitude)|view!{<DetailMap latitude longitude/>})}
                     {(!photos.is_empty()).then(||view!{<section class="report-detail-photos" aria-label="Fotografie k hlášení">{photos.into_iter().enumerate().map(|(index,url)|view!{<a href=url.clone() target="_blank" rel="noopener" class="report-detail-photo"><img src=url.clone() alt=format!("Fotografie k hlášení č. {}",index+1) loading="lazy"/></a>}).collect_view()}</section>})}
+                    <ReportComments report_id=item.id/>
                     {has_resolution.then(||view!{<section class="report-resolution" aria-labelledby="report-resolution-title">
                         <h2 id="report-resolution-title">"Řešení hlášení"</h2>
                         {resolved.then(||view!{<p class="field-note">"Hlášení je označeno jako vyřešené."</p>})}

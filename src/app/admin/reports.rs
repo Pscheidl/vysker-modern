@@ -85,7 +85,7 @@ fn allow_report_change(dirty: RwSignal<bool>) -> bool {
         web_sys::window().is_some_and(|window| {
             window
                 .confirm_with_message(
-                    "Řešení hlášení obsahuje neuložené změny. Opravdu je chcete zahodit?",
+                    "Detail hlášení obsahuje neuložené změny. Opravdu je chcete zahodit?",
                 )
                 .unwrap_or(false)
         })
@@ -297,6 +297,10 @@ fn ReportDetail(
     let ctx = expect_context::<AdminContext>();
     let id = report.id;
     let current = RwSignal::new(report);
+    let legacy_dirty = RwSignal::new(false);
+    let comments_dirty = RwSignal::new(false);
+    Effect::new(move |_| resolution_dirty.set(legacy_dirty.get() || comments_dirty.get()));
+    on_cleanup(move || resolution_dirty.set(false));
     let error = RwSignal::new(None);
     let update = Action::new_local(move |change: &ReportChange| {
         let body = match change {
@@ -325,6 +329,8 @@ fn ReportDetail(
     let initial = current.get_untracked();
     let coordinates = initial.latitude.zip(initial.longitude);
     let sender = initial.clone();
+    let has_resolution =
+        initial.resolution_comment.is_some() || !initial.resolution_photo_ids.is_empty();
     view! {
         <section class="admin-panel admin-form-section" aria-label="Detail hlášení" style="margin-top: 22px">
             <div class="admin-panel-heading"><h2>{format!("Hlášení #{id}")}</h2><button class="button secondary" type="button" disabled=move || updating.get() on:click=move |_| { if allow_report_change(resolution_dirty) { selected.set(None); } }>"Zavřít detail"</button></div>
@@ -347,7 +353,11 @@ fn ReportDetail(
                 }>{move || if current.get().hidden { "Znovu zveřejnit" } else { "Skrýt na veřejném webu" }}</button>
                 <Show when=move || !current.get().hidden><a class="text-link" href=format!("/hlaseni-zavad/{id}") target="_blank" rel="noopener noreferrer">"Otevřít veřejný detail"</a></Show>
             </div>
-            <ResolutionEditor current refresh updating dirty=resolution_dirty/>
+            <super::report_comments::CommentThread report_id=id hidden=Signal::derive(move || current.get().hidden) dirty=comments_dirty updating/>
+            <details class="report-legacy-resolution" open=has_resolution>
+                <summary>"Závěrečné shrnutí řešení (nepovinné)"</summary>
+                <ResolutionEditor current refresh updating dirty=legacy_dirty/>
+            </details>
         </section>
     }
 }
