@@ -336,7 +336,7 @@ async fn archive_record(
     actor: Option<i64>,
     now: OffsetDateTime,
 ) -> Result<()> {
-    let postings:Vec<i64>=sqlx::query_scalar("SELECT id FROM document_postings WHERE document_id=$1 AND certainty='documented' AND removed_on IS NULL AND removed_at IS NULL ORDER BY id").bind(id).fetch_all(&mut *conn).await?;
+    let postings:Vec<i64>=sqlx::query_scalar("SELECT id FROM document_postings WHERE document_id=$1 AND origin IN ('local','migration') AND initial_state='current' AND certainty='documented' AND removed_on IS NULL AND removed_at IS NULL ORDER BY id").bind(id).fetch_all(&mut *conn).await?;
     if postings.is_empty() {
         return Err(conflict("Není doloženo probíhající vyvěšení."));
     }
@@ -351,7 +351,7 @@ async fn archive_record(
 /// Dohání i termíny z doby, kdy server neběžel. Opakovaný běh je idempotentní.
 pub async fn maintenance(s: &Backend, now: OffsetDateTime) -> Result<()> {
     let mut tx = crate::db::begin_write(&s.pool).await?;
-    let expired: Vec<i64> = sqlx::query_scalar("SELECT d.id FROM documents d WHERE d.board_status='published' AND d.withdraw_on<=$1 AND EXISTS(SELECT 1 FROM document_postings p WHERE p.document_id=d.id AND p.origin='local' AND p.removed_at IS NULL AND p.removed_on IS NULL) ORDER BY d.id LIMIT 500")
+    let expired: Vec<i64> = sqlx::query_scalar("SELECT d.id FROM documents d WHERE d.board_status='published' AND d.withdraw_on<=$1 AND EXISTS(SELECT 1 FROM document_postings p WHERE p.document_id=d.id AND p.origin IN ('local','migration') AND p.initial_state='current' AND p.certainty='documented' AND p.removed_at IS NULL AND p.removed_on IS NULL) ORDER BY d.id LIMIT 500")
         .bind(today(now)).fetch_all(&mut *tx).await?;
     for id in expired {
         archive_record(&mut tx, id, None, now).await?;

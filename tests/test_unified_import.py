@@ -53,6 +53,8 @@ class UnifiedImportTests(unittest.TestCase):
             self.assertIsNone(posting[3])
             self.assertEqual(str(posting[4]), '2020-03-20')
             self.assertIsNone(posting[5])
+            self.assertEqual(conn.execute('SELECT initial_state FROM document_postings').fetchone()[0], 'historical')
+            self.assertEqual(conn.execute('SELECT has_current_posting,has_removed_posting FROM documents').fetchone(), (False, True))
 
     def test_board_and_catalog_have_one_content_row_and_repeat_is_unchanged(self):
         with connect(self.database) as conn:
@@ -228,6 +230,8 @@ class UnifiedImportTests(unittest.TestCase):
                 actual = conn.execute('SELECT planned_removal_on,removed_on,removed_at FROM document_postings').fetchone()
                 self.assertEqual(tuple(str(v) if v else None for v in actual), ('2030-03-20',None,None))
                 self.assertEqual(conn.execute('SELECT public_access FROM documents').fetchone()[0], not archive)
+                self.assertEqual(conn.execute('SELECT initial_state FROM document_postings').fetchone()[0], 'historical' if archive else 'current')
+                self.assertEqual(conn.execute('SELECT has_current_posting,has_removed_posting FROM documents').fetchone(), (not archive, archive))
 
     def test_destructive_reimport_has_no_unlock_escape_hatch(self):
         with connect(self.database) as conn:

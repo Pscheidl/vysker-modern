@@ -84,6 +84,8 @@ def finalize_board_documents(conn, document_ids, timestamp, allow_publication=Fa
                     removed = candidate
         documented = row['published_on'] is not None and row['published_on'] <= captured
         archive = row['board_status'] == 'archived'
+        initial_state = ('current' if row['board_status'] == 'published' else
+                         'historical' if row['board_status'] in ('archived', 'withdrawn') else 'uncertain')
         public = allow_publication and documented and row['board_status'] in ('published', 'archived') and (not archive or (documented and removed is not None))
         review = json.loads(row['review_json'])
         public_until = review.get('archive_until') if public and archive else None
@@ -93,10 +95,10 @@ def finalize_board_documents(conn, document_ids, timestamp, allow_publication=Fa
             status=CASE WHEN %s THEN 'published' ELSE 'draft' END,
             public_until=%s WHERE id=%s''',
             ('locked' if documented else 'review', timestamp, public, public, public_until, row['id']))
-        conn.execute('''INSERT INTO document_postings(document_id,origin,certainty,started_on,
+        conn.execute('''INSERT INTO document_postings(document_id,origin,certainty,initial_state,started_on,
             planned_removal_on,removed_on,after_action,public_until,snapshot_sha256,source_url)
-            VALUES (%s,'source',%s,%s,%s,%s,%s,%s,document_fingerprint(%s),%s)''',
-            (row['id'], 'documented' if documented else 'uncertain', row['published_on'],
+            VALUES (%s,'source',%s,%s,%s,%s,%s,%s,%s,document_fingerprint(%s),%s)''',
+            (row['id'], 'documented' if documented else 'uncertain', initial_state, row['published_on'],
              row['withdraw_on'], removed, 'retain' if row['retain_attachments'] else 'hide',
              public_until, row['id'], origin[0] if origin else None))
         conn.execute('''INSERT INTO audit_log(occurred_at,operation,entity_type,entity_id,details)

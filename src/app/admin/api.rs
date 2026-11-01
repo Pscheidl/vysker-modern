@@ -92,6 +92,7 @@ pub struct File {
 #[serde(default)]
 pub struct Posting {
     pub id: i64,
+    pub initial_state: String,
     pub origin: String,
     pub status: String,
     #[serde(alias = "started_on")]

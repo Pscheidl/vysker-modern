@@ -181,9 +181,9 @@ async fn document_details_identify_imports_without_exposing_hidden_archive_sourc
         (5,'Nový záznam','','published','now','published',FALSE,FALSE,NULL,NULL,'{}');
         UPDATE documents SET published_on='2020-01-01',lock_state='locked',locked_at=now() WHERE id=4;
         UPDATE documents SET published_on='2020-01-01',lock_state='locked',locked_at=now() WHERE id=5;
-        INSERT INTO document_postings(document_id,origin,certainty,started_on,removed_on,after_action,snapshot_sha256) VALUES
-        (4,'migration','documented','2020-01-01','2020-02-01','retain',document_fingerprint(4)),
-        (5,'migration','documented','2020-01-01',NULL,'hide',document_fingerprint(5));
+        INSERT INTO document_postings(document_id,origin,certainty,initial_state,started_on,removed_on,after_action,snapshot_sha256) VALUES
+        (4,'migration','documented','historical','2020-01-01','2020-02-01','retain',document_fingerprint(4)),
+        (5,'migration','documented','current','2020-01-01',NULL,'hide',document_fingerprint(5));
         INSERT INTO legacy_sources(source_key,source_url,fingerprint,captured_at,imported_at,metadata,document_id,notice_id,destination) VALUES
         ('doc','https://vysker.cz/assets/File.ashx?id_dokumenty=1','hash','now','now','{}',1,NULL,'/dokumenty/1'),
         ('draft','https://vysker.cz/assets/File.ashx?id_dokumenty=3','hash','now','now','{}',3,NULL,'/dokumenty/3'),
@@ -243,8 +243,8 @@ async fn local_notice_preview_preserves_attachments_but_cannot_launch_in_product
         '{\"archive_title\":\"Original title\",\"archive_basis\":\"Local preview\",\"archive_until\":\"9999-12-31\"}');
         INSERT INTO attachments(document_id,notice_id,name,content_type,size_bytes,data) VALUES (1,1,'file.pdf','application/pdf',4,'data');
         UPDATE documents SET lock_state='locked',locked_at=now() WHERE id=1;
-        INSERT INTO document_postings(document_id,origin,certainty,started_on,removed_on,after_action,public_until,snapshot_sha256,source_url)
-        VALUES (1,'source','documented','2020-01-01','2020-02-01','retain','9999-12-31',document_fingerprint(1),'https://vysker.cz/assets/File.ashx');
+        INSERT INTO document_postings(document_id,origin,certainty,initial_state,started_on,removed_on,after_action,public_until,snapshot_sha256,source_url)
+        VALUES (1,'source','documented','historical','2020-01-01','2020-02-01','retain','9999-12-31',document_fingerprint(1),'https://vysker.cz/assets/File.ashx');
         INSERT INTO legacy_sources(source_key,source_url,fingerprint,captured_at,imported_at,metadata,document_id,notice_id,destination)
         VALUES ('test-file','https://vysker.cz/assets/File.ashx','hash','now','now','{}',1,1,'/dokumenty/1');
         INSERT INTO legacy_notice_imports(source_key,notice_id,imported_at,preview_published,metadata)

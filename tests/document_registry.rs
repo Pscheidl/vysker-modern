@@ -600,7 +600,7 @@ async fn automatic_anonymized_release_is_rejected_and_legacy_removal_keeps_copy_
             day + Duration::days(2)
         };
         sqlx::query("UPDATE documents SET status='published',public_access=TRUE,board_status='published',published_on=$2,withdraw_on=$3,posting_after_action='anonymized',posting_redacted_id=$4 WHERE id=$1").bind(id).bind(day-Duration::days(10)).bind(removal).bind(derived).execute(&app.state.pool).await.unwrap();
-        let posting: i64 = sqlx::query_scalar("INSERT INTO document_postings(document_id,origin,certainty,started_on,started_at,planned_removal_on,after_action,redacted_document_id,snapshot_sha256) VALUES($1,'local','documented',$2,$3,$4,'anonymized',$5,document_fingerprint($1)) RETURNING id").bind(id).bind(day-Duration::days(10)).bind(now-Duration::days(10)).bind(removal).bind(derived).fetch_one(&app.state.pool).await.unwrap();
+        let posting: i64 = sqlx::query_scalar("INSERT INTO document_postings(document_id,origin,certainty,initial_state,started_on,started_at,planned_removal_on,after_action,redacted_document_id,snapshot_sha256) VALUES($1,'local','documented','current',$2,$3,$4,'anonymized',$5,document_fingerprint($1)) RETURNING id").bind(id).bind(day-Duration::days(10)).bind(now-Duration::days(10)).bind(removal).bind(derived).fetch_one(&app.state.pool).await.unwrap();
         assert_eq!(
             app.call(
                 "GET",
@@ -944,4 +944,165 @@ fn duration_leaves_every_requested_calendar_day_complete() {
     );
     assert!(posting_end(date!(2026 - 11 - 01), None, None).is_err());
     assert!(posting_end(date!(2026 - 11 - 01), None, Some(date!(2026 - 11 - 02))).is_err());
+}
+
+#[tokio::test]
+async fn historical_posting_without_removal_date_survives_local_reposting_and_removal() {
+    for origin in ["source", "migration"] {
+        for automatic in [false, true] {
+            let app = App::new().await;
+            let now = OffsetDateTime::now_utc();
+            let day = obecni_web::backend::today(now);
+            let id = draft(&app).await;
+            let attachment = file(&app, id).await;
+            sqlx::query("UPDATE documents SET public_access=TRUE,status='published',board_status='archived',published_on='2020-01-01',withdraw_on='2020-01-20',source_published_on='2020-01-01',attachments_public=TRUE WHERE id=$1").bind(id).execute(&app.state.pool).await.unwrap();
+            sqlx::query("UPDATE documents SET lock_state='locked' WHERE id=$1")
+                .bind(id)
+                .execute(&app.state.pool)
+                .await
+                .unwrap();
+            let old:i64=sqlx::query_scalar("INSERT INTO document_postings(document_id,origin,certainty,initial_state,started_on,planned_removal_on,after_action,snapshot_sha256,source_url) VALUES($1,$2,'documented','historical','2020-01-01','2020-01-20','retain',document_fingerprint($1),'https://example.test/history') RETURNING id").bind(id).bind(origin).fetch_one(&app.state.pool).await.unwrap();
+            sqlx::query("INSERT INTO document_announcements(document_id,origin) VALUES($1,'historical_import')").bind(id).execute(&app.state.pool).await.unwrap();
+            let original: Value =
+                sqlx::query_scalar("SELECT to_jsonb(p) FROM document_postings p WHERE id=$1")
+                    .bind(old)
+                    .fetch_one(&app.state.pool)
+                    .await
+                    .unwrap();
+            let archive = body_json(
+                app.call(
+                    "GET",
+                    "/api/v1/search?kind=notice&state=archive",
+                    None,
+                    false,
+                )
+                .await,
+            )
+            .await;
+            assert_eq!(archive["total"], 1);
+            for (action, input) in [
+                (
+                    "withdraw",
+                    json!({"reason":"Místní úkon nesmí uzavřít převzatou historii"}),
+                ),
+                (
+                    "plan",
+                    json!({"withdraw_on":day+Duration::days(30),"reason":"Zdrojový plán nelze přepsat"}),
+                ),
+            ] {
+                assert_eq!(
+                    app.call(
+                        "POST",
+                        &format!("/api/v1/admin/postings/{old}/{action}"),
+                        Some(input),
+                        true
+                    )
+                    .await
+                    .status(),
+                    StatusCode::CONFLICT
+                );
+            }
+            let approved = preview(&app, id).await;
+            assert_eq!(
+                post(&app, id, &approved["token"], "hide").await.status(),
+                StatusCode::CREATED
+            );
+            let local: i64 = sqlx::query_scalar(
+                "SELECT id FROM document_postings WHERE document_id=$1 AND origin='local'",
+            )
+            .bind(id)
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                app.call(
+                    "GET",
+                    &format!("/api/v1/attachments/{attachment}"),
+                    None,
+                    false
+                )
+                .await
+                .status(),
+                StatusCode::OK
+            );
+            if automatic {
+                // Keep the synthetic administrative session valid across the simulated worker date.
+                sqlx::query("UPDATE sessions SET expires_at=$1")
+                    .bind((now + Duration::days(30)).unix_timestamp())
+                    .execute(&app.state.pool)
+                    .await
+                    .unwrap();
+                obecni_web::backend::notices::maintenance(&app.state, now + Duration::days(21))
+                    .await
+                    .unwrap();
+            } else {
+                assert_eq!(
+                    app.call(
+                        "POST",
+                        &format!("/api/v1/admin/postings/{local}/withdraw"),
+                        Some(json!({"reason":"Ukončení nového místního vyvěšení"})),
+                        true
+                    )
+                    .await
+                    .status(),
+                    StatusCode::NO_CONTENT
+                );
+            }
+            let preserved: Value =
+                sqlx::query_scalar("SELECT to_jsonb(p) FROM document_postings p WHERE id=$1")
+                    .bind(old)
+                    .fetch_one(&app.state.pool)
+                    .await
+                    .unwrap();
+            assert_eq!(preserved, original, "{origin}, automatic={automatic}");
+            let projection:(String,bool,bool,bool)=sqlx::query_as("SELECT board_status,has_current_posting,has_removed_posting,attachments_public FROM documents WHERE id=$1").bind(id).fetch_one(&app.state.pool).await.unwrap();
+            assert_eq!(projection, ("archived".to_string(), false, true, false));
+            assert_eq!(
+                app.call(
+                    "GET",
+                    &format!("/api/v1/attachments/{attachment}"),
+                    None,
+                    false
+                )
+                .await
+                .status(),
+                StatusCode::NOT_FOUND
+            );
+            assert_eq!(
+                app.call(
+                    "GET",
+                    &format!("/api/v1/admin/attachments/{attachment}"),
+                    None,
+                    true
+                )
+                .await
+                .status(),
+                StatusCode::OK
+            );
+            let stored: Vec<u8> = sqlx::query_scalar("SELECT data FROM attachments WHERE id=$1")
+                .bind(attachment)
+                .fetch_one(&app.state.pool)
+                .await
+                .unwrap();
+            assert_eq!(stored, PDF);
+            let archive = body_json(
+                app.call(
+                    "GET",
+                    "/api/v1/search?kind=notice&state=archive",
+                    None,
+                    false,
+                )
+                .await,
+            )
+            .await;
+            assert_eq!(archive["total"], 1);
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>("SELECT count(*) FROM publication_outbox")
+                    .fetch_one(&app.state.pool)
+                    .await
+                    .unwrap(),
+                0
+            );
+        }
+    }
 }

@@ -43,9 +43,9 @@ def main():
                         board_published_at='2020-01-01T11:00:00Z' WHERE id=%s
                 """, (document_id,))
                 posting_id = conn.execute("""
-                    INSERT INTO document_postings(document_id,origin,certainty,started_on,
+                    INSERT INTO document_postings(document_id,origin,certainty,initial_state,started_on,
                                                   started_at,after_action,snapshot_sha256)
-                    VALUES (%s,'local','documented','2020-01-01','2020-01-01T11:00:00Z',
+                    VALUES (%s,'local','documented','current','2020-01-01','2020-01-01T11:00:00Z',
                             'hide',document_fingerprint(%s)) RETURNING id
                 """, (document_id,document_id)).fetchone()[0]
                 conn.execute("""

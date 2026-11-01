@@ -67,6 +67,15 @@ or UI default. `lock_state` is `draft`, permanently `locked`, or conservatively
 SHA-256 and immutable ID-based storage keys. All public downloads check current
 parent and attachment visibility, independent of search projections.
 
+Each posting also preserves its immutable `initial_state`: `current`, `historical`
+or `uncertain`. A missing actual removal date does not make a historical capture
+current. The current projection requires an explicitly current, documented,
+unclosed posting. The archive projection includes captured history without
+inventing its removal date. Local removal and schedule changes affect only current
+local or migrated-local postings, never an external source's evidence. Reposting
+a historical document therefore cannot prevent its new local attachment-access
+decision from taking effect or fabricate a source removal timestamp.
+
 The same migration adds explicit source authority, aliases, observed revisions,
 run evidence, indexed search and actual-posting projections. It separates
 policy-driven disposal from withdrawal and permanently suppresses reannouncement

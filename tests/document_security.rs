@@ -317,7 +317,7 @@ async fn uncertain_removed_history_is_not_a_public_board_archive_entry() {
         .execute(&app.state.pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO document_postings(document_id,origin,certainty,removed_on,after_action,snapshot_sha256) VALUES ($1,'migration','uncertain','2020-01-01','hide',document_fingerprint($1))")
+    sqlx::query("INSERT INTO document_postings(document_id,origin,certainty,initial_state,removed_on,after_action,snapshot_sha256) VALUES ($1,'migration','uncertain','uncertain','2020-01-01','hide',document_fingerprint($1))")
         .bind(id).execute(&app.state.pool).await.unwrap();
     assert_eq!(
         body_json(

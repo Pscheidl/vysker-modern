@@ -49,6 +49,8 @@ pub struct Document {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DocumentPosting {
     pub id: i64,
+    #[serde(default)]
+    pub initial_state: String,
     pub origin: String,
     pub certainty: String,
     pub started_on: Option<String>,
@@ -183,6 +185,7 @@ pub async fn document_from_pool(
     #[derive(sqlx::FromRow)]
     struct Posting {
         id: i64,
+        initial_state: String,
         origin: String,
         certainty: String,
         started_on: Option<time::Date>,
@@ -192,7 +195,7 @@ pub async fn document_from_pool(
         removed_at: Option<time::OffsetDateTime>,
     }
     let postings: Vec<Posting> = sqlx::query_as(
-        "SELECT id,origin,certainty,started_on,started_at,planned_removal_on,removed_on,removed_at
+        "SELECT id,origin,certainty,initial_state,started_on,started_at,planned_removal_on,removed_on,removed_at
          FROM document_postings WHERE document_id=$1 ORDER BY started_on DESC NULLS LAST,id DESC",
     )
     .bind(id)
@@ -214,6 +217,7 @@ pub async fn document_from_pool(
         .into_iter()
         .map(|posting| DocumentPosting {
             id: posting.id,
+            initial_state: posting.initial_state,
             origin: posting.origin,
             certainty: posting.certainty,
             started_on: posting.started_on.map(|v| v.to_string()),

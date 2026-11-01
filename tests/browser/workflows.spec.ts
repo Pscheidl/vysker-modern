@@ -350,8 +350,8 @@ test('cancelling a scheduled notice preserves private files and rejects a stale 
         board_published_at=to_char(CURRENT_TIMESTAMP AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
       WHERE id=%s RETURNING id
     )
-    INSERT INTO document_postings(document_id,origin,certainty,started_on,started_at,after_action,snapshot_sha256)
-      SELECT id,'local','documented',(CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Prague')::date,
+    INSERT INTO document_postings(document_id,origin,certainty,initial_state,started_on,started_at,after_action,snapshot_sha256)
+      SELECT id,'local','documented','current',(CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Prague')::date,
         CURRENT_TIMESTAMP,'hide',document_fingerprint(id) FROM published RETURNING document_id
   `, [Number(id)])).toEqual([[Number(id)]])
   expect(fixtureQuery('SELECT status FROM notices WHERE id=%s', [Number(id)])[0][0]).toBe('published')

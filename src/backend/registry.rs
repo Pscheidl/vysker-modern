@@ -191,7 +191,7 @@ pub async fn start_posting(
         return Err(conflict("Historie dokumentu vyžaduje ověření."));
     }
     sqlx::query("UPDATE documents SET lock_state='locked',public_access=TRUE,status='published',attachments_public=TRUE,metadata_restricted=FALSE,public_until=NULL,board_status='published',board_published_at=$2,published_at=coalesce(published_at,$2),withdrawn_at=NULL WHERE id=$1 AND NOT access_blocked").bind(id).bind(timestamp(now)).execute(&mut *conn).await?;
-    let posting_id:i64=sqlx::query_scalar("INSERT INTO document_postings(document_id,origin,certainty,started_on,started_at,planned_removal_on,after_action,public_until,snapshot_sha256) SELECT id,'local','documented',published_on,$2,withdraw_on,$3,$4,$5 FROM documents WHERE id=$1 RETURNING id").bind(id).bind(now).bind(&action).bind(public_until).bind(hash).fetch_one(&mut *conn).await?;
+    let posting_id:i64=sqlx::query_scalar("INSERT INTO document_postings(document_id,origin,certainty,initial_state,started_on,started_at,planned_removal_on,after_action,public_until,snapshot_sha256) SELECT id,'local','documented','current',published_on,$2,withdraw_on,$3,$4,$5 FROM documents WHERE id=$1 RETURNING id").bind(id).bind(now).bind(&action).bind(public_until).bind(hash).fetch_one(&mut *conn).await?;
     event(
         conn,
         id,
@@ -252,14 +252,14 @@ pub async fn remove_posting(
     reason: &str,
     now: OffsetDateTime,
 ) -> Result<()> {
-    let (id,action,until):(i64,String,Option<Date>)=sqlx::query_as("SELECT document_id,after_action,public_until FROM document_postings WHERE id=$1 AND certainty='documented' AND removed_at IS NULL AND removed_on IS NULL FOR UPDATE").bind(posting).fetch_optional(&mut *conn).await?.ok_or_else(||conflict("Vyvěšení již bylo ukončeno nebo není doloženo."))?;
+    let (id,action,until):(i64,String,Option<Date>)=sqlx::query_as("SELECT document_id,after_action,public_until FROM document_postings WHERE id=$1 AND origin IN ('local','migration') AND initial_state='current' AND certainty='documented' AND removed_at IS NULL AND removed_on IS NULL FOR UPDATE").bind(posting).fetch_optional(&mut *conn).await?.ok_or_else(||conflict("Místní vyvěšení již bylo ukončeno nebo není doloženo. Zdrojovou historii nelze ukončit místním úkonem."))?;
     sqlx::query("UPDATE document_postings SET removed_at=$2,removed_on=$3 WHERE id=$1")
         .bind(posting)
         .bind(now)
         .bind(today(now))
         .execute(&mut *conn)
         .await?;
-    let remaining:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM document_postings WHERE document_id=$1 AND certainty='documented' AND removed_at IS NULL AND removed_on IS NULL)").bind(id).fetch_one(&mut *conn).await?;
+    let remaining:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM document_postings WHERE document_id=$1 AND origin IN ('local','migration') AND initial_state='current' AND certainty='documented' AND removed_at IS NULL AND removed_on IS NULL)").bind(id).fetch_one(&mut *conn).await?;
     if !remaining {
         // Privacy is an access decision. Neither locked bytes nor filenames are changed.
         sqlx::query("UPDATE documents SET status='archived',board_status='archived',withdrawn_at=$2,attachments_public=$3,public_until=$4 WHERE id=$1").bind(id).bind(timestamp(now)).bind(action=="retain").bind(until).execute(&mut *conn).await?;
@@ -309,7 +309,7 @@ pub async fn plan(
         ));
     }
     let mut tx = crate::db::begin_write(&s.pool).await?;
-    let (id,old):(i64,Option<Date>)=sqlx::query_as("SELECT document_id,planned_removal_on FROM document_postings WHERE id=$1 AND removed_on IS NULL AND removed_at IS NULL FOR UPDATE").bind(posting).fetch_optional(&mut *tx).await?.ok_or_else(missing)?;
+    let (id,old):(i64,Option<Date>)=sqlx::query_as("SELECT document_id,planned_removal_on FROM document_postings WHERE id=$1 AND origin IN ('local','migration') AND initial_state='current' AND certainty='documented' AND removed_on IS NULL AND removed_at IS NULL FOR UPDATE").bind(posting).fetch_optional(&mut *tx).await?.ok_or_else(||conflict("Plán lze změnit pouze u probíhajícího místního vyvěšení."))?;
     sqlx::query("UPDATE document_postings SET planned_removal_on=$2 WHERE id=$1")
         .bind(posting)
         .bind(input.withdraw_on)
@@ -472,7 +472,7 @@ pub async fn history(
 }
 pub async fn postings(pool: &PgPool, id: i64, public: bool) -> Result<Vec<Value>> {
     let sql = if public {
-        "SELECT jsonb_build_object('id',p.id,'origin',origin,'certainty',certainty,'started_on',started_on,'started_at',started_at,'planned_removal_on',planned_removal_on,'removed_on',removed_on,'removed_at',removed_at,'corrections',coalesce((SELECT jsonb_agg(e.payload ORDER BY e.id) FROM document_events e WHERE e.document_id=p.document_id AND e.kind='evidence_corrected' AND (e.payload->>'posting_id')::bigint=p.id),'[]'::jsonb)) FROM document_postings p WHERE document_id=$1 ORDER BY p.id DESC LIMIT 100"
+        "SELECT jsonb_build_object('id',p.id,'origin',origin,'certainty',certainty,'initial_state',initial_state,'started_on',started_on,'started_at',started_at,'planned_removal_on',planned_removal_on,'removed_on',removed_on,'removed_at',removed_at,'corrections',coalesce((SELECT jsonb_agg(e.payload ORDER BY e.id) FROM document_events e WHERE e.document_id=p.document_id AND e.kind='evidence_corrected' AND (e.payload->>'posting_id')::bigint=p.id),'[]'::jsonb)) FROM document_postings p WHERE document_id=$1 ORDER BY p.id DESC LIMIT 100"
     } else {
         "SELECT to_jsonb(p) FROM document_postings p WHERE document_id=$1 ORDER BY id DESC LIMIT 100"
     };

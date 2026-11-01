@@ -604,3 +604,171 @@ async fn pre_upgrade_individual_message_rechecks_current_document_visibility() {
     assert!(body.is_none());
     assert!(capture.messages.try_recv().is_err());
 }
+
+async fn public_notice(app: &App, title: &str) -> i64 {
+    sqlx::query_scalar("INSERT INTO documents(title,status,board_status,created_at) VALUES ($1,'published','published','2026-01-01T00:00:00Z') RETURNING id")
+        .bind(title).fetch_one(&app.state.pool).await.unwrap()
+}
+
+async fn legacy_notice_mail(
+    app: &App,
+    recipient: (i64, i64),
+    old_id: i64,
+    body: &str,
+    at: OffsetDateTime,
+) -> i64 {
+    sqlx::query_scalar("INSERT INTO mail_queue(subscriber_id,consent_id,purpose,deduplication_key,subject,body,next_attempt_at,created_at) VALUES($1,$2,'document',$3,'Legacy notice',$4,$5,$5) RETURNING id")
+        .bind(recipient.0).bind(recipient.1).bind(format!("notice:{old_id}:{}",recipient.0))
+        .bind(body).bind(at.unix_timestamp()).fetch_one(&app.state.pool).await.unwrap()
+}
+
+#[tokio::test]
+async fn legacy_notice_mail_checks_mapped_private_target_despite_public_id_collision() {
+    let app = App::new().await;
+    let recipient = recipient(&app, "mapped-private@example.test").await;
+    let now = hour();
+    let collision = public_notice(&app, "Unrelated public notice").await;
+    let original = public_notice(&app, "Original private notice").await;
+    sqlx::query(
+        "INSERT INTO document_legacy_ids(old_model,old_id,document_id) VALUES ('notice',$1,$2)",
+    )
+    .bind(collision)
+    .bind(original)
+    .execute(&app.state.pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE documents SET public_access=FALSE,access_blocked=TRUE WHERE id=$1")
+        .bind(original)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    let message =
+        legacy_notice_mail(&app, recipient, collision, "Private original contents", now).await;
+    let mut capture = Capture::new(false).await;
+    let state = capture.backend(&app);
+    assert!(
+        mail::deliver_one(&state, &mail::transport(&state).unwrap(), now)
+            .await
+            .unwrap()
+    );
+    let row: (bool, Option<String>, Option<i64>) =
+        sqlx::query_as("SELECT cancelled,body,sent_at FROM mail_queue WHERE id=$1")
+            .bind(message)
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap();
+    assert_eq!(row, (true, None, None));
+    assert!(capture.messages.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn legacy_notice_mail_without_mapping_never_uses_current_numeric_id() {
+    let app = App::new().await;
+    let recipient = recipient(&app, "unmapped-private@example.test").await;
+    let now = hour();
+    let collision = public_notice(&app, "Current public notice").await;
+    let message =
+        legacy_notice_mail(&app, recipient, collision, "Unresolved old contents", now).await;
+    let mut capture = Capture::new(false).await;
+    let state = capture.backend(&app);
+    assert!(
+        mail::deliver_one(&state, &mail::transport(&state).unwrap(), now)
+            .await
+            .unwrap()
+    );
+    assert!(
+        sqlx::query_scalar::<_, bool>(
+            "SELECT cancelled AND body IS NULL AND sent_at IS NULL FROM mail_queue WHERE id=$1"
+        )
+        .bind(message)
+        .fetch_one(&app.state.pool)
+        .await
+        .unwrap()
+    );
+    assert!(capture.messages.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn legacy_notice_mail_deduplicates_canonical_targets_without_hiding_id_collision() {
+    let app = App::new().await;
+    let recipient = recipient(&app, "mapped-dedup@example.test").await;
+    let cutoff = hour();
+    let collision = public_notice(&app, "Different canonical publication").await;
+    let original = public_notice(&app, "Original migrated publication").await;
+    sqlx::query(
+        "INSERT INTO document_legacy_ids(old_model,old_id,document_id) VALUES ('notice',$1,$2)",
+    )
+    .bind(collision)
+    .bind(original)
+    .execute(&app.state.pool)
+    .await
+    .unwrap();
+    let body =
+        format!("Original migrated publication\nhttp://localhost:3000/uredni-deska/{collision}");
+    let message = legacy_notice_mail(
+        &app,
+        recipient,
+        collision,
+        &body,
+        cutoff - Duration::seconds(1),
+    )
+    .await;
+    // Both former publication kinds must resolve to the same already queued item.
+    enqueue(&app, recipient, original, cutoff - Duration::seconds(1)).await;
+    for id in [original, collision] {
+        sqlx::query("INSERT INTO publication_outbox(notice_id,subscriber_id,consent_id,created_at) VALUES ($1,$2,$3,$4)")
+            .bind(id).bind(recipient.0).bind(recipient.1).bind(cutoff.unix_timestamp()-1)
+            .execute(&app.state.pool).await.unwrap();
+    }
+    assert!(
+        mail::prepare_publications(&app.state, cutoff)
+            .await
+            .unwrap()
+    );
+    assert_eq!(counts(&app).await, (0, 2, 1));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT notice_id FROM mail_publication_items")
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap(),
+        collision
+    );
+    let retained: (String, String, i64) =
+        sqlx::query_as("SELECT deduplication_key,body,attempts FROM mail_queue WHERE id=$1")
+            .bind(message)
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        retained,
+        (format!("notice:{collision}:{}", recipient.0), body, 0)
+    );
+
+    // Hiding the coincidentally equal canonical ID must not cancel the original.
+    sqlx::query("UPDATE documents SET public_access=FALSE,access_blocked=TRUE WHERE id=$1")
+        .bind(collision)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    let mut capture = Capture::new(false).await;
+    let state = capture.backend(&app);
+    let smtp = mail::transport(&state).unwrap();
+    assert!(mail::deliver_one(&state, &smtp, cutoff).await.unwrap());
+    assert!(
+        capture
+            .message()
+            .await
+            .contains("Original migrated publication")
+    );
+    assert!(
+        sqlx::query_scalar::<_, bool>(
+            "SELECT sent_at IS NOT NULL AND NOT cancelled FROM mail_queue WHERE id=$1"
+        )
+        .bind(message)
+        .fetch_one(&app.state.pool)
+        .await
+        .unwrap()
+    );
+    assert!(mail::deliver_one(&state, &smtp, cutoff).await.unwrap());
+    assert!(capture.messages.try_recv().is_err());
+}

@@ -254,9 +254,12 @@ pub async fn prepare_publications(s: &Backend, now: OffsetDateTime) -> Result<bo
                   OR coalesce(document_is_public(d,(now() AT TIME ZONE 'Europe/Prague')::date),FALSE)
                   OR coalesce(e.published AND NOT e.cancelled,FALSE))
              AND NOT EXISTS (SELECT 1 FROM mail_queue m WHERE m.deduplication_key=
-                 concat(CASE WHEN o.notice_id IS NOT NULL THEN 'notice'
-                             WHEN o.document_id IS NOT NULL THEN 'document' ELSE 'event' END,
-                        ':',coalesce(o.notice_id,o.document_id,o.event_id),':',o.subscriber_id))
+                 concat(CASE WHEN o.event_id IS NOT NULL THEN 'event' ELSE 'document' END,
+                        ':',coalesce(o.notice_id,o.document_id,o.event_id),':',o.subscriber_id)
+                 OR m.deduplication_key IN (
+                     SELECT concat('notice:',l.old_id,':',o.subscriber_id)
+                     FROM document_legacy_ids l WHERE l.old_model='notice'
+                       AND l.document_id=coalesce(o.notice_id,o.document_id)))
              AND NOT EXISTS (SELECT 1 FROM mail_publication_items i
                  WHERE i.subscriber_id=o.subscriber_id
                    AND (i.notice_id=o.notice_id OR i.document_id=o.document_id OR i.event_id=o.event_id))) AS allowed
@@ -430,7 +433,8 @@ struct Pending {
 }
 
 impl Pending {
-    /// Publication keys retain their type and recipient across worker restarts.
+    /// Individual keys predate digests. A notice ID belongs to the old table,
+    /// whereas document and event IDs retained their namespaces during migration.
     fn publication_target(&self) -> Option<PublicationTarget> {
         let mut parts = self.deduplication_key.as_deref()?.split(':');
         let kind = parts.next()?;
@@ -453,7 +457,20 @@ async fn matches_preferences(s: &Backend, message: &Pending) -> anyhow::Result<b
         return Ok(true);
     }
     let (notice_id, document_id, event_id) = match message.publication_target() {
-        Some(PublicationTarget::Notice(id)) => (Some(id), None, None),
+        Some(PublicationTarget::Notice(old_id)) => {
+            // Never fall back to the same numeric canonical ID. It can identify
+            // another public document while this message's original is private.
+            let id: Option<i64> = sqlx::query_scalar(
+                "SELECT document_id FROM document_legacy_ids WHERE old_model='notice' AND old_id=$1",
+            )
+            .bind(old_id)
+            .fetch_optional(&s.pool)
+            .await?;
+            let Some(id) = id else {
+                return Ok(false);
+            };
+            (Some(id), None, None)
+        }
         Some(PublicationTarget::Document(id)) => (None, Some(id), None),
         Some(PublicationTarget::Event(id)) => (None, None, Some(id)),
         None => return Ok(false),

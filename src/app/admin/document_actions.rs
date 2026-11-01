@@ -358,6 +358,7 @@ fn PostingRecord(
     let emergency = RwSignal::new(false);
     let plan = RwSignal::new(posting.withdraw_on.clone().unwrap_or_default());
     let active = posting.origin == "local"
+        && posting.initial_state == "current"
         && posting.withdrawn_at.is_none()
         && posting.withdrawn_on.is_none();
     let action = Action::new_local(move |operation: &String| {
@@ -393,6 +394,8 @@ fn PostingRecord(
     );
     view! {<li><h3>{format!("Vyvěšení #{id}")}</h3><p>{if posting.origin=="local" {"Místní vyvěšení"}else{"Převzatá historie zdroje"}}</p>
         <dl class="document-facts"><div><dt>"Vyvěšeno"</dt><dd>{crate::catalog::document_event_date(posting.published_at.as_deref(),posting.published_on.as_deref())}</dd></div><div><dt>"Plánované sejmutí"</dt><dd>{posting.withdraw_on.as_deref().map(api::date).unwrap_or_else(||"Není určeno".into())}</dd></div><div><dt>"Skutečné sejmutí"</dt><dd>{actual_withdrawal}</dd></div></dl>
+        {(posting.initial_state=="historical"&&posting.withdrawn_at.is_none()&&posting.withdrawn_on.is_none()).then(||view!{<p class="field-note">"Historické vyvěšení. Skutečné datum sejmutí není doloženo."</p>})}
+        {(posting.initial_state=="uncertain").then(||view!{<p class="field-note">"Z dostupných údajů nelze určit, zda bylo vyvěšení při převzetí stále aktuální."</p>})}
         <p class="field-note">{match posting.after_action.as_str(){"retain"=>"Po sejmutí zůstávají přílohy veřejně dostupné.","hide"=>"Po sejmutí jsou přílohy dostupné pouze administrátorům.",_=>"Režim po sejmutí vyžaduje ověření."}}</p>
         {active.then(move ||view!{<details><summary>"Zaznamenat sejmutí nebo změnit plán"</summary><ErrorMessage error/>
             <label class="admin-field" for=format!("posting-reason-{id}")><span>"Interní důvod *"</span><textarea id=format!("posting-reason-{id}") maxlength="2000" prop:value=move ||reason.get() on:input=move |ev|reason.set(event_target_value(&ev))></textarea></label>

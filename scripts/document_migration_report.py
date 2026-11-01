@@ -52,9 +52,12 @@ def snapshot(conn, as_of=None):
                 f'SELECT id,({public}) AS public,NOT ({active}) AS metadata_restricted,coalesce((({public}) AND (({active}) OR ({retained}))),FALSE) AS files_public FROM notices ORDER BY id',
                 (as_of,as_of,as_of,as_of,as_of,as_of,as_of))]
             mapping, issues, integrity = [], [], {}
+        # Legacy files inherit their parent's visibility. Per-file restriction
+        # is introduced by 0029 and starts TRUE without widening parent access.
+        attachment_public = 'is_public' if canonical else 'TRUE'
         attachments = rows(conn, f'''SELECT id,document_id,notice_id,size_bytes,octet_length(data) AS byte_length,
             encode(sha256(data),'hex') AS bytes_sha256,sha256 AS recorded_sha256,
-            {hash_sql("jsonb_build_array(name,content_type,size_bytes,sort_order,removed_at)")} AS metadata_sha256
+            {hash_sql("jsonb_build_array(name,content_type,size_bytes,sort_order,removed_at," + attachment_public + ")")} AS metadata_sha256
             FROM attachments ORDER BY id''')
         linked = {}
         for table, identity in [('legacy_sources','source_key'),('legacy_notice_imports','source_key'),

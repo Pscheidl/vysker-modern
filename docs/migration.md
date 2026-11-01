@@ -134,6 +134,11 @@ locks content permanently. Uncertain history gets a conservative `review` lock,
 without asserting a documented posting. Both preserve capture time and source
 dates separately from any local event. A captured historical PDF is described as
 a copy captured during import, not a verified historical original.
+The posting's immutable `initial_state` records whether it was taken as current,
+historical or uncertain. Historical source records remain archival when their
+actual removal date is unknown. A later local posting and its removal leave that
+source history unchanged. Source dates are never completed from the local worker's
+clock or merely from an expired planned deadline.
 
 `--skip-pages` excludes content pages, galleries and unrelated images while
 retaining documents, board records and calendar entries. Container pages linking

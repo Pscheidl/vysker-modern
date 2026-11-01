@@ -1,8 +1,69 @@
 # Unified document verification
 
-This report concerns local implementation and synthetic test data only. No live
-records, subscriber data, production deployment or physical notice board were
-accessed or changed. Test success does not establish legal publication.
+This report distinguishes the original synthetic verification from the protected
+production-copy rehearsal below. Neither establishes lawful physical publication.
+Production records and backups are not fixtures and are never included in Git.
+
+## Production-copy rehearsal, 2026-11-01
+
+Before the final release commit, a consistent PostgreSQL custom-format backup and
+the existing import cache were copied from the actual `vysker.info` deployment.
+The deployment's historical `staging` names and `OBEC_PRODUCTION=false` were not
+treated as permission to discard subscribers or send test mail. Production itself
+was only read during this rehearsal.
+
+The backup was restored into a separate PostgreSQL 18.6 cluster with no TCP
+listener. Its socket, database files and reports are in private directories.
+Only `obec-admin migrate` ran against the copy, with no web, maintenance or SMTP
+workers. The actual upgrade is schema 26 to 29, including the unchanged main
+migrations 27 and 28. The final migration took 6.234 seconds while other tests
+were running. A preservation rollback was also rehearsed: restoring the original
+backup took 22.941 seconds and reproduced the entire original inventory exactly,
+including subscribers and consents. No discard-subscriptions restore was used.
+
+| Invariant | Before | After final migration and two imports |
+| --- | ---: | ---: |
+| Content records | 287 documents + 833 notices | 1,120 canonical documents |
+| Attachments, including the existing removed record | 1,119 | 1,119 |
+| Stored attachment bytes | 494,322,022 | 494,322,022, identical SHA-256 values |
+| Stable source mappings | 1,353 | 1,353 |
+| Subscribers and their consents | 6 and 6 | 6 and 6, identical rows |
+| Existing mail queue records | 51 sent, 0 pending | Same 51 rows, 0 new mail |
+| Publication outbox | 0 | 0 |
+
+The inventory verified all parent mappings, colliding legacy ID namespaces,
+metadata, attachment order, individual file visibility, effective public access
+and legacy URL destinations. Thirty-five unrelated tables were also compared
+by row hashes. There were no source-domain/key mismatches, duplicate source URL
+identities, missing historical announcement markers or invalid locked snapshots.
+
+The copied cache reconstructed the exact previous successful crawl without a
+network request: 405 pages, 1,146 discovered assets and one previously recorded
+unavailable resource. With the existing production flags and the audited `mirror`
+configuration described below, **each of two imports reported 1,353 unchanged
+items, zero new items, zero conflicts and zero new revisions or announcements**.
+Only import-run records and source-observation timestamps changed.
+
+The copy retains 833 historical postings and zero current postings. Its existing
+uncertainties remain explicit: 327 postings require review of their publication
+evidence and 832 lack a proven source removal date. These counts overlap and do
+not represent missing documents. They are not converted into current postings or
+invented local dates. `initial_state` distinguishes historical captures from
+current postings even when actual removal is unknown. A later local posting and
+its removal cannot rewrite that source history or prevent the chosen attachment
+restriction from taking effect.
+
+Additional pre-release fixes preserve historical import mappings recorded only
+in `legacy_notice_imports` and resolve old `notice:ID:recipient` mail identities
+through the namespace mapping. Existing queued messages are not rewritten.
+Final native Rust verification passed **294 tests**, with the seven expected
+external/load cases skipped. Python discovery passed **142 tests**. Dedicated
+regressions cover historical source and migrated local postings, manual and
+automatic removal, rejected public downloads and successful admin downloads.
+
+The actual VPS also reports PostgreSQL 18.6, available `pg_trgm` 1.6 and the
+required `CREATE` privilege on its existing database for that trusted extension.
+Its active proxy uses `reverse_proxy`, with no public file-storage alias.
 
 ## Baseline and repeatable workload
 
@@ -372,7 +433,27 @@ cannot classify uncertain municipal records or prove their historical bytes.
    Uncertain histories and possible duplicate identities are reported for review,
    never automatically merged or republished. Do not resume a source whose
    policy has not been explicitly reviewed for the handover.
-6. Start only the new release after validation. Observe readiness and the existing
+6. Before restarting the existing Vyskeř synchronization timer, explicitly retain
+   its previous additive publication policy. Migration 0029 starts sources in
+   private proposal mode, so applying the migration alone would stop publishing
+   newly discovered items. With the same application connection file, run:
+
+   ```sh
+   python3 scripts/legacy_sync.py configure --mode mirror --allow-publication \
+     --reason 'Zachování existující průběžné synchronizace při sjednocení dokumentů'
+   ```
+
+   This records an audited configuration change. Keep the production timer's
+   existing `run --state /app/migration --notice-map config/legacy-vysker-notices.json
+   --publish-content --archive-notices --skip-pages` arguments and its two-hour
+   daytime schedule. Rehearse the same configuration step on the restored copy
+   before two identical offline imports. `mirror` preserves existing permission
+   to add new public items, while `allow_operational` remains false. It does not
+   authorize source changes to overwrite locked content, local withdrawal or
+   publication decisions. Source changes become private review revisions and
+   historical document notifications remain suppressed. Never configure this
+   permission for a different source without reviewing its existing authority.
+7. Start only the new release after validation. Observe readiness and the existing
    maintenance/mail monitoring. Historical documents remain suppressed by
    `document_announcements` even if subscribers joined later. Existing pending
    mail retains its identity and is rechecked against current access before send.

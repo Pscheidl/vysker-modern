@@ -39,6 +39,28 @@ def baseline(conn):
 
 
 class DocumentMigrationTests(unittest.TestCase):
+    def test_reconciled_source_copy_keeps_historical_lock_and_mail_suppression(self):
+        with temporary_database() as database, connect(database) as conn:
+            baseline(conn)
+            conn.execute("INSERT INTO notices(id,title,description,published_on,status,review_json) VALUES(4,'Převzatá kopie','Syntetická historie','2020-01-01','draft','{}')")
+            conn.execute("INSERT INTO legacy_notice_imports(source_key,notice_id,imported_at,preview_published,metadata) VALUES('doc:1',4,'2026-10-01T00:00:00Z',FALSE,%s::jsonb)", (json.dumps({'source_dates': {'published_on': '2020-01-01', 'removed_on': '2020-01-20'}, 'source_document_id': 1, 'source_attachment_id': 1}),))
+            conn.execute("INSERT INTO attachments(id,notice_id,name,content_type,size_bytes,data,sha256) VALUES(6,4,'copied.pdf','application/pdf',%s,%s,%s)", (len(PDF), PDF, SHA))
+            conn.execute((ROOT / 'migrations/0029_unified_documents.sql').read_text())
+            conn.commit()
+            canonical = conn.execute("SELECT document_id FROM document_legacy_ids WHERE old_model='notice' AND old_id=4").fetchone()[0]
+            self.assertNotEqual(canonical, 1)
+            self.assertEqual(conn.execute('SELECT document_id FROM legacy_sources WHERE source_key=%s', ('doc:1',)).fetchone()[0], 1)
+            self.assertEqual(conn.execute('SELECT notice_id FROM legacy_notice_imports WHERE source_key=%s', ('doc:1',)).fetchone()[0], canonical)
+            self.assertEqual(conn.execute('SELECT lock_state,public_access FROM documents WHERE id=%s', (canonical,)).fetchone(), ('locked', False))
+            self.assertEqual(conn.execute('SELECT origin,certainty,started_on,started_at,removed_on,source_url FROM document_postings WHERE document_id=%s', (canonical,)).fetchone(), ('source', 'documented', date(2020, 1, 1), None, date(2020, 1, 20), 'https://source.test/doc:1'))
+            self.assertEqual(conn.execute('SELECT data,sha256,document_id FROM attachments WHERE id=6').fetchone(), (PDF, SHA, canonical))
+            self.assertFalse(conn.execute('SELECT claim_document_announcement(%s,now())', (canonical,)).fetchone()[0])
+            self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox').fetchone()[0], 1)
+            self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 1)
+            with self.assertRaises(psycopg.Error):
+                with conn.transaction():
+                    conn.execute("UPDATE documents SET title='Změna historie' WHERE id=%s", (canonical,))
+
     def test_council_category_rename_preserves_ids_links_and_subscription_choices(self):
         with temporary_database() as database, connect(database) as conn:
             baseline(conn)
@@ -98,6 +120,10 @@ class DocumentMigrationTests(unittest.TestCase):
             self.assertEqual(conn.execute('SELECT lock_state,public_access FROM documents WHERE id=%s', (active,)).fetchone(), ('locked', True))
             self.assertEqual(conn.execute('SELECT lock_state,public_access FROM documents WHERE id=%s', (historical,)).fetchone(), ('locked', True))
             self.assertEqual(conn.execute('SELECT lock_state,public_access FROM documents WHERE id=%s', (uncertain,)).fetchone(), ('review', False))
+            self.assertEqual(conn.execute('SELECT initial_state FROM document_postings WHERE document_id=%s', (active,)).fetchone()[0], 'current')
+            self.assertEqual(conn.execute('SELECT initial_state FROM document_postings WHERE document_id=%s', (historical,)).fetchone()[0], 'historical')
+            self.assertEqual(conn.execute('SELECT initial_state FROM document_postings WHERE document_id=%s', (uncertain,)).fetchone()[0], 'uncertain')
+            self.assertEqual(conn.execute('SELECT has_current_posting,has_removed_posting FROM documents WHERE id=%s', (historical,)).fetchone(), (False, True))
             self.assertFalse(conn.execute('SELECT public_access FROM documents WHERE id=2').fetchone()[0])
             self.assertEqual(conn.execute('SELECT started_on,started_at,origin FROM document_postings WHERE document_id=%s', (historical,)).fetchone(), (date(2020, 1, 1), None, 'source'))
             self.assertEqual(conn.execute('SELECT notice_id,subscriber_id,consent_id FROM publication_outbox').fetchall(), [(active, 1, 1)])
@@ -112,6 +138,7 @@ class DocumentMigrationTests(unittest.TestCase):
                 ("DELETE FROM attachments WHERE id=3", ()),
                 ("INSERT INTO attachments(document_id,name,content_type,size_bytes,data) VALUES (%s,'new.pdf','application/pdf',%s,%s)", (active, len(PDF), PDF)),
                 ("UPDATE documents SET title='Unverified edit' WHERE id=%s", (uncertain,)),
+                ("UPDATE document_postings SET initial_state='current' WHERE document_id=%s", (historical,)),
             ]
             for query, params in forbidden:
                 with self.subTest(query=query):
@@ -154,6 +181,10 @@ class DocumentMigrationTests(unittest.TestCase):
             damaged = copy.deepcopy(after)
             damaged['unchanged']['mail_queue'].append(dict(id=999,row_sha256='new'))
             self.assertIn('mail_or_subscriber_rows_changed', compare(before, damaged)['discrepancy_counts'])
+            conn.execute('UPDATE attachments SET is_public=FALSE WHERE id=1')
+            conn.commit()
+            changed_visibility = snapshot(conn, before['as_of_date'])
+            self.assertIn('attachment_content_changed', compare(before, changed_visibility)['discrepancy_counts'])
 
     def test_dump_restore_rehearsal_preserves_original_schema_bytes_mail_and_consent(self):
         from document_migration_report import snapshot, compare

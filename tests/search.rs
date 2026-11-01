@@ -14,7 +14,7 @@ async fn posting(app: &App, id: i64, removed: bool) {
         .execute(&app.state.pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO document_postings(document_id,origin,certainty,started_on,removed_on,after_action,snapshot_sha256) SELECT id,'source','documented',published_on,CASE WHEN $2 THEN DATE '2026-10-01' ELSE NULL END,'retain',document_fingerprint(id) FROM documents WHERE id=$1")
+    sqlx::query("INSERT INTO document_postings(document_id,origin,certainty,initial_state,started_on,removed_on,after_action,snapshot_sha256) SELECT id,'source','documented',CASE WHEN $2 THEN 'historical' ELSE 'current' END,published_on,CASE WHEN $2 THEN DATE '2026-10-01' ELSE NULL END,'retain',document_fingerprint(id) FROM documents WHERE id=$1")
         .bind(id).bind(removed).execute(&app.state.pool).await.unwrap();
 }
 fn scope(kind: &str, state: &str) -> SearchQuery {

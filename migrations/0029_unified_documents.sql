@@ -126,6 +126,7 @@ CREATE TABLE document_postings (
     document_id BIGINT NOT NULL REFERENCES documents(id),
     origin TEXT NOT NULL CHECK(origin IN ('local','source','migration')),
     certainty TEXT NOT NULL CHECK(certainty IN ('documented','uncertain')),
+    initial_state TEXT NOT NULL DEFAULT 'uncertain' CHECK(initial_state IN ('current','historical','uncertain')),
     started_on DATE,
     started_at TIMESTAMPTZ,
     planned_removal_on DATE,
@@ -137,11 +138,11 @@ CREATE TABLE document_postings (
     snapshot_sha256 TEXT,
     source_url TEXT,
     captured_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CHECK(origin<>'local' OR started_at IS NOT NULL),
+    CHECK(origin<>'local' OR (started_at IS NOT NULL AND initial_state='current')),
     CHECK(after_action<>'anonymized' OR redacted_document_id IS NOT NULL)
 );
 CREATE INDEX document_postings_document ON document_postings(document_id,id);
-CREATE INDEX document_postings_current ON document_postings(document_id,planned_removal_on) WHERE removed_at IS NULL AND removed_on IS NULL AND certainty='documented';
+CREATE INDEX document_postings_current ON document_postings(document_id,planned_removal_on) WHERE initial_state='current' AND removed_at IS NULL AND removed_on IS NULL AND certainty='documented';
 CREATE UNIQUE INDEX document_postings_one_local_current ON document_postings(document_id) WHERE origin='local' AND removed_at IS NULL AND removed_on IS NULL;
 UPDATE documents d SET catalog_date=coalesce(document_date,source_published_on,CASE WHEN NOT EXISTS(SELECT 1 FROM legacy_sources s WHERE s.document_id=d.id) THEN (published_at::timestamptz AT TIME ZONE 'Europe/Prague')::date END);
 CREATE INDEX documents_catalog ON documents(catalog_date DESC NULLS LAST,id DESC) WHERE public_access AND NOT access_blocked;
@@ -170,14 +171,25 @@ CREATE FUNCTION document_is_public(d documents,day DATE) RETURNS BOOLEAN LANGUAG
  SELECT d.public_access AND NOT d.access_blocked AND (d.public_until IS NULL OR d.public_until>day)
 $$;
 -- Capture date/hash prove only the bytes available at migration, never historical fidelity.
-INSERT INTO document_postings(document_id,origin,certainty,started_on,started_at,planned_removal_on,removed_on,removed_at,after_action,public_until,snapshot_sha256,source_url)
- SELECT d.id,CASE WHEN s.source_key IS NOT NULL THEN 'source' ELSE 'migration' END,
+INSERT INTO document_postings(document_id,origin,certainty,initial_state,started_on,started_at,planned_removal_on,removed_on,removed_at,after_action,public_until,snapshot_sha256,source_url)
+ SELECT d.id,CASE WHEN s.source_key IS NOT NULL AND d.board_published_at IS NULL THEN 'source' ELSE 'migration' END,
   CASE WHEN d.board_published_at IS NOT NULL OR (s.source_key IS NOT NULL AND d.published_on IS NOT NULL AND d.published_on<=coalesce((s.captured_at::timestamptz AT TIME ZONE 'Europe/Prague')::date,(now() AT TIME ZONE 'Europe/Prague')::date)) THEN 'documented' ELSE 'uncertain' END,
+  CASE WHEN d.board_status='published' THEN 'current' WHEN d.board_status IN ('archived','withdrawn') THEN 'historical' ELSE 'uncertain' END,
   d.published_on,d.board_published_at::timestamptz,d.withdraw_on,
   CASE WHEN d.withdrawn_at IS NOT NULL THEN (d.withdrawn_at::timestamptz AT TIME ZONE 'Europe/Prague')::date WHEN s.source_key IS NOT NULL AND coalesce(s.metadata->'source_dates'->>'removed_on',s.metadata->'dates'->>'removed_on')::date<=coalesce((s.captured_at::timestamptz AT TIME ZONE 'Europe/Prague')::date,(now() AT TIME ZONE 'Europe/Prague')::date) THEN coalesce(s.metadata->'source_dates'->>'removed_on',s.metadata->'dates'->>'removed_on')::date ELSE NULL END,
   d.withdrawn_at::timestamptz,CASE WHEN d.retain_attachments THEN 'retain' ELSE 'hide' END,
   (d.review_json::jsonb->>'archive_until')::date,document_fingerprint(d.id),s.source_url
- FROM documents d LEFT JOIN LATERAL(SELECT source_key,source_url,metadata,captured_at FROM legacy_sources WHERE document_id=d.id ORDER BY attachment_id NULLS FIRST,source_key LIMIT 1) s ON TRUE
+ FROM documents d LEFT JOIN LATERAL(
+  SELECT source_key,source_url,metadata,captured_at FROM (
+   SELECT source_key,source_url,metadata,captured_at,attachment_id,0 AS priority
+    FROM legacy_sources WHERE document_id=d.id
+   UNION ALL
+   -- Earlier reconciliation kept the ordinary source mapping and recorded its
+   -- copied board document separately. Both identities retain that provenance.
+   SELECT s.source_key,s.source_url,s.metadata||i.metadata,s.captured_at,s.attachment_id,1
+    FROM legacy_notice_imports i JOIN legacy_sources s USING(source_key) WHERE i.notice_id=d.id
+  ) provenance ORDER BY priority,attachment_id NULLS FIRST,source_key LIMIT 1
+ ) s ON TRUE
  WHERE d.board_status IS NOT NULL AND (d.board_status IN ('published','archived','withdrawn') OR s.source_key IS NOT NULL);
 UPDATE documents d SET lock_state=CASE WHEN EXISTS(SELECT 1 FROM document_postings p WHERE p.document_id=d.id AND p.certainty='documented') THEN 'locked' ELSE 'review' END,
  locked_at=now(),content_sha256=document_fingerprint(d.id) WHERE EXISTS(SELECT 1 FROM document_postings p WHERE p.document_id=d.id);
@@ -193,8 +205,8 @@ CREATE TRIGGER document_events_no_truncate BEFORE TRUNCATE ON document_events EX
 CREATE TRIGGER document_relations_immutable BEFORE UPDATE OR DELETE ON document_relations FOR EACH ROW EXECUTE FUNCTION reject_protected_change();
 CREATE TRIGGER document_postings_no_delete BEFORE DELETE ON document_postings FOR EACH ROW EXECUTE FUNCTION reject_protected_change();
 CREATE FUNCTION protect_document_posting() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
- IF ROW(NEW.document_id,NEW.origin,NEW.certainty,NEW.started_on,NEW.started_at,NEW.snapshot_sha256,NEW.source_url,NEW.captured_at,NEW.after_action,NEW.public_until,NEW.redacted_document_id)
-  IS DISTINCT FROM ROW(OLD.document_id,OLD.origin,OLD.certainty,OLD.started_on,OLD.started_at,OLD.snapshot_sha256,OLD.source_url,OLD.captured_at,OLD.after_action,OLD.public_until,OLD.redacted_document_id)
+ IF ROW(NEW.document_id,NEW.origin,NEW.certainty,NEW.initial_state,NEW.started_on,NEW.started_at,NEW.snapshot_sha256,NEW.source_url,NEW.captured_at,NEW.after_action,NEW.public_until,NEW.redacted_document_id)
+  IS DISTINCT FROM ROW(OLD.document_id,OLD.origin,OLD.certainty,OLD.initial_state,OLD.started_on,OLD.started_at,OLD.snapshot_sha256,OLD.source_url,OLD.captured_at,OLD.after_action,OLD.public_until,OLD.redacted_document_id)
   OR (OLD.removed_at IS NOT NULL AND NEW.removed_at IS DISTINCT FROM OLD.removed_at)
   OR (OLD.removed_on IS NOT NULL AND NEW.removed_on IS DISTINCT FROM OLD.removed_on) THEN
   RAISE EXCEPTION 'actual posting evidence is append only' USING ERRCODE='23514', CONSTRAINT='document_lifecycle_guard'; END IF;
@@ -494,15 +506,17 @@ CREATE INDEX document_revisions_accepted_document ON document_import_revisions(a
 
 -- Measured semi-joins for every page were more expensive than the old board.
 -- These booleans are transactional projections, never substitutes for evidence.
+-- A historical capture remains archival even when its actual removal date is
+-- unknown. Missing removal evidence alone never makes that capture current.
 ALTER TABLE documents ADD COLUMN has_current_posting BOOLEAN NOT NULL DEFAULT FALSE,
  ADD COLUMN has_removed_posting BOOLEAN NOT NULL DEFAULT FALSE;
 UPDATE documents d SET
- has_current_posting=EXISTS(SELECT 1 FROM document_postings p WHERE p.document_id=d.id AND p.certainty='documented' AND p.removed_at IS NULL AND p.removed_on IS NULL),
- has_removed_posting=EXISTS(SELECT 1 FROM document_postings p WHERE p.document_id=d.id AND p.certainty='documented' AND (p.removed_at IS NOT NULL OR p.removed_on IS NOT NULL));
+ has_current_posting=EXISTS(SELECT 1 FROM document_postings p WHERE p.document_id=d.id AND p.initial_state='current' AND p.certainty='documented' AND p.removed_at IS NULL AND p.removed_on IS NULL),
+ has_removed_posting=EXISTS(SELECT 1 FROM document_postings p WHERE p.document_id=d.id AND (p.initial_state='historical' OR (p.certainty='documented' AND (p.removed_at IS NOT NULL OR p.removed_on IS NOT NULL))));
 CREATE FUNCTION refresh_document_posting_projection() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
  UPDATE documents d SET
- has_current_posting=EXISTS(SELECT 1 FROM document_postings p WHERE p.document_id=d.id AND p.certainty='documented' AND p.removed_at IS NULL AND p.removed_on IS NULL),
- has_removed_posting=EXISTS(SELECT 1 FROM document_postings p WHERE p.document_id=d.id AND p.certainty='documented' AND (p.removed_at IS NOT NULL OR p.removed_on IS NOT NULL))
+ has_current_posting=EXISTS(SELECT 1 FROM document_postings p WHERE p.document_id=d.id AND p.initial_state='current' AND p.certainty='documented' AND p.removed_at IS NULL AND p.removed_on IS NULL),
+ has_removed_posting=EXISTS(SELECT 1 FROM document_postings p WHERE p.document_id=d.id AND (p.initial_state='historical' OR (p.certainty='documented' AND (p.removed_at IS NOT NULL OR p.removed_on IS NOT NULL))))
  WHERE d.id=NEW.document_id;
  RETURN NEW;
 END $$;
@@ -514,8 +528,8 @@ CREATE INDEX documents_public_archive ON documents(catalog_date DESC NULLS LAST,
  WHERE public_access AND NOT access_blocked AND ((board_status IS NULL AND status='archived') OR has_removed_posting)
  AND NOT has_current_posting AND board_status IS DISTINCT FROM 'scheduled';
 CREATE FUNCTION validate_document_posting_projection() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
- NEW.has_current_posting=EXISTS(SELECT 1 FROM document_postings p WHERE p.document_id=NEW.id AND p.certainty='documented' AND p.removed_at IS NULL AND p.removed_on IS NULL);
- NEW.has_removed_posting=EXISTS(SELECT 1 FROM document_postings p WHERE p.document_id=NEW.id AND p.certainty='documented' AND (p.removed_at IS NOT NULL OR p.removed_on IS NOT NULL));
+ NEW.has_current_posting=EXISTS(SELECT 1 FROM document_postings p WHERE p.document_id=NEW.id AND p.initial_state='current' AND p.certainty='documented' AND p.removed_at IS NULL AND p.removed_on IS NULL);
+ NEW.has_removed_posting=EXISTS(SELECT 1 FROM document_postings p WHERE p.document_id=NEW.id AND (p.initial_state='historical' OR (p.certainty='documented' AND (p.removed_at IS NOT NULL OR p.removed_on IS NOT NULL))));
  RETURN NEW;
 END $$;
 CREATE TRIGGER documents_posting_projection BEFORE INSERT OR UPDATE OF has_current_posting,has_removed_posting ON documents
@@ -600,6 +614,7 @@ CREATE TABLE document_announcements (
 INSERT INTO document_announcements(document_id,origin)
  SELECT id,'existing_content' FROM documents d WHERE d.public_access OR d.published_at IS NOT NULL
  OR EXISTS(SELECT 1 FROM legacy_sources s WHERE s.document_id=d.id)
+ OR EXISTS(SELECT 1 FROM legacy_notice_imports i WHERE i.notice_id=d.id)
  OR EXISTS(SELECT 1 FROM publication_outbox o WHERE coalesce(o.notice_id,o.document_id)=d.id)
  OR EXISTS(SELECT 1 FROM mail_publication_items o WHERE coalesce(o.notice_id,o.document_id)=d.id);
 CREATE TRIGGER document_announcements_immutable BEFORE UPDATE OR DELETE ON document_announcements FOR EACH ROW EXECUTE FUNCTION reject_protected_change();
