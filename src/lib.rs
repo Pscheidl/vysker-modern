@@ -1,5 +1,5 @@
 //! Veřejný web obce Vyskeř v Leptosu, databáze a doménový model.
-#![recursion_limit = "256"]
+#![recursion_limit = "512"]
 
 #[cfg(all(feature = "demo", any(feature = "ssr", feature = "hydrate")))]
 compile_error!("Režim demo sestavujte samostatně s --no-default-features --features demo.");
