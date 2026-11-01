@@ -369,3 +369,139 @@ async fn issue_reports_have_a_default_menu_link_and_can_be_managed() {
             .any(|link| { link.path == "/hlaseni-zavad" && link.label == "Závady v obci" })
     );
 }
+
+#[tokio::test]
+async fn rental_navigation_starts_with_its_final_name_and_can_be_customized() {
+    let app = App::new().await;
+    let default = navigation_from_pool(&app.state.pool).await.unwrap();
+    let rental = default
+        .iter()
+        .find(|link| link.path == "/pronajmy")
+        .unwrap();
+    assert_eq!(rental.label, "Pronájmy");
+    let version: i64 = sqlx::query_scalar("SELECT version FROM navigation_items WHERE id=$1")
+        .bind(rental.id)
+        .fetch_one(&app.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(version, 1);
+    assert!(
+        obecni_web::catalog::default_navigation()
+            .iter()
+            .all(|link| link.path != "/pronajmy")
+    );
+
+    let other = create(&app, item("Rezervace", None, 70)).await;
+    let mut custom = item("Pronájem sálu", None, 60);
+    custom["path"] = json!("/pronajmy");
+    assert_eq!(
+        update(&app, rental.id, custom, version).await.status(),
+        StatusCode::NO_CONTENT
+    );
+    let navigation = navigation_from_pool(&app.state.pool).await.unwrap();
+    let changed = navigation.iter().find(|link| link.id == rental.id).unwrap();
+    assert_eq!(changed.label, "Pronájem sálu");
+    assert_eq!(changed.path, "/pronajmy");
+    let preserved = navigation.iter().find(|link| link.id == other).unwrap();
+    assert_eq!(preserved.label, "Rezervace");
+    assert_eq!(preserved.path, "/kontakt");
+}
+
+#[tokio::test]
+async fn disabled_rentals_hide_all_navigation_entries_without_changing_configuration() {
+    let app = App::new().await;
+    let rental_root: i64 = sqlx::query_scalar(
+        "SELECT id FROM navigation_items WHERE path='/pronajmy' AND parent_id IS NULL LIMIT 1",
+    )
+    .fetch_one(&app.state.pool)
+    .await
+    .unwrap();
+    let original_version: i64 =
+        sqlx::query_scalar("SELECT version FROM navigation_items WHERE id=$1")
+            .bind(rental_root)
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap();
+    let child_of_rentals = create(&app, item("Pokyny k rezervacím", Some(rental_root), 0)).await;
+    let other_root = create(&app, item("Další služby", None, 1)).await;
+    let mut nested = item("Rezervovat", Some(other_root), 0);
+    nested["path"] = json!("/pronajmy");
+    let nested_rental = create(&app, nested).await;
+    let mut hidden = item("Nezveřejněný odkaz", None, 2);
+    hidden["path"] = json!("/pronajmy");
+    hidden["visible"] = json!(false);
+    let hidden_rental = create(&app, hidden).await;
+
+    sqlx::query("UPDATE rental_settings SET enabled=FALSE WHERE id=1")
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    let navigation = navigation_from_pool(&app.state.pool).await.unwrap();
+    assert!(
+        navigation
+            .iter()
+            .flat_map(|root| std::iter::once(root).chain(root.children.iter()))
+            .all(|link| link.path != "/pronajmy" && link.id != child_of_rentals)
+    );
+    assert!(
+        navigation
+            .iter()
+            .find(|root| root.id == other_root)
+            .unwrap()
+            .children
+            .is_empty()
+    );
+    let configured: (bool, i64) =
+        sqlx::query_as("SELECT visible,version FROM navigation_items WHERE id=$1")
+            .bind(rental_root)
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap();
+    assert_eq!(configured, (true, original_version));
+
+    sqlx::query("UPDATE rental_settings SET enabled=TRUE WHERE id=1")
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    let navigation = navigation_from_pool(&app.state.pool).await.unwrap();
+    assert_eq!(
+        navigation
+            .iter()
+            .find(|root| root.id == rental_root)
+            .unwrap()
+            .children[0]
+            .id,
+        child_of_rentals
+    );
+    assert_eq!(
+        navigation
+            .iter()
+            .find(|root| root.id == other_root)
+            .unwrap()
+            .children[0]
+            .id,
+        nested_rental
+    );
+    assert!(navigation.iter().all(|root| root.id != hidden_rental));
+}
+
+#[tokio::test]
+async fn missing_rental_setting_and_fallback_navigation_keep_rentals_hidden() {
+    let app = App::new().await;
+    sqlx::query("DELETE FROM rental_settings")
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    assert!(
+        navigation_from_pool(&app.state.pool)
+            .await
+            .unwrap()
+            .iter()
+            .all(|link| link.path != "/pronajmy")
+    );
+    assert!(
+        obecni_web::catalog::default_navigation()
+            .iter()
+            .all(|link| link.path != "/pronajmy")
+    );
+}

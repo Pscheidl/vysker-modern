@@ -52,6 +52,7 @@ async fn validate(
             | "/kalendar"
             | "/hlaseni-zavad"
             | "/hlaseni-zavad/nove"
+            | "/pronajmy"
             | "/odber"
             | "/stranky"
             | "/pristupnost"

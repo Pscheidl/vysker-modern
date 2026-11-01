@@ -323,8 +323,8 @@ fn parse_minimum_password_length(value: &str) -> anyhow::Result<usize> {
         .parse()
         .context("OBEC_MIN_PASSWORD_LENGTH must be an integer")?;
     anyhow::ensure!(
-        (1..=1024).contains(&value),
-        "OBEC_MIN_PASSWORD_LENGTH must be between 1 and 1024 characters"
+        (24..=1024).contains(&value),
+        "OBEC_MIN_PASSWORD_LENGTH must be between 24 and 1024 characters"
     );
     Ok(value)
 }
@@ -481,7 +481,7 @@ mod tests {
     fn password_policy_defaults_to_twenty_four_and_rejects_invalid_values() {
         assert_eq!(DEFAULT_MIN_PASSWORD_LENGTH, 24);
         assert_eq!(parse_minimum_password_length("32").unwrap(), 32);
-        for value in ["", "0", "-1", "1025", "invalid"] {
+        for value in ["", "0", "1", "23", "-1", "1025", "invalid"] {
             assert!(parse_minimum_password_length(value).is_err());
         }
     }

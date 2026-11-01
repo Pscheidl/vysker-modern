@@ -13,6 +13,9 @@ import time
 def main():
     root=Path(__file__).resolve().parents[1]
     os.chdir(root)
+    smtp_port=os.environ.get('E2E_SMTP_PORT', '9')
+    if not smtp_port.isdecimal() or not (smtp_port == '9' or 1024 <= int(smtp_port) <= 65535):
+        raise RuntimeError('E2E_SMTP_PORT must be 9 or a local unprivileged port')
     binary=Path(os.environ.get('E2E_WEB_BINARY','target/debug/obecni-web')).resolve(strict=True)
     admin=Path(os.environ.get('E2E_ADMIN_BINARY','target/debug/obec-admin')).resolve(strict=True)
     port=int(os.environ.get('E2E_PORT','3107'))
@@ -24,10 +27,18 @@ def main():
         env.update(OBEC_ADRESA=f'127.0.0.1:{port}',OBEC_DATABAZE=database,
                    OBEC_VEREJNA_URL=base_url,OBEC_PRODUCTION='false',
                    OBEC_UKAZKOVA_DATA='false',OBEC_PRIVACY_CONFIG=str(root/'config/privacy.example.json'),
-                   OBEC_SMTP_HOST='127.0.0.1',OBEC_SMTP_PORT='9',OBEC_SMTP_TLS='none',
+                   OBEC_SMTP_HOST='127.0.0.1',OBEC_SMTP_PORT=smtp_port,OBEC_SMTP_TLS='none',
+                   OBEC_SMTP_CAPTURE_ONLY='true' if smtp_port != '9' else 'false',
                    OBEC_EMAIL_OD='Vyskeř <e2e@vysker.test>',LEPTOS_SITE_ROOT=str(root/'target/site'))
         subprocess.run([str(admin),'create','e2e-admin@vysker.test','--password-stdin'],input='Disposable-browser-test-password!\n',text=True,env=env,check=True)
         with connect(database) as conn:
+            database_name = conn.execute('SELECT current_database()').fetchone()[0]
+            if not database_name.startswith('vysker_test_'):
+                raise RuntimeError('Expected a disposable browser-test database')
+            # Existing browser scenarios exercise rentals, so opt in only inside this disposable database.
+            updated = conn.execute('UPDATE rental_settings SET enabled=TRUE, version=version+1 WHERE id=1')
+            if updated.rowcount != 1:
+                raise RuntimeError('Expected the rental settings singleton')
             # Synthetic fixture postings are explicit, with a chosen file policy.
             # Merely setting a legacy status must not manufacture posting history.
             for n in range(1,26):

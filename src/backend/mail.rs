@@ -499,6 +499,9 @@ pub async fn deliver_one(
     if super::reports::deliver_one(s, smtp, now).await? {
         return Ok(true);
     }
+    if super::rentals::deliver_one(s, smtp, now).await? {
+        return Ok(true);
+    }
     if super::privacy::policy(s)
         .await
         .map_err(|error| anyhow::anyhow!(error.1))?

@@ -23,6 +23,14 @@ mod privacy;
 #[cfg(not(feature = "demo"))]
 mod recovery;
 #[cfg(not(feature = "demo"))]
+mod rental_create;
+#[cfg(not(feature = "demo"))]
+mod rental_payment_settings;
+#[cfg(not(feature = "demo"))]
+mod rental_settings;
+#[cfg(not(feature = "demo"))]
+mod rentals;
+#[cfg(not(feature = "demo"))]
 mod report_comments;
 #[cfg(not(feature = "demo"))]
 mod reports;
@@ -107,7 +115,7 @@ mod workspace {
         Effect::new(move |_| {
             leptos::task::spawn_local(async move {
                 let result = api::get::<Session>("/api/v1/admin/session").await;
-                context.access.set(match result {
+                let _ = context.access.try_set(match result {
                     Ok(session) => Access::Ready(session),
                     Err(error) if error.status == 401 => Access::SignedOut,
                     Err(error) => Access::Failed(error),
@@ -219,6 +227,7 @@ mod workspace {
                         <AdminLink href="/admin/stranky" label="Stránky" icon="pages"/>
                         <AdminLink href="/admin/kalendar" label="Kalendář" icon="calendar"/>
                         <AdminLink href="/admin/hlaseni-zavad" label="Podněty a závady" icon="info"/>
+                        <AdminLink href="/admin/pronajmy" label="Pronájmy" icon="calendar"/>
                         <AdminLink href="/admin/odberatele" label="Odběratelé" icon="mail"/>
                         <AdminLink href="/admin/ochrana-udaju" label="Ochrana údajů" icon="info"/>
                         <AdminLink href="/admin/navigace" label="Navigace" icon="pages"/>
@@ -244,6 +253,10 @@ mod workspace {
                             "stranky"=>view!{<Entries kind=Kind::Page/>}.into_any(),
                             "kalendar"=>view!{<super::events::Events/>}.into_any(),
                             "hlaseni-zavad"=>view!{<super::reports::Reports/>}.into_any(),
+                            "pronajmy"=>view!{<super::rental_settings::RentalBoundary overview=true><super::rentals::Rentals/></super::rental_settings::RentalBoundary>}.into_any(),
+                            "pronajmy/nova"=>view!{<super::rental_settings::RentalBoundary><super::rental_create::RentalCreate/></super::rental_settings::RentalBoundary>}.into_any(),
+                            "pronajmy/majetek"=>view!{<super::rental_settings::RentalBoundary><super::rentals::RentalAssets/></super::rental_settings::RentalBoundary>}.into_any(),
+                            "pronajmy/platby"=>view!{<super::rental_settings::RentalBoundary><super::rental_payment_settings::RentalPaymentSettings/></super::rental_settings::RentalBoundary>}.into_any(),
                             "odberatele"=>view!{<super::subscribers::Subscribers/>}.into_any(),
                             "ochrana-udaju"=>view!{<super::privacy::PrivacySettings/>}.into_any(),
                             "navigace"=>view!{<super::navigation::NavigationSettings/>}.into_any(),
@@ -254,6 +267,10 @@ mod workspace {
                             "audit"=>view!{<AuditLog/>}.into_any(),
                             _=> {
                                 let (section,id)=tail.split_once('/').unwrap_or(("",""));
+                                if section=="pronajmy" {
+                                    return if let Ok(id)=id.parse::<i64>() {view!{<super::rental_settings::RentalBoundary><super::rentals::RentalDetail id/></super::rental_settings::RentalBoundary>}.into_any()}
+                                    else {view!{<h1>"Pronájem neexistuje"</h1>}.into_any()};
+                                }
                                 if section=="kalendar" {
                                     return if id=="nove"{view!{<super::events::EventEditor id=0/>}.into_any()}
                                     else if let Ok(id)=id.parse::<i64>(){view!{<super::events::EventEditor id/>}.into_any()}

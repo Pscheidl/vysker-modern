@@ -22,7 +22,7 @@ pub struct Reset {
 }
 
 pub async fn policy(State(s): State<Backend>) -> Json<serde_json::Value> {
-    Json(serde_json::json!({"minimum_password_length":s.config.minimum_password_length}))
+    Json(serde_json::json!({"minimum_password_length":s.config.minimum_password_length.max(24)}))
 }
 
 pub async fn request(

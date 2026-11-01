@@ -42,7 +42,7 @@ pub(super) fn denied() -> Error {
 }
 
 pub async fn password_hash(password: String, minimum: usize) -> Result<String> {
-    if password.chars().count() < minimum || password.len() > 1024 {
+    if password.chars().count() < minimum.max(24) || password.len() > 1024 {
         return Err(bad(
             "Heslo nesplňuje nastavenou minimální délku nebo přesahuje 1024 bajtů.",
         ));
@@ -89,7 +89,7 @@ pub async fn create_admin(s: &Backend, address: &str, password: String) -> Resul
     let password_hash = password_hash(password, s.config.minimum_password_length).await?;
     let mut tx = crate::db::begin_write(&s.pool).await?;
     let id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO administrators(email,password_hash) VALUES ($1,$2) RETURNING id",
+        "INSERT INTO administrators(email,password_hash,is_primary,can_view_identity,can_manage_permissions,can_create_accounts,can_manage_mail_settings) SELECT $1,$2,first,first,first,first,first FROM (SELECT NOT EXISTS(SELECT 1 FROM administrators) AS first) AS x RETURNING id",
     )
     .bind(address)
     .bind(password_hash)
@@ -195,6 +195,11 @@ pub struct Session {
     pub display_name: Option<String>,
     pub csrf_token: String,
     pub minimum_password_length: usize,
+    pub is_primary: bool,
+    pub can_view_identity: bool,
+    pub can_manage_permissions: bool,
+    pub can_create_accounts: bool,
+    pub can_manage_mail_settings: bool,
 }
 
 pub async fn login(
@@ -253,8 +258,8 @@ pub async fn login(
     if !current {
         return Err(denied());
     }
-    let display_name: Option<String> =
-        sqlx::query_scalar("SELECT display_name FROM administrators WHERE id=$1")
+    let (display_name, is_primary, can_view_identity, can_manage_permissions, can_create_accounts, can_manage_mail_settings): (Option<String>, bool, bool, bool, bool, bool) =
+        sqlx::query_as("SELECT display_name,is_primary,can_view_identity,can_manage_permissions,can_create_accounts,can_manage_mail_settings FROM administrators WHERE id=$1")
             .bind(id)
             .fetch_one(&mut *tx)
             .await?;
@@ -284,7 +289,12 @@ pub async fn login(
             email: address,
             display_name,
             csrf_token: csrf,
-            minimum_password_length: s.config.minimum_password_length,
+            minimum_password_length: s.config.minimum_password_length.max(24),
+            is_primary,
+            can_view_identity,
+            can_manage_permissions,
+            can_create_accounts,
+            can_manage_mail_settings,
         }),
     )
         .into_response())
@@ -294,6 +304,11 @@ pub struct Admin {
     pub id: i64,
     pub email: String,
     pub display_name: Option<String>,
+    pub is_primary: bool,
+    pub can_view_identity: bool,
+    pub can_manage_permissions: bool,
+    pub can_create_accounts: bool,
+    pub can_manage_mail_settings: bool,
     pub(super) token_hash: String,
     csrf: String,
 }
@@ -314,9 +329,19 @@ impl FromRequestParts<Backend> for Admin {
             return Err(denied());
         }
         let token_hash = hash(secret);
-        let row: Option<(i64, String, String, Option<String>)> = sqlx::query_as("SELECT r.administrator_id,r.csrf_hash,a.email,a.display_name FROM sessions r JOIN administrators a ON a.id=r.administrator_id WHERE r.token_hash=$1 AND r.expires_at>$2 AND a.active=TRUE")
+        let row: Option<(i64, String, String, Option<String>, bool, bool, bool, bool, bool)> = sqlx::query_as("SELECT r.administrator_id,r.csrf_hash,a.email,a.display_name,a.is_primary,a.can_view_identity,a.can_manage_permissions,a.can_create_accounts,a.can_manage_mail_settings FROM sessions r JOIN administrators a ON a.id=r.administrator_id WHERE r.token_hash=$1 AND r.expires_at>$2 AND a.active=TRUE")
             .bind(&token_hash).bind(OffsetDateTime::now_utc().unix_timestamp()).fetch_optional(&s.pool).await?;
-        let (id, csrf_hash, email, display_name) = row.ok_or_else(denied)?;
+        let (
+            id,
+            csrf_hash,
+            email,
+            display_name,
+            is_primary,
+            can_view_identity,
+            can_manage_permissions,
+            can_create_accounts,
+            can_manage_mail_settings,
+        ) = row.ok_or_else(denied)?;
         if !matches!(parts.method, Method::GET | Method::HEAD | Method::OPTIONS) {
             check_origin(&parts.headers, s)?;
             let supplied = parts
@@ -332,6 +357,11 @@ impl FromRequestParts<Backend> for Admin {
             id,
             email,
             display_name,
+            is_primary,
+            can_view_identity,
+            can_manage_permissions,
+            can_create_accounts,
+            can_manage_mail_settings,
             token_hash,
             csrf: hash(format!("csrf:{secret}")),
         })
@@ -343,7 +373,12 @@ pub async fn session(State(s): State<Backend>, admin: Admin) -> Json<Session> {
         email: admin.email,
         display_name: admin.display_name,
         csrf_token: admin.csrf,
-        minimum_password_length: s.config.minimum_password_length,
+        minimum_password_length: s.config.minimum_password_length.max(24),
+        is_primary: admin.is_primary,
+        can_view_identity: admin.can_view_identity,
+        can_manage_permissions: admin.can_manage_permissions,
+        can_create_accounts: admin.can_create_accounts,
+        can_manage_mail_settings: admin.can_manage_mail_settings,
     })
 }
 pub async fn logout(State(s): State<Backend>, admin: Admin) -> Result<Response> {
@@ -371,10 +406,30 @@ pub async fn logout(State(s): State<Backend>, admin: Admin) -> Result<Response> 
     )
         .into_response())
 }
+pub(super) fn set_no_store(headers: &mut HeaderMap) {
+    let private = headers
+        .get(header::CACHE_CONTROL)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|directive| directive.trim().eq_ignore_ascii_case("private"))
+        });
+    headers.insert(
+        header::CACHE_CONTROL,
+        if private {
+            "private, no-store"
+        } else {
+            "no-store"
+        }
+        .parse()
+        .unwrap(),
+    );
+}
 pub async fn response_headers(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
-    headers.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    set_no_store(headers);
     headers.insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
     headers.insert(header::REFERRER_POLICY, "no-referrer".parse().unwrap());
     headers.insert(header::X_FRAME_OPTIONS, "DENY".parse().unwrap());

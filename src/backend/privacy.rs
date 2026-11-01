@@ -261,7 +261,7 @@ pub async fn response_headers(
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.starts_with("text/html"));
     if protect_documents || html {
-        headers.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+        super::auth::set_no_store(headers);
     } else if frontend_asset {
         // Revalidate stable asset URLs instead of using Last-Modified heuristics.
         headers.insert(header::CACHE_CONTROL, "no-cache".parse().unwrap());

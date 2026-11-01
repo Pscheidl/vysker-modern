@@ -17,6 +17,12 @@ pub mod power_outages;
 pub mod privacy;
 pub mod recovery;
 pub mod registry;
+mod rental_invoice_mail;
+mod rental_invoice_pdf;
+mod rental_payment;
+pub mod rental_payment_settings;
+pub mod rental_settings;
+pub mod rentals;
 pub mod report_abuse;
 pub mod report_addresses;
 pub mod report_comments;
@@ -183,7 +189,91 @@ async fn health(State(s): State<Backend>) -> Result<Json<serde_json::Value>> {
 
 pub fn router(state: Backend) -> Router {
     let config = state.config.clone();
+    let rental_routes = Router::new()
+        .route("/api/v1/rental-assets", get(rentals::assets))
+        .route(
+            "/api/v1/rental-assets/{id}/availability",
+            get(rentals::availability),
+        )
+        .route(
+            "/api/v1/rentals",
+            post(rentals::create).layer(DefaultBodyLimit::max(10 * 1024 * 1024 + 64 * 1024)),
+        )
+        .route("/api/v1/rental-access/{token}", get(rentals::access))
+        .route(
+            "/api/v1/rental-access/{token}/photos",
+            post(rentals::upload).layer(DefaultBodyLimit::max(20 * 1024 * 1024 + 64 * 1024)),
+        )
+        .route(
+            "/api/v1/rental-access/{token}/photos/{kind}",
+            get(rentals::access_photo),
+        )
+        .route(
+            "/api/v1/admin/rental-assets",
+            get(rentals::admin_assets).post(rentals::create_asset),
+        )
+        .route(
+            "/api/v1/admin/rental-assets/{id}",
+            axum::routing::put(rentals::update_asset),
+        )
+        .route(
+            "/api/v1/admin/rental-assets/{id}/blocks",
+            get(rentals::list_blocks).post(rentals::create_block),
+        )
+        .route(
+            "/api/v1/admin/rental-assets/{id}/blocks/{block_id}",
+            axum::routing::delete(rentals::delete_block),
+        )
+        .route(
+            "/api/v1/admin/rentals",
+            get(rentals::admin_list)
+                .post(rentals::create_admin_rental)
+                .layer(DefaultBodyLimit::max(10 * 1024 * 1024 + 64 * 1024)),
+        )
+        .route(
+            "/api/v1/admin/rentals/preview",
+            post(rentals::preview_admin_rental),
+        )
+        .route(
+            "/api/v1/admin/rentals/{id}/cancel",
+            post(rentals::cancel_admin_rental),
+        )
+        .route(
+            "/api/v1/admin/rental-series/{id}/cancel",
+            post(rentals::cancel_series),
+        )
+        .route(
+            "/api/v1/admin/rental-payment-settings",
+            get(rental_payment_settings::read).put(rental_payment_settings::update),
+        )
+        .route("/api/v1/admin/rentals/{id}", get(rentals::admin_detail))
+        .route(
+            "/api/v1/admin/rentals/{id}/identity",
+            post(rentals::identity).layer(DefaultBodyLimit::max(4096)),
+        )
+        .route(
+            "/api/v1/admin/rentals/{id}/photos/{kind}",
+            get(rentals::photo),
+        )
+        .route("/api/v1/admin/rentals/{id}/approve", post(rentals::approve))
+        .route("/api/v1/admin/rentals/{id}/reject", post(rentals::reject))
+        .route("/api/v1/admin/rentals/{id}/invoice", post(rentals::invoice))
+        .route(
+            "/api/v1/admin/rentals/{id}/invoice-with-attachment",
+            post(rentals::invoice_with_attachment)
+                .layer(DefaultBodyLimit::max(MAX_FILE_BYTES + 64 * 1024)),
+        )
+        .route("/api/v1/admin/rentals/{id}/paid", post(rentals::paid))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            rental_settings::gate,
+        ));
     Router::new()
+        .merge(rental_routes)
+        .route(
+            "/api/v1/admin/rental-settings",
+            get(rental_settings::read).put(rental_settings::update),
+        )
         .route("/api/v1/legacy-media/{id}", get(legacy::media))
         .route("/api/v1/admin/legacy-media/{id}", get(legacy::admin_media))
         .route("/api/v1/page-images/{id}", get(page_images::media))
@@ -331,6 +421,10 @@ pub fn router(state: Backend) -> Router {
         .route(
             "/api/v1/admin/accounts/{id}/sessions",
             axum::routing::delete(accounts::revoke_sessions),
+        )
+        .route(
+            "/api/v1/admin/accounts/{id}/permissions",
+            axum::routing::put(accounts::set_permissions),
         )
         .route(
             "/api/v1/admin/password",

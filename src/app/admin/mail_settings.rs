@@ -140,17 +140,23 @@ fn SettingsForm(initial: Settings) -> impl IntoView {
         Access::Ready(session) => session.email,
         _ => String::new(),
     };
+    let can_manage_mail = Signal::derive(
+        move || matches!(ctx.access.get(), Access::Ready(session) if session.can_manage_mail_settings),
+    );
     view! {
         <section class="admin-panel admin-form-section">
             <h2>"Odesílací účet"</h2>
             <Show when=move || saved.get().capture_only>
                 <p role="status">"Testovací provoz: všechny e-maily zůstávají v Mailpitu. Do skutečných schránek se neposílají a odesílací účet nelze změnit."</p>
             </Show>
+            <Show when=move || !can_manage_mail.get()>
+                <p class="admin-caption" role="status">"Nemáte oprávnění měnit odesílací účet. Nastavení si můžete prohlédnout a odeslat zkušební e-mail."</p>
+            </Show>
             <form on:submit=move |ev| {
                 ev.prevent_default();
                 if !busy.get_untracked() && dirty.get_untracked() { save.dispatch(()); }
             }>
-                <fieldset disabled=move || busy.get() || saved.get().capture_only>
+                <fieldset disabled=move || busy.get() || saved.get().capture_only || !can_manage_mail.get()>
                     <label class="admin-field" for="mail-provider"><span>"Způsob odesílání"</span>
                         <select id="mail-provider" prop:value=move || provider.get() on:change=move |ev| {
                             provider.set(event_target_value(&ev));

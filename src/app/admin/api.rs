@@ -24,6 +24,14 @@ pub struct Session {
     pub display_name: Option<String>,
     pub csrf_token: String,
     pub minimum_password_length: usize,
+    #[serde(default)]
+    pub can_view_identity: bool,
+    #[serde(default)]
+    pub can_manage_permissions: bool,
+    #[serde(default)]
+    pub can_create_accounts: bool,
+    #[serde(default)]
+    pub can_manage_mail_settings: bool,
 }
 
 #[derive(Clone, Default, Deserialize)]
@@ -233,6 +241,62 @@ pub async fn upload(path: &str, file: web_sys::File) -> Result<Value> {
     #[cfg(not(feature = "hydrate"))]
     {
         let _ = (path, file);
+        Err(Failure::network())
+    }
+}
+
+pub async fn invoice_with_attachment(
+    path: &str,
+    invoice: Value,
+    file: web_sys::File,
+) -> Result<Value> {
+    #[cfg(feature = "hydrate")]
+    {
+        let session: Session = get("/api/v1/admin/session").await?;
+        let body = web_sys::FormData::new().map_err(|_| Failure::network())?;
+        body.append_with_str("invoice", &invoice.to_string())
+            .map_err(|_| Failure::network())?;
+        body.append_with_blob_and_filename("attachment", &file, &file.name())
+            .map_err(|_| Failure::network())?;
+        let response = gloo_net::http::Request::post(path)
+            .credentials(web_sys::RequestCredentials::SameOrigin)
+            .header("X-CSRF-Token", &session.csrf_token)
+            .body(body)
+            .map_err(|_| Failure::network())?
+            .send()
+            .await
+            .map_err(|_| Failure::network())?;
+        decode(response).await
+    }
+    #[cfg(not(feature = "hydrate"))]
+    {
+        let _ = (path, invoice, file);
+        Err(Failure::network())
+    }
+}
+
+pub async fn rental_with_identity(path: &str, data: Value, file: web_sys::File) -> Result<Value> {
+    #[cfg(feature = "hydrate")]
+    {
+        let session: Session = get("/api/v1/admin/session").await?;
+        let body = web_sys::FormData::new().map_err(|_| Failure::network())?;
+        body.append_with_str("data", &data.to_string())
+            .map_err(|_| Failure::network())?;
+        body.append_with_blob_and_filename("identity", &file, &file.name())
+            .map_err(|_| Failure::network())?;
+        let response = gloo_net::http::Request::post(path)
+            .credentials(web_sys::RequestCredentials::SameOrigin)
+            .header("X-CSRF-Token", &session.csrf_token)
+            .body(body)
+            .map_err(|_| Failure::network())?
+            .send()
+            .await
+            .map_err(|_| Failure::network())?;
+        decode(response).await
+    }
+    #[cfg(not(feature = "hydrate"))]
+    {
+        let _ = (path, data, file);
         Err(Failure::network())
     }
 }

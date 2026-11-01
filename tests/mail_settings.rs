@@ -123,6 +123,121 @@ async fn settings_and_test_require_authentication_csrf_and_reauthentication() {
 }
 
 #[tokio::test]
+async fn changing_the_sender_requires_explicit_permission_on_every_request() {
+    let (app, _directory) = app().await;
+    let admin_id =
+        backend::auth::create_admin(&app.state, "basic@vysker.test", ADMIN_PASSWORD.into())
+            .await
+            .unwrap();
+    let login = app
+        .call(
+            "POST",
+            "/api/v1/admin/login",
+            Some(json!({"email":"basic@vysker.test", "password":ADMIN_PASSWORD})),
+            false,
+        )
+        .await;
+    assert_eq!(login.status(), StatusCode::OK);
+    let cookie = login.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let csrf = body_json(login).await["csrf_token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let basic = App {
+        state: app.state.clone(),
+        router: app.router.clone(),
+        cookie,
+        csrf,
+        admin_id,
+    };
+    assert_eq!(
+        basic.call("GET", PATH, None, true).await.status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        basic.call("PUT", PATH, Some(google()), true).await.status(),
+        StatusCode::FORBIDDEN
+    );
+    assert!(!app.state.config.mail_settings_key_file.exists());
+
+    // The database itself rejects a sender-only grant.
+    assert!(
+        sqlx::query("UPDATE administrators SET can_manage_mail_settings=TRUE WHERE id=$1")
+            .bind(admin_id)
+            .execute(&app.state.pool)
+            .await
+            .is_err()
+    );
+
+    // Simulate inconsistent or older data inside this test's isolated schema.
+    // The handler must still deny access even without the database constraint.
+    sqlx::query("ALTER TABLE administrators DROP CONSTRAINT mail_settings_require_all_permissions")
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE administrators SET can_manage_mail_settings=TRUE WHERE id=$1")
+        .bind(admin_id)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        basic.call("PUT", PATH, Some(google()), true).await.status(),
+        StatusCode::FORBIDDEN,
+    );
+
+    sqlx::query("UPDATE administrators SET can_view_identity=TRUE,can_create_accounts=TRUE,can_manage_permissions=TRUE WHERE id=$1")
+        .bind(admin_id).execute(&app.state.pool).await.unwrap();
+    assert_eq!(
+        basic.call("PUT", PATH, Some(google()), true).await.status(),
+        StatusCode::OK
+    );
+
+    for statement in [
+        "UPDATE administrators SET can_view_identity=FALSE WHERE id=$1",
+        "UPDATE administrators SET can_create_accounts=FALSE WHERE id=$1",
+        "UPDATE administrators SET can_manage_permissions=FALSE WHERE id=$1",
+    ] {
+        sqlx::query("UPDATE administrators SET can_view_identity=TRUE,can_create_accounts=TRUE,can_manage_permissions=TRUE WHERE id=$1")
+            .bind(admin_id).execute(&app.state.pool).await.unwrap();
+        sqlx::query(statement)
+            .bind(admin_id)
+            .execute(&app.state.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            basic.call("PUT", PATH, Some(google()), true).await.status(),
+            StatusCode::FORBIDDEN,
+        );
+    }
+
+    sqlx::query("UPDATE administrators SET can_manage_mail_settings=FALSE WHERE id=$1")
+        .bind(admin_id)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        basic
+            .call(
+                "PUT",
+                PATH,
+                Some(json!({"provider":"environment", "current_password":ADMIN_PASSWORD})),
+                true
+            )
+            .await
+            .status(),
+        StatusCode::FORBIDDEN,
+    );
+    let saved = body_json(basic.call("GET", PATH, None, true).await).await;
+    assert_eq!(saved["provider"], "google");
+}
+
+#[tokio::test]
 async fn google_credentials_are_normalized_encrypted_and_survive_new_backend() {
     let (app, _directory) = app().await;
     let mut input = google();

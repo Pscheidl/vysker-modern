@@ -169,13 +169,13 @@ async fn accounts_require_authentication_reauthentication_and_protect_last_admin
         )
         .await
         .status(),
-        StatusCode::NO_CONTENT
+        StatusCode::CONFLICT
     );
     assert_eq!(
         app.call("GET", "/api/v1/admin/session", None, true)
             .await
             .status(),
-        StatusCode::UNAUTHORIZED
+        StatusCode::OK
     );
     assert_eq!(
         app.call(
@@ -186,7 +186,7 @@ async fn accounts_require_authentication_reauthentication_and_protect_last_admin
         )
         .await
         .status(),
-        StatusCode::UNAUTHORIZED
+        StatusCode::OK
     );
     assert!(id > app.admin_id);
     let operations: Vec<String> =
@@ -194,7 +194,7 @@ async fn accounts_require_authentication_reauthentication_and_protect_last_admin
             .fetch_all(&app.state.pool)
             .await
             .unwrap();
-    assert!(operations.contains(&"deactivated".into()));
+    assert!(!operations.contains(&"deactivated".into()));
 }
 
 #[tokio::test]

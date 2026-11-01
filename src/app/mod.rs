@@ -3,6 +3,7 @@ mod catalog;
 mod components;
 mod events;
 mod pages;
+mod rentals;
 mod reports;
 mod search;
 
@@ -112,6 +113,8 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("hlaseni-zavad") view=reports::Reports ssr=leptos_router::SsrMode::InOrder/>
                     <Route path=path!("hlaseni-zavad/nove") view=reports::NewReport ssr=leptos_router::SsrMode::InOrder/>
                     <Route path=path!("hlaseni-zavad/:id") view=reports::ReportDetail ssr=leptos_router::SsrMode::Async/>
+                    <Route path=path!("pronajmy") view=rentals::Rentals ssr=leptos_router::SsrMode::Async/>
+                    <Route path=path!("pronajmy/meridlo/:token") view=rentals::RentalMeter ssr=leptos_router::SsrMode::Async/>
                     <Route path=path!("pristupnost") view=Accessibility ssr=leptos_router::SsrMode::InOrder/>
                     <Route path=path!("ochrana-udaju") view=Privacy ssr=leptos_router::SsrMode::InOrder/>
                 </Routes>

@@ -24,6 +24,9 @@ pub struct App {
 }
 impl App {
     pub async fn new() -> Self {
+        Self::with_rentals(true).await
+    }
+    pub async fn with_rentals(rentals_enabled: bool) -> Self {
         let config = Config {
             cez_outages: Default::default(),
             production: false,
@@ -49,6 +52,12 @@ impl App {
             email_from: "Vyskeř <noreply@vysker.test>".into(),
         };
         let pool = test_pool().await;
+        if rentals_enabled {
+            sqlx::query("UPDATE rental_settings SET enabled=TRUE,version=version+1 WHERE id=1")
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
         let state = Backend::new(pool, config);
         let admin_id = auth::create_admin(
             &state,

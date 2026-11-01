@@ -437,6 +437,8 @@ pub struct NavigationLink {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SiteInfo {
     pub production: bool,
+    #[serde(default)]
+    pub rentals_enabled: bool,
     pub pages: Vec<PageLink>,
     pub navigation: Vec<NavigationLink>,
 }
@@ -454,6 +456,9 @@ pub async fn load_site_info() -> Result<SiteInfo, ServerFnError> {
     Ok(SiteInfo {
         navigation: navigation_from_pool(&state.pool).await?,
         production: state.config.production,
+        rentals_enabled: crate::backend::rental_settings::enabled(&state.pool)
+            .await
+            .map_err(|_| ServerFnError::new("Nastavení rezervací nelze načíst."))?,
         pages: rows
             .into_iter()
             .map(|(slug, title)| PageLink { slug, title })
@@ -467,6 +472,8 @@ pub async fn navigation_from_pool(
     let rows: Vec<(i64, String, String, Option<i64>)> = sqlx::query_as(
         "SELECT id,label,path,parent_id FROM navigation_items n
          WHERE visible=TRUE
+           AND ((path <> '/pronajmy' AND path NOT LIKE '/pronajmy/%')
+                OR EXISTS(SELECT 1 FROM rental_settings WHERE id=1 AND enabled))
            AND (path NOT LIKE '/stranky/%' OR EXISTS(
                SELECT 1 FROM pages p WHERE n.path='/stranky/'||p.slug AND p.published=TRUE
            ))
@@ -502,6 +509,7 @@ pub async fn navigation_from_pool(
 pub async fn load_site_info() -> Result<SiteInfo, ServerFnError> {
     Ok(SiteInfo {
         production: false,
+        rentals_enabled: false,
         pages: vec![],
         navigation: default_navigation(),
     })

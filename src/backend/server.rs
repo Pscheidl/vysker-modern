@@ -70,6 +70,7 @@ pub async fn serve(state: Backend, app: axum::Router) -> anyhow::Result<()> {
                     let mut maintenance_ok=true;
                     if let Err(error)=notices::maintenance(&worker_state,OffsetDateTime::now_utc()).await { maintenance_ok=false; tracing::error!(?error,"údržba dokumentů selhala"); }
                     if let Err(error)=privacy::maintenance(&worker_state,OffsetDateTime::now_utc()).await { maintenance_ok=false; tracing::error!(?error,"úklid osobních údajů selhal"); }
+                    if let Err(error)=super::rentals::maintenance(&worker_state,OffsetDateTime::now_utc()).await { maintenance_ok=false; tracing::error!(?error,"kontrola pronájmů selhala"); }
                     if maintenance_ok {worker_state.last_maintenance.store(OffsetDateTime::now_utc().unix_timestamp(),std::sync::atomic::Ordering::Relaxed);}
 
                 }

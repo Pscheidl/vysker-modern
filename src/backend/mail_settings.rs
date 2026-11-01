@@ -150,6 +150,12 @@ pub async fn update(
     }
     let mut tx = crate::db::begin_write(&s.pool).await?;
     accounts::current(&mut tx, &admin, &verified).await?;
+    accounts::require_permission(&mut tx, admin.id, "mail").await?;
+    // Outgoing mail contains password recovery links. Control of the sender
+    // therefore implies the ability to take over any administrator account.
+    for permission in ["identity", "create", "manage"] {
+        accounts::require_permission(&mut tx, admin.id, permission).await?;
+    }
     let existing: Option<Saved> = sqlx::query_as(
         "SELECT username,sender_name,password_encrypted FROM mail_settings WHERE id=1",
     )
