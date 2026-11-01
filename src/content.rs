@@ -38,7 +38,11 @@ pub struct Notice {
 
 impl Notice {
     pub fn href(&self) -> String {
-        format!("/uredni-deska/{}", self.id)
+        if cfg!(feature = "demo") {
+            format!("/uredni-deska/{}", self.id)
+        } else {
+            format!("/dokumenty/{}", self.id)
+        }
     }
     pub fn matches(&self, query: &str) -> bool {
         let haystack = fold(&format!(
@@ -114,7 +118,7 @@ pub async fn load_board() -> Result<Board, ServerFnError> {
     records.extend(notices::archived(&pool, 3).await.map_err(public_error)?);
     let mut notices = Vec::with_capacity(records.len());
     for record in records {
-        notices.push(present_notice(&pool, record).await?);
+        notices.push(present_notice(&pool, record, false).await?);
     }
     let counts = crate::model::notices::counts(&pool)
         .await
@@ -132,17 +136,22 @@ pub async fn load_board() -> Result<Board, ServerFnError> {
 }
 
 #[cfg(feature = "ssr")]
-async fn present_notice(
+pub(crate) async fn present_notice(
     pool: &sqlx::PgPool,
     record: crate::model::notices::Notice,
+    include_files: bool,
 ) -> Result<Notice, ServerFnError> {
     let today = crate::backend::today(time::OffsetDateTime::now_utc());
-    let files = crate::model::notices::attachments(pool, record.id)
-        .await
-        .map_err(public_error)?;
+    let files = if include_files {
+        crate::model::notices::attachments(pool, record.id)
+            .await
+            .map_err(public_error)?
+    } else {
+        Vec::new()
+    };
     let archived = !record.status.is_published();
     let end_date = if archived {
-        record.withdrawn_at.map(|d| d.date()).or(record.withdraw_on)
+        record.withdrawn_at.map(|d| d.date())
     } else {
         record.withdraw_on
     };
@@ -206,7 +215,7 @@ pub async fn notice_from_pool(
         .map_err(public_error)?
     {
         Some(record) => {
-            let mut notice = present_notice(pool, record).await?;
+            let mut notice = present_notice(pool, record, true).await?;
             notice.import_origin = crate::backend::legacy::import_origin(
                 pool,
                 Some(id),
@@ -289,7 +298,14 @@ mod tests {
         n.archived = true;
         assert!(!n.has_files());
         assert!(n.matches("pronajmu"));
-        assert_eq!(n.href(), "/uredni-deska/6");
+        assert_eq!(
+            n.href(),
+            if cfg!(feature = "demo") {
+                "/uredni-deska/6"
+            } else {
+                "/dokumenty/6"
+            }
+        );
     }
 
     #[test]

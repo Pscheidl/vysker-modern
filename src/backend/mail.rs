@@ -78,6 +78,16 @@ pub async fn enqueue_publication(
         PublicationTarget::Document(id) => (None, Some(id), None),
         PublicationTarget::Event(id) => (None, None, Some(id)),
     };
+    if let Some(id) = notice_id.or(document_id) {
+        let first: bool = sqlx::query_scalar("SELECT claim_document_announcement($1,$2)")
+            .bind(id)
+            .bind(now)
+            .fetch_one(&mut *conn)
+            .await?;
+        if !first {
+            return Ok(());
+        }
+    }
     sqlx::query(
         "INSERT INTO publication_outbox (notice_id,document_id,event_id,subscriber_id,consent_id,created_at)
          SELECT $1,$2,$3,s.id,c.id,$4 FROM subscribers s
@@ -183,7 +193,7 @@ async fn publication_line(
                 .bind(id)
                 .fetch_one(&mut *conn)
                 .await?;
-        (record.into_public(now).title, "uredni-deska", id)
+        (record.into_public(now).title, "dokumenty", id)
     } else {
         (
             request.title.clone(),
@@ -235,13 +245,13 @@ pub async fn prepare_publications(s: &Backend, now: OffsetDateTime) -> Result<bo
         return Ok(false);
     };
     let publications: Vec<PublicationRequest> = sqlx::query_as(
-        "SELECT o.id,o.notice_id,o.document_id,o.event_id,coalesce(n.title,d.title,e.title) AS title,
+        "SELECT o.id,o.notice_id,o.document_id,o.event_id,coalesce(CASE WHEN n.metadata_restricted THEN coalesce(n.public_title,'Historická písemnost úřední desky') ELSE n.title END,CASE WHEN d.metadata_restricted THEN coalesce(d.public_title,'Historická písemnost úřední desky') ELSE d.title END,e.title) AS title,
             (s.verified_at IS NOT NULL AND s.unsubscribed_at IS NULL
              AND c.subscriber_id=s.id AND c.confirmed_at IS NOT NULL
              AND c.withdrawn_at IS NULL AND c.superseded_at IS NULL
              AND subscription_matches_publication(s.id,o.notice_id,o.document_id,o.event_id)
-             AND (coalesce(n.status IN ('published','archived','withdrawn'),FALSE)
-                  OR coalesce(d.status='published',FALSE)
+             AND (coalesce(EXISTS(SELECT 1 FROM documents nd WHERE nd.id=n.id AND document_is_public(nd,(now() AT TIME ZONE 'Europe/Prague')::date)),FALSE)
+                  OR coalesce(document_is_public(d,(now() AT TIME ZONE 'Europe/Prague')::date),FALSE)
                   OR coalesce(e.published AND NOT e.cancelled,FALSE))
              AND NOT EXISTS (SELECT 1 FROM mail_queue m WHERE m.deduplication_key=
                  concat(CASE WHEN o.notice_id IS NOT NULL THEN 'notice'
@@ -364,10 +374,10 @@ async fn refresh_digest(
         return Ok(false);
     }
     let items: Vec<PublicationRequest> = sqlx::query_as(
-        "SELECT i.id,i.notice_id,i.document_id,i.event_id,coalesce(n.title,d.title,e.title) AS title,
+        "SELECT i.id,i.notice_id,i.document_id,i.event_id,coalesce(CASE WHEN n.metadata_restricted THEN coalesce(n.public_title,'Historická písemnost úřední desky') ELSE n.title END,CASE WHEN d.metadata_restricted THEN coalesce(d.public_title,'Historická písemnost úřední desky') ELSE d.title END,e.title) AS title,
             (subscription_matches_publication(i.subscriber_id,i.notice_id,i.document_id,i.event_id)
-             AND (coalesce(n.status IN ('published','archived','withdrawn'),FALSE)
-                  OR coalesce(d.status='published',FALSE)
+             AND (coalesce(EXISTS(SELECT 1 FROM documents nd WHERE nd.id=n.id AND document_is_public(nd,(now() AT TIME ZONE 'Europe/Prague')::date)),FALSE)
+                  OR coalesce(document_is_public(d,(now() AT TIME ZONE 'Europe/Prague')::date),FALSE)
                   OR coalesce(e.published AND NOT e.cancelled,FALSE))) AS allowed
          FROM mail_publication_items i
          LEFT JOIN notices n ON n.id=i.notice_id LEFT JOIN documents d ON d.id=i.document_id
@@ -449,7 +459,7 @@ async fn matches_preferences(s: &Backend, message: &Pending) -> anyhow::Result<b
         None => return Ok(false),
     };
     Ok(
-        sqlx::query_scalar("SELECT subscription_matches_publication($1,$2,$3,$4)")
+        sqlx::query_scalar("SELECT subscription_matches_publication($1,$2,$3,$4) AND (coalesce($2,$3) IS NULL OR EXISTS(SELECT 1 FROM documents d WHERE d.id=coalesce($2,$3) AND document_is_public(d,(now() AT TIME ZONE 'Europe/Prague')::date) AND NOT d.metadata_restricted))")
             .bind(message.subscriber_id)
             .bind(notice_id)
             .bind(document_id)

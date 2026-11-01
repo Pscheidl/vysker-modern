@@ -1,7 +1,7 @@
 use super::{
     Backend, MAX_FILE_BYTES, Pagination, Result, audit,
     auth::{self, Admin},
-    bad, conflict, mail, missing, text, timestamp, today,
+    bad, conflict, mail, missing, text, timestamp,
 };
 use axum::{
     Json,
@@ -23,23 +23,24 @@ pub struct Attachment {
     pub available: bool,
 }
 pub async fn notice_files(s: &Backend, id: i64) -> Result<Vec<Attachment>> {
-    Ok(sqlx::query_as("SELECT id,name,content_type,size_bytes,removed_at,(data IS NOT NULL AND removed_at IS NULL) AS available FROM attachments WHERE notice_id=$1 ORDER BY sort_order,id").bind(id).fetch_all(&s.pool).await?)
+    Ok(sqlx::query_as("SELECT id,name,content_type,size_bytes,removed_at,(data IS NOT NULL AND removed_at IS NULL) AS available FROM attachments WHERE document_id=$1 ORDER BY sort_order,id").bind(id).fetch_all(&s.pool).await?)
 }
 pub async fn public_notice_files(
     pool: &sqlx::PgPool,
     id: i64,
     now: OffsetDateTime,
 ) -> Result<Vec<Attachment>> {
-    let record:super::notices::NoticeRecord=sqlx::query_as("SELECT * FROM notices WHERE id=$1 AND status IN ('published','archived','withdrawn') AND (status='archived' OR published_on IS NULL OR published_on<=$2)").bind(id).bind(today(now)).fetch_optional(pool).await?.ok_or_else(missing)?;
-    let visible = record.files_public(now);
-    let mut files:Vec<Attachment>=sqlx::query_as("SELECT id,name,content_type,size_bytes,removed_at,(data IS NOT NULL AND removed_at IS NULL) AS available FROM attachments WHERE notice_id=$1 ORDER BY sort_order,id").bind(id).fetch_all(pool).await?;
+    let visible: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM documents d WHERE id=$1 AND document_is_public(d,$2))",
+    )
+    .bind(id)
+    .bind(super::today(now))
+    .fetch_one(pool)
+    .await?;
     if !visible {
-        for file in &mut files {
-            file.name = format!("Příloha #{}", file.id);
-            file.available = false;
-        }
+        return Err(missing());
     }
-    Ok(files)
+    Ok(sqlx::query_as("SELECT id,name,content_type,size_bytes,removed_at,(data IS NOT NULL AND removed_at IS NULL) AS available FROM attachments WHERE document_id=$1 AND is_public AND removed_at IS NULL AND data IS NOT NULL AND EXISTS(SELECT 1 FROM documents d WHERE d.id=$1 AND document_files_public(d,(now() AT TIME ZONE 'Europe/Prague')::date)) ORDER BY sort_order,id").bind(id).fetch_all(pool).await?)
 }
 #[derive(sqlx::FromRow, Serialize)]
 pub struct Document {
@@ -50,6 +51,19 @@ pub struct Document {
     pub created_at: String,
     pub published_at: Option<String>,
     pub source_published_on: Option<time::Date>,
+    pub document_date: Option<time::Date>,
+    pub category_id: Option<i64>,
+    pub reference_number: Option<String>,
+    pub issuer: Option<String>,
+    pub lock_state: String,
+    pub public_access: bool,
+    pub access_blocked: bool,
+    pub public_until: Option<time::Date>,
+    pub board_status: Option<String>,
+    pub content_version: i64,
+    pub metadata_restricted: bool,
+    pub public_title: Option<String>,
+    pub attachments_public: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -57,11 +71,21 @@ pub struct DocumentInput {
     pub title: String,
     #[serde(default)]
     pub description: String,
+    pub reference_number: Option<String>,
+    pub issuer: Option<String>,
+    pub document_date: Option<time::Date>,
+    pub expected_version: Option<i64>,
 }
 impl DocumentInput {
     fn validate(&self) -> Result<()> {
         text(&self.title, 300)?;
-        if self.description.len() > 50_000 {
+        if self.description.len() > 50_000
+            || self
+                .reference_number
+                .as_ref()
+                .is_some_and(|v| v.len() > 200)
+            || self.issuer.as_ref().is_some_and(|v| v.len() > 300)
+        {
             return Err(bad("Popis je příliš dlouhý."));
         }
         Ok(())
@@ -72,6 +96,9 @@ pub struct DocumentDetail {
     #[serde(flatten)]
     pub record: Document,
     pub attachments: Vec<Attachment>,
+    pub postings: Vec<serde_json::Value>,
+    pub relations: Vec<serde_json::Value>,
+    pub origin: Option<serde_json::Value>,
 }
 pub async fn create(
     State(s): State<Backend>,
@@ -82,11 +109,11 @@ pub async fn create(
     let now = OffsetDateTime::now_utc();
     let mut tx = crate::db::begin_write(&s.pool).await?;
     let id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO documents(title,description,created_at) VALUES ($1,$2,$3) RETURNING id",
+        "INSERT INTO documents(title,description,created_at,reference_number,issuer,document_date) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
     )
     .bind(input.title.trim())
     .bind(input.description)
-    .bind(timestamp(now))
+    .bind(timestamp(now)).bind(input.reference_number).bind(input.issuer).bind(input.document_date)
     .fetch_one(&mut *tx)
     .await?;
     audit(&mut tx, Some(admin.id), "created", "document", id, now).await?;
@@ -102,10 +129,10 @@ pub async fn update(
     input.validate()?;
     let mut tx = crate::db::begin_write(&s.pool).await?;
     let count =
-        sqlx::query("UPDATE documents SET title=$1,description=$2 WHERE id=$3 AND status='draft'")
+        sqlx::query("UPDATE documents SET title=$1,description=$2,reference_number=$4,issuer=$5,document_date=$6 WHERE id=$3 AND status='draft' AND lock_state='draft' AND board_status IS DISTINCT FROM 'scheduled' AND ($7::bigint IS NULL OR content_version=$7)")
             .bind(input.title.trim())
             .bind(input.description)
-            .bind(id)
+            .bind(id).bind(input.reference_number).bind(input.issuer).bind(input.document_date).bind(input.expected_version)
             .execute(&mut *tx)
             .await?
             .rows_affected();
@@ -131,7 +158,7 @@ pub async fn publish(
 ) -> Result<StatusCode> {
     let now = OffsetDateTime::now_utc();
     let mut tx = crate::db::begin_write(&s.pool).await?;
-    sqlx::query_scalar::<_, i64>("UPDATE documents SET status='published',published_at=$1 WHERE id=$2 AND status='draft' RETURNING id")
+    sqlx::query_scalar::<_, i64>("UPDATE documents SET status='published',public_access=TRUE,published_at=coalesce(published_at,$1) WHERE id=$2 AND NOT public_access AND NOT access_blocked AND lock_state='draft' RETURNING id")
         .bind(timestamp(now)).bind(id).fetch_optional(&mut *tx).await?.ok_or_else(||conflict("Zveřejnit lze pouze koncept dokumentu."))?;
     audit(&mut tx, Some(admin.id), "published", "document", id, now).await?;
     mail::enqueue_publication(&mut tx, mail::PublicationTarget::Document(id), now).await?;
@@ -142,29 +169,20 @@ pub async fn archive(
     State(s): State<Backend>,
     admin: Admin,
     Path(id): Path<i64>,
+    Json(input): Json<super::registry::Reason>,
 ) -> Result<StatusCode> {
-    let mut tx = crate::db::begin_write(&s.pool).await?;
-    let count =
-        sqlx::query("UPDATE documents SET status='archived' WHERE id=$1 AND status='published'")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-    if count == 0 {
-        return Err(conflict("Archivovat lze pouze zveřejněný dokument."));
-    }
-    audit(
-        &mut tx,
-        Some(admin.id),
-        "archived",
-        "document",
-        id,
-        OffsetDateTime::now_utc(),
+    super::registry::visibility(
+        State(s),
+        admin,
+        Path(id),
+        Json(super::registry::Visibility {
+            public_access: false,
+            reason: input.reason,
+        }),
     )
-    .await?;
-    tx.commit().await?;
-    Ok(StatusCode::NO_CONTENT)
+    .await
 }
+
 pub async fn admin_list(
     State(s): State<Backend>,
     _: Admin,
@@ -185,25 +203,28 @@ pub async fn public_list(
 ) -> Result<Json<Vec<Document>>> {
     let (limit, offset) = p.bounds()?;
     Ok(Json(
-        sqlx::query_as(
-            "SELECT * FROM documents WHERE status='published' ORDER BY coalesce(source_published_on::text,published_at) DESC NULLS LAST,id DESC LIMIT $1 OFFSET $2",
+        sqlx::query_as::<_,Document>(
+            "SELECT * FROM documents WHERE document_is_public(documents,(now() AT TIME ZONE 'Europe/Prague')::date) ORDER BY catalog_date DESC NULLS LAST,id DESC LIMIT $1 OFFSET $2",
         )
         .bind(limit)
         .bind(offset)
         .fetch_all(&s.pool)
-        .await?,
+        .await?.into_iter().map(Document::into_public).collect(),
     ))
 }
 pub async fn detail(State(s): State<Backend>, Path(id): Path<i64>) -> Result<Json<DocumentDetail>> {
-    let record = sqlx::query_as("SELECT * FROM documents WHERE id=$1 AND status='published'")
+    let record: Document = sqlx::query_as("SELECT * FROM documents WHERE id=$1 AND document_is_public(documents,(now() AT TIME ZONE 'Europe/Prague')::date)")
         .bind(id)
         .fetch_optional(&s.pool)
         .await?
         .ok_or_else(missing)?;
-    let files=sqlx::query_as("SELECT id,name,content_type,size_bytes,removed_at,(data IS NOT NULL AND removed_at IS NULL) AS available FROM attachments WHERE document_id=$1 ORDER BY sort_order,id").bind(id).fetch_all(&s.pool).await?;
+    let files=sqlx::query_as("SELECT id,name,content_type,size_bytes,removed_at,(data IS NOT NULL AND removed_at IS NULL) AS available FROM attachments WHERE document_id=$1 AND is_public AND removed_at IS NULL AND data IS NOT NULL AND EXISTS(SELECT 1 FROM documents d WHERE d.id=$1 AND document_files_public(d,(now() AT TIME ZONE 'Europe/Prague')::date)) ORDER BY sort_order,id").bind(id).fetch_all(&s.pool).await?;
     Ok(Json(DocumentDetail {
-        record,
+        record: record.into_public(),
         attachments: files,
+        postings: super::registry::postings(&s.pool, id, true).await?,
+        relations: public_relations(&s.pool, id).await?,
+        origin: None,
     }))
 }
 
@@ -268,12 +289,12 @@ async fn upload(
     let now = OffsetDateTime::now_utc();
     let mut tx = crate::db::begin_write(&s.pool).await?;
     let editable: bool = if notice {
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM notices WHERE id=$1 AND status='draft')")
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM documents WHERE id=$1 AND status='draft' AND lock_state='draft' AND board_status IS DISTINCT FROM 'scheduled')")
             .bind(parent)
             .fetch_one(&mut *tx)
             .await?
     } else {
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM documents WHERE id=$1 AND status='draft')")
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM documents WHERE id=$1 AND status='draft' AND lock_state='draft' AND board_status IS DISTINCT FROM 'scheduled')")
             .bind(parent)
             .fetch_one(&mut *tx)
             .await?
@@ -282,7 +303,7 @@ async fn upload(
         return Err(conflict("Přílohy lze nahrát pouze ke konceptu."));
     }
     let id=sqlx::query_scalar::<_, i64>("INSERT INTO attachments(notice_id,document_id,name,content_type,size_bytes,data,sha256) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id")
-        .bind(if notice {Some(parent)}else{None}).bind(if notice {None}else{Some(parent)}).bind(name).bind(mime).bind(bytes.len() as i64).bind(bytes.as_ref()).bind(auth::hash(&bytes)).fetch_one(&mut *tx).await?;
+        .bind(if notice {Some(parent)}else{None}).bind(Some(parent)).bind(name).bind(mime).bind(bytes.len() as i64).bind(bytes.as_ref()).bind(auth::hash(&bytes)).fetch_one(&mut *tx).await?;
     audit(&mut tx, Some(actor), "uploaded", "attachment", id, now).await?;
     tx.commit().await?;
     Ok((StatusCode::CREATED, Json(serde_json::json!({"id":id}))))
@@ -304,23 +325,10 @@ fn content_type(name: &str, bytes: &[u8]) -> Result<&'static str> {
     }
 }
 pub async fn download(State(s): State<Backend>, Path(id): Path<i64>) -> Result<Response> {
-    let now = OffsetDateTime::now_utc();
-    let parent:Option<(Option<i64>,Option<String>)>=sqlx::query_as("SELECT f.notice_id,d.status FROM attachments f LEFT JOIN documents d ON d.id=f.document_id WHERE f.id=$1 AND f.data IS NOT NULL AND f.removed_at IS NULL").bind(id).fetch_optional(&s.pool).await?;
-    let (notice_id, document_status) = parent.ok_or_else(missing)?;
-    if let Some(notice_id) = notice_id {
-        let record: super::notices::NoticeRecord =
-            sqlx::query_as("SELECT * FROM notices WHERE id=$1")
-                .bind(notice_id)
-                .fetch_one(&s.pool)
-                .await?;
-        if !record.files_public(now) {
-            return Err(missing());
-        }
-    } else if document_status.as_deref() != Some("published") {
-        return Err(missing());
-    }
-    let (name,mime,bytes):(String,String,Vec<u8>)=sqlx::query_as("SELECT name,content_type,data FROM attachments WHERE id=$1 AND data IS NOT NULL AND removed_at IS NULL").bind(id).fetch_optional(&s.pool).await?.ok_or_else(missing)?;
+    // Visibility and bytes are read in one statement, including every historical URL.
+    let (name,mime,bytes):(String,String,Vec<u8>)=sqlx::query_as("SELECT a.name,a.content_type,a.data FROM attachments a JOIN documents d ON d.id=a.document_id WHERE a.id=$1 AND a.is_public AND a.data IS NOT NULL AND a.removed_at IS NULL AND document_files_public(d,$2)").bind(id).bind(super::today(OffsetDateTime::now_utc())).fetch_optional(&s.pool).await?.ok_or_else(missing)?;
     let mut headers = HeaderMap::new();
+    headers.insert(header::CACHE_CONTROL, "no-store, private".parse().unwrap());
     headers.insert(header::CONTENT_TYPE, mime.parse().map_err(|_| missing())?);
     let encoded = percent_encoding::utf8_percent_encode(&name, percent_encoding::NON_ALPHANUMERIC);
     headers.insert(
@@ -334,4 +342,23 @@ pub async fn download(State(s): State<Backend>, Path(id): Path<i64>) -> Result<R
         "sandbox; default-src 'none'".parse().unwrap(),
     );
     Ok((headers, Body::from(bytes)).into_response())
+}
+
+pub async fn public_relations(pool: &sqlx::PgPool, id: i64) -> Result<Vec<serde_json::Value>> {
+    Ok(sqlx::query_scalar("SELECT jsonb_build_object('id',d.id,'title',CASE WHEN d.metadata_restricted THEN d.public_title ELSE d.title END,'kind',r.kind,'direction',CASE WHEN r.original_id=$1 THEN 'outgoing' ELSE 'incoming' END) FROM document_relations r JOIN documents d ON d.id=CASE WHEN r.original_id=$1 THEN r.related_id ELSE r.original_id END WHERE (r.original_id=$1 OR r.related_id=$1) AND document_is_public(d,(now() AT TIME ZONE 'Europe/Prague')::date) ORDER BY r.id LIMIT 100").bind(id).fetch_all(pool).await?)
+}
+
+impl Document {
+    pub fn into_public(mut self) -> Self {
+        if self.metadata_restricted {
+            self.title = self
+                .public_title
+                .clone()
+                .unwrap_or_else(|| format!("Záznam úřední desky #{}", self.id));
+            self.description.clear();
+            self.reference_number = None;
+            self.issuer = None;
+        }
+        self
+    }
 }

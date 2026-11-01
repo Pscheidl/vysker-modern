@@ -699,3 +699,32 @@
 .report-legacy-resolution{margin-top:28px;border-top:1px solid var(--line);padding-top:20px}
 .report-legacy-resolution>summary{cursor:pointer;font-weight:500;min-height:44px;padding:10px 0}
 @media(max-width:600px){.report-comments>h2{font-size:21px}.report-comment,.admin-report-comment{padding:18px}.report-comment-header{gap:6px 12px}.report-comments .admin-actions>.button{flex:1;white-space:normal}}
+
+/* Shared document history and operational forms use the existing visual system. */
+.home-board-empty { margin: 1rem 0; color: var(--muted); }
+.home-board-empty a { text-decoration: underline; text-underline-offset: .2em; }
+.document-state-facts { display: flex; flex-wrap: wrap; gap: 1rem 2rem; margin: 1rem 0 2rem; }
+.document-state-facts dt { font-size: .8rem; opacity: .7; }
+.document-state-facts dd { margin: .25rem 0 0; font-weight: 600; }
+.document-operations details, .posting-history > li { padding: 1rem 0; border-bottom: 1px solid var(--border); }
+.document-operations summary, .posting-history summary { cursor: pointer; font-weight: 600; padding: .5rem 0; }
+.publication-preview { margin-top: 1.5rem; padding: 1rem; border: 1px solid var(--border); border-radius: .75rem; }
+.publication-preview li { margin: .75rem 0; overflow-wrap: anywhere; }
+.publication-preview li small, .file-fingerprint { display: block; }
+.file-fingerprint { font-size: .75rem; overflow-wrap: anywhere; }
+.posting-history { list-style: none; padding: 0; }
+.document-postings, .document-relations { margin-top: 2rem; }
+.document-relations li { margin: .75rem 0; }
+.document-relations span { display: block; font-size: .85rem; opacity: .75; }
+.document-audit { padding-left: 1rem; }
+.document-audit time { display: block; font-size: .8rem; }
+.document-audit pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24rem; overflow: auto; }
+.revision-diff { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 1rem; }
+.revision-diff dt { color: var(--muted); font-size: .85rem; }
+.revision-diff dd { margin: .35rem 0; overflow-wrap: anywhere; }
+.revision-text, .revision-source { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24rem; overflow: auto; }
+.revision-source { padding: 1rem; background: var(--soft); font-size: .85rem; }
+@media(max-width:600px){.revision-diff { grid-template-columns: 1fr; }.document-state-facts { gap: .75rem 1rem; }.publication-preview { padding: .75rem; }}
+.posting-correction { margin: 1rem 0; padding: 1rem; background: var(--soft); border-radius: .5rem; }
+.posting-correction h4 { margin: 0 0 .5rem; }
+.source-identity { overflow-wrap: anywhere; }

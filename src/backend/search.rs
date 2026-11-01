@@ -10,48 +10,62 @@ use axum::{
 };
 use sqlx::{PgPool, Postgres, QueryBuilder};
 
-// Explicit Czech mappings provide consistent results across database locales and preserve
-// substring search semantics, including multiple words and literal '%' / '_'.
-fn folded(expression: &str) -> String {
-    let mut sql = expression.to_owned();
-    for c in "ÁČĎÉĚÍŇÓŘŠŤÚŮÝŽáčďéěíňóřšťúůýž".chars() {
-        sql = format!("replace({sql},'{c}','{}')", fold(&c.to_string()));
-    }
-    format!("lower({sql})")
+/// Escape LIKE metacharacters so user input keeps literal substring semantics.
+fn literal_pattern(word: &str) -> String {
+    format!(
+        "%{}%",
+        word.replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    )
 }
 fn build(q: &SearchQuery, day: time::Date, selection: &str) -> QueryBuilder<Postgres> {
-    let mut b = QueryBuilder::new(
-        "WITH notice_state AS (SELECT n.*, c.name AS category, status='published' AND (published_on IS NULL OR published_on<=",
-    );
-    b.push_bind(day).push(") AND (withdraw_on IS NULL OR withdraw_on>").push_bind(day).push(") AS active FROM notices n LEFT JOIN categories c ON c.id=n.category_id WHERE status IN ('published','archived','withdrawn') AND (status='archived' OR published_on IS NULL OR published_on<=").push_bind(day).push(")), public AS (
-        SELECT id, 'notice' AS kind,
-        CASE WHEN active THEN title ELSE coalesce(nullif(trim((review_json::jsonb->>'archive_title')),''),'Záznam úřední desky #'||id) END AS title,
-        CASE WHEN active THEN coalesce(description,'') ELSE '' END AS description,
-        CASE WHEN active THEN coalesce(reference_number,'')||' '||coalesce(issuer,'') ELSE '' END AS extra,
-        '/uredni-deska/'||id AS path, coalesce(category,'Ostatní') AS category, coalesce(published_on::text,'') AS posted, NOT active AS archived
-        FROM notice_state
-        UNION ALL SELECT id,'document',title,coalesce(description,''),'','/dokumenty/'||id,'',coalesce(source_published_on::text,published_at,''),FALSE FROM documents WHERE status='published'
-        UNION ALL SELECT id,'page',title,content,'','/stranky/'||slug,'',updated_at,FALSE FROM pages WHERE published=TRUE
-        ) SELECT ").push(selection).push(" FROM public WHERE 1=1");
-    if !q.kind.is_empty() && q.kind != "all" {
-        b.push(" AND kind=").push_bind(q.kind.clone());
+    let mut b = QueryBuilder::new("WITH public AS (");
+    let documents = q.kind != "page";
+    let pages = !["notice", "document"].contains(&q.kind.as_str())
+        && q.state != "archive"
+        && q.category.is_empty();
+    if documents {
+        let date = if q.kind == "notice" {
+            "d.published_on"
+        } else {
+            "d.catalog_date"
+        };
+        b.push(format!("SELECT d.id,CASE WHEN d.board_status IS NULL THEN 'document' ELSE 'notice' END AS kind,CASE WHEN d.metadata_restricted THEN coalesce(d.public_title,'Záznam úřední desky #'||d.id) ELSE d.title END AS title,CASE WHEN d.metadata_restricted THEN '' ELSE substr(d.description,1,400) END AS description,'/dokumenty/'||d.id AS path,coalesce(c.name,'Ostatní') AS category,coalesce({date}::text,'') AS posted,{date} AS sort_date,coalesce(d.board_status IN ('withdrawn','archived'),FALSE) AS archived FROM documents d LEFT JOIN categories c ON c.id=d.category_id WHERE document_is_public(d,"))
+            .push_bind(day).push(")");
+        if q.kind == "notice" {
+            if q.state == "archive" {
+                b.push(" AND d.board_status IN ('withdrawn','archived') AND d.has_removed_posting");
+            } else if q.state == "all" {
+                b.push(" AND d.board_status IN ('published','withdrawn','archived') AND (d.has_current_posting OR d.has_removed_posting)");
+            } else {
+                b.push(" AND d.board_status='published' AND d.has_current_posting");
+            }
+        } else if q.state == "archive" {
+            b.push(" AND d.board_status IN ('withdrawn','archived') AND d.has_removed_posting");
+        }
+        if !q.category.is_empty() {
+            b.push(" AND c.name=").push_bind(q.category.clone());
+        }
+        for word in fold(&q.q).split_whitespace() {
+            b.push(" AND d.search_text LIKE ")
+                .push_bind(literal_pattern(word));
+        }
     }
-    if q.state == "archive" {
-        b.push(" AND archived=TRUE");
-    } else if q.state != "all" {
-        b.push(" AND archived=FALSE");
+    if pages {
+        if documents {
+            b.push(" UNION ALL ");
+        }
+        b.push("SELECT id,'page',title,substr(content,1,400),'/stranky/'||slug,'',updated_at,updated_at::date,FALSE FROM pages WHERE published=TRUE");
+        for word in fold(&q.q).split_whitespace() {
+            b.push(" AND document_fold(title||' '||content) LIKE ")
+                .push_bind(literal_pattern(word));
+        }
     }
-    if !q.category.is_empty() {
-        b.push(" AND category=").push_bind(q.category.clone());
+    if !documents && !pages {
+        b.push("SELECT 0::bigint AS id,''::text AS kind,''::text AS title,''::text AS description,''::text AS path,''::text AS category,''::text AS posted,NULL::date AS sort_date,FALSE AS archived WHERE FALSE");
     }
-    let expression = folded("title||' '||description||' '||extra||' '||category");
-    for word in fold(&q.q).split_whitespace() {
-        b.push(" AND strpos(")
-            .push(&expression)
-            .push(",")
-            .push_bind(word.to_owned())
-            .push(")>0");
-    }
+    b.push(") SELECT ").push(selection).push(" FROM public");
     b
 }
 
@@ -86,13 +100,13 @@ pub async fn query(pool: &PgPool, q: &SearchQuery) -> Result<SearchPage> {
     b.push(" ORDER BY ");
     match q.sort.as_str() {
         "title" => {
-            b.push(folded("title")).push(" ASC,kind,id");
+            b.push("document_fold(title) ASC,kind,id");
         }
         "oldest" => {
-            b.push("(posted='') ASC,posted ASC,kind,id ASC");
+            b.push("sort_date ASC NULLS LAST,id ASC,kind");
         }
         _ => {
-            b.push("(posted='') ASC,posted DESC,kind,id DESC");
+            b.push("sort_date DESC NULLS LAST,id DESC,kind");
         }
     }
     b.push(" LIMIT ")

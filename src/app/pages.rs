@@ -33,7 +33,7 @@ pub fn Home() -> impl IntoView {
                 <Suspense fallback=Loading>{move || board.get().map(|result| match result {
                     Ok(b) => {
                         let selected: Vec<_> = b.notices.into_iter().filter(|n| n.archived == archive.get()).take(3).collect();
-                        if selected.is_empty() {view!{<EmptyState title="Na desce teď není žádný dokument"/>}.into_any()} else {
+                        if selected.is_empty() {view!{<p class="home-board-empty">{if archive.get(){"Ve veřejném archivu nyní není žádný dokument. "}else{"Na desce teď není žádný dokument. "}}<A href=super::site_url("/uredni-deska?stav=archiv")>"Veřejný archiv"</A></p>}.into_any()} else {
                             view!{<div class="notice-grid">{selected.into_iter().map(|notice| view!{<NoticeCard notice/>}).collect_view()}</div>}.into_any()
                         }
                     },
@@ -224,9 +224,9 @@ fn DemoDocumentListing(#[prop(default = false)] library: bool) -> impl IntoView 
             <PageHeading title description eyebrow="DOKUMENTY OBCE"/>
             <Show when=move || !library><nav class="page-tabs" aria-label="Stav dokumentů">
                 <A href=super::site_url("/uredni-deska") attr:class=move || if archived.get(){""}else{"selected"}>"Aktuálně vyvěšeno"</A>
-                <A href=super::site_url("/uredni-deska?stav=archiv") attr:class=move || if archived.get(){"selected"}else{""}>"Archiv dokumentů"</A>
+                <A href=super::site_url("/uredni-deska?stav=archiv") attr:class=move || if archived.get(){"selected"}else{""}>"Veřejný archiv"</A>
             </nav></Show>
-            <Show when=move || archived.get() && !library><p class="info-banner"><Icon name="archive"/>"V archivu zůstává záznam o každém sejmutém dokumentu, i když už jeho přílohy nejsou dostupné."</p></Show>
+            <Show when=move || archived.get() && !library><p class="info-banner"><Icon name="archive"/>"Veřejný archiv obsahuje sejmuté písemnosti, které zůstávají veřejně dostupné."</p></Show>
             <form class="filter-bar" action=super::site_url(action) method="get" role="search">
                 <input type="hidden" name="stav" value=move || if archived.get(){"archiv"}else{"aktualni"}/>
                 <div class="filter-search"><label class="sr-only" for="filter-query">"Hledat v dokumentech"</label><Icon name="search"/><input id="filter-query" name="q" type="search" placeholder="Název, téma nebo číslo jednací…" value=move || query.get() prop:value=move || query.get() on:input=move |ev| query.set(event_target_value(&ev))/></div>
@@ -290,7 +290,7 @@ fn DetailContent(notice: Notice) -> impl IntoView {
                 {notice.attachments.into_iter().map(|file|view!{<div class="attachment"><Icon name="paper"/><div><strong>{file.name}</strong><p>{if file.removed {"Příloha odstraněna".to_string()}else{file.size.clone()}}</p></div>{match file.url {Some(url)=>view!{<a class="text-link" href=url download>"Stáhnout"<Icon/></a>}.into_any(),None=>view!{<span class="attachment-state">{if file.removed {"Nedostupná"}else{"Není k dispozici"}}</span>}.into_any()}}</div>}).collect_view()}
                 <Show when=move || !no_files && cfg!(feature="demo")><p class="field-note">"U příloh jsou zatím uvedeny pouze názvy. Soubory ke stažení nejsou k dispozici."</p></Show>
             </section>
-        </article><aside class="posting-panel" aria-label="Doba zveřejnění"><Icon name="calendar"/><h2>"Doba zveřejnění"</h2><dl><div><dt>"Vyvěšeno"</dt><dd><time datetime=(!notice.posted_iso.is_empty()).then_some(notice.posted_iso.clone())>{notice.posted}</time></dd></div><div><dt>{if archived {"Sejmuto"}else{"Datum sejmutí"}}</dt><dd>{notice.ends}</dd></div></dl>
+        </article><aside class="posting-panel" aria-label="Doba zveřejnění"><Icon name="calendar"/><h2>"Doba zveřejnění"</h2><dl><div><dt>"Vyvěšeno"</dt><dd><time datetime=(!notice.posted_iso.is_empty()).then_some(notice.posted_iso.clone())>{notice.posted}</time></dd></div><div><dt>{if archived {"Sejmuto"}else{"Plánované sejmutí"}}</dt><dd>{notice.ends}</dd></div></dl>
             {if !archived {notice.remaining.map(|d|view!{<span class="status-badge">{remaining_text(d)}</span>})}else{None}}
             <p>{if notice.retain_files {"Přílohy se po sejmutí ponechávají v archivu."}else{"Po sejmutí zůstane v archivu záznam bez příloh."}}</p>
         </aside></div>

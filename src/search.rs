@@ -59,10 +59,16 @@ pub async fn notices(query: SearchQuery) -> Result<NoticePage, ServerFnError> {
     let page = crate::backend::search::query(&pool, &query)
         .await
         .map_err(|e| ServerFnError::new(e.1))?;
-    let mut items = Vec::with_capacity(page.items.len());
-    for hit in page.items {
-        if let Some(n) = crate::content::notice_from_pool(&pool, hit.id).await? {
-            items.push(n);
+    let ids: Vec<i64> = page.items.iter().map(|hit| hit.id).collect();
+    let rows = crate::model::notices::by_ids(&pool, &ids)
+        .await
+        .map_err(|_| ServerFnError::new("Písemnosti nelze načíst."))?;
+    let mut rows: std::collections::HashMap<_, _> =
+        rows.into_iter().map(|row| (row.id, row)).collect();
+    let mut items = Vec::with_capacity(ids.len());
+    for id in ids {
+        if let Some(record) = rows.remove(&id) {
+            items.push(crate::content::present_notice(&pool, record, false).await?);
         }
     }
     Ok(NoticePage {

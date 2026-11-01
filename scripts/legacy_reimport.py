@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 
 from legacy import now
+from legacy_documents import refuse_destructive_reimport
 from legacy_import import import_bundle, load_bundle
 from legacy_scope import require_local_preview
 from postgres import connect, database_url, run_tool
@@ -14,6 +15,7 @@ from postgres import connect, database_url, run_tool
 
 def reset_library(conn):
     require_local_preview()
+    refuse_destructive_reimport(conn)
     conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':vysker-write', 0))")
     counts = {table: conn.execute('SELECT count(*) FROM ' + table).fetchone()[0]
               for table in ('documents', 'notices', 'attachments', 'notice_events')}
@@ -52,6 +54,7 @@ def reset_import(conn):
 
 def reset_imported_content(conn, *, audit_operation):
     """Low-level reset for guarded entrypoints. Caller owns policy and transaction."""
+    refuse_destructive_reimport(conn)
     if audit_operation not in ('local_import_reset', 'staging_import_reset'):
         raise ValueError('Unsupported import reset operation')
     conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':vysker-write', 0))")

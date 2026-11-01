@@ -44,13 +44,8 @@ async fn document(app: &App) -> i64 {
 }
 
 async fn notice(app: &App) -> i64 {
-    sqlx::query_scalar(
-        "INSERT INTO notices(title,status,published_on,published_at)
-        VALUES ('Uredni oznameni','published','2026-10-29','2026-10-29T10:00:00Z') RETURNING id",
-    )
-    .fetch_one(&app.state.pool)
-    .await
-    .unwrap()
+    sqlx::query_scalar("INSERT INTO documents(title,status,board_status,published_on,board_published_at,created_at) VALUES ('Uredni oznameni','published','published','2026-10-29','2026-10-29T10:00:00Z','2026-10-29T10:00:00Z') RETURNING id")
+        .fetch_one(&app.state.pool).await.unwrap()
 }
 
 async fn enqueue(app: &App, target: mail::PublicationTarget, at: OffsetDateTime) {
@@ -205,7 +200,7 @@ async fn calendar_events_share_one_hourly_digest_and_cannot_be_announced_twice()
     for route in [
         format!("/kalendar/{event_id}"),
         format!("/dokumenty/{document_id}"),
-        format!("/uredni-deska/{notice_id}"),
+        format!("/dokumenty/{notice_id}"),
     ] {
         assert_eq!(body.matches(&route).count(), 1);
     }
@@ -217,7 +212,7 @@ async fn calendar_events_share_one_hourly_digest_and_cannot_be_announced_twice()
     let delivered = capture.message().await;
     assert!(delivered.contains(&format!("/kalendar/{event_id}")));
     assert!(delivered.contains(&format!("/dokumenty/{document_id}")));
-    assert!(delivered.contains(&format!("/uredni-deska/{notice_id}")));
+    assert!(delivered.contains(&format!("/dokumenty/{notice_id}")));
     enqueue(&app, mail::PublicationTarget::Event(event_id), cutoff).await;
     assert!(
         mail::prepare_publications(&app.state, cutoff + Duration::hours(1))

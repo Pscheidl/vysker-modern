@@ -14,6 +14,7 @@ from legacy import Capture, canonical, digest, extract, source_key, event_timing
 from bs4 import BeautifulSoup
 from legacy_import import fingerprint, import_bundle, load_bundle, prepare, skipped_page_scope
 from legacy_notifications import queue_publication
+from legacy_documents import configure_source
 from legacy_reconcile import reconcile, require_local_preview
 from legacy_reimport import reset_import, reset_library
 from legacy_scope import notice_values
@@ -44,7 +45,7 @@ def bundle(root, notice=False, document_links=True):
     raw_html = HTML if document_links else '<div id="stred"><h1>Historie</h1><p>Historie obce.</p></div>'
     page = extract(raw_html.encode(), URL)
     if notice:
-        page.update(kind='notice', dates={'published_on': '2020-03-02', 'withdraw_on': '2020-03-20'})
+        page.update(kind='notice', dates={'published_on': '2020-03-02', 'withdraw_on': '2020-03-20', 'removed_on': '2020-03-20'})
     file = dict(url=FILE, title='Zápis', parents=[page['key']] if document_links else [], dates={'published_on': '2020-03-02'},
                 name='zapis.pdf', mime='application/pdf', evidence='Vyvěšeno: 2. 3. 2020')
     for item, raw in [(page, raw_html.encode()), (file, b'%PDF-1.7\nfixture\n%%EOF')]:
@@ -133,6 +134,18 @@ def calendar_bundle(root):
 
 
 class ExtractionTests(unittest.TestCase):
+    def test_oversized_manifest_and_identity_count_are_rejected_before_objects_are_loaded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / 'manifest.json'
+            manifest.write_text('x' * 129)
+            with patch('legacy_import.MAX_MANIFEST_BYTES', 128), self.assertRaisesRegex(ValueError, 'manifest exceeds'):
+                load_bundle(root)
+            manifest.write_text(json.dumps(dict(version=1, origin='https://vysker.cz',
+                pages=[{}, {}, {}], assets=[], complete=True, errors=[])))
+            with patch('legacy_import.MAX_IMPORT_IDENTITIES', 2), self.assertRaisesRegex(ValueError, 'source identities'):
+                load_bundle(root)
+
     def test_notification_requires_exactly_one_publication_target(self):
         for targets in ({}, {'notice_id': 1, 'document_id': 2},
                         {'notice_id': 1, 'event_id': 3}, {'document_id': 2, 'event_id': 3},
@@ -305,6 +318,7 @@ class ImportTests(unittest.TestCase):
         with connect(self.url) as conn:
             for migration in sorted((Path(__file__).resolve().parents[1] / 'migrations').glob('*.sql')):
                 conn.execute(migration.read_text())
+            configure_source(conn, 'one_time', allow_publication=True, reason='Anonymous legacy regression fixture')
 
     def tearDown(self):
         self.directory.cleanup()
@@ -332,7 +346,7 @@ class ImportTests(unittest.TestCase):
             self.assertEqual(conn.execute('SELECT count(*) FROM pages').fetchone()[0], 0)
             self.assertEqual(conn.execute('SELECT count(*) FROM page_revisions').fetchone()[0], 0)
             self.assertEqual(conn.execute('SELECT status FROM notices ORDER BY id').fetchall(), [('archived',), ('archived',)])
-            self.assertEqual(conn.execute('SELECT count(*) FROM documents').fetchone()[0], 3)
+            self.assertEqual(conn.execute('SELECT count(*) FROM documents WHERE board_status IS NULL').fetchone()[0], 3)
             self.assertEqual(conn.execute('SELECT count(*) FROM attachments WHERE data IS NOT NULL').fetchone()[0], 5)
             calendar = conn.execute('SELECT published,description FROM events').fetchone()
             self.assertTrue(calendar[0])
@@ -369,7 +383,7 @@ class ImportTests(unittest.TestCase):
             self.assertEqual(conn.execute('SELECT count(*) FROM pages').fetchone()[0], 0)
             self.assertEqual(conn.execute('SELECT count(*) FROM attachments WHERE notice_id IS NOT NULL').fetchone()[0], 1)
 
-    def test_archive_import_notifies_active_subscribers_and_keeps_files_and_provenance(self):
+    def test_archive_import_keeps_files_and_provenance_without_announcing_history(self):
         navigation_bundle(self.root)
         with connect(self.url) as conn:
             subscribers = subscription_fixture(conn)
@@ -381,30 +395,30 @@ class ImportTests(unittest.TestCase):
             self.assertEqual(row[:7], ('Zápis', 'archived', True, None, None, None, None))
             self.assertEqual(row[7]['archive_title'], 'Zápis')
             self.assertEqual(row[7]['archive_until'], '9999-12-31')
-            self.assertEqual(conn.execute('SELECT status FROM documents').fetchone()[0], 'published')
+            self.assertEqual(conn.execute('SELECT status FROM documents WHERE board_status IS NULL').fetchone()[0], 'published')
             self.assertEqual(conn.execute('SELECT count(*) FROM attachments WHERE data IS NOT NULL').fetchone()[0], 2)
             imported = conn.execute('SELECT preview_published,metadata FROM legacy_notice_imports').fetchone()
             self.assertFalse(imported[0])
             self.assertTrue(imported[1]['archive_import'])
             self.assertTrue(conn.execute('SELECT metadata FROM legacy_sources WHERE notice_id IS NOT NULL').fetchone()[0]['archive_import'])
             notice_id = conn.execute('SELECT id FROM notices').fetchone()[0]
-            document_id = conn.execute('SELECT id FROM documents').fetchone()[0]
+            document_id = conn.execute('SELECT id FROM documents WHERE board_status IS NULL').fetchone()[0]
             created_at = int(datetime.fromisoformat(result['imported_at']).timestamp())
-            expected = [(notice_id, None, *subscribers[name], created_at) for name in ('active', 'active_other')]
-            expected += [(None, document_id, *subscribers[name], created_at) for name in ('active', 'active_other')]
+            expected = []
             self.assertEqual(conn.execute('''SELECT notice_id,document_id,subscriber_id,consent_id,created_at
                 FROM publication_outbox ORDER BY id''').fetchall(), expected)
             # A later confirmation must not join an existing publication's recipients.
             conn.execute('UPDATE subscribers SET verified_at=4 WHERE id=%s', (subscribers['pending'][0],))
             conn.execute('UPDATE subscription_consents SET confirmed_at=4 WHERE id=%s', (subscribers['pending'][1],))
-            conn.execute("UPDATE notices SET title='Upravený místní název'")
+            with self.assertRaises(Exception), conn.transaction():
+                conn.execute("UPDATE notices SET title='Upravený místní název'")
             repeated = import_bundle(conn, self.root, publish_content=True,
                 classify_navigation=True, archive_notices=True)
             self.assertEqual(repeated['new'], [])
-            self.assertEqual(conn.execute('SELECT title FROM notices').fetchone()[0], 'Upravený místní název')
+            self.assertEqual(conn.execute('SELECT title FROM notices').fetchone()[0], 'Zápis')
             self.assertEqual(conn.execute('SELECT count(*) FROM notice_events').fetchone()[0], 0)
             self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
-            self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox').fetchone()[0], 4)
+            self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox').fetchone()[0], 0)
 
     def test_archive_import_handles_structured_notices_without_a_known_posting_date(self):
         data = bundle(self.root, notice=True)
@@ -426,14 +440,14 @@ class ImportTests(unittest.TestCase):
             notice_id = conn.execute('SELECT id FROM notices').fetchone()[0]
             self.assertEqual(conn.execute('''SELECT notice_id,document_id,subscriber_id,consent_id
                 FROM publication_outbox ORDER BY id''').fetchall(),
-                [(notice_id, None, *subscribers[name]) for name in ('active', 'active_other')])
+                [])
 
     def test_consumed_notifications_and_new_attachments_do_not_repeat_a_notice_publication(self):
         data = bundle(self.root, notice=True)
         with connect(self.url) as conn:
             subscription_fixture(conn)
             import_bundle(conn, self.root, archive_notices=True)
-            self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox').fetchone()[0], 2)
+            self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox').fetchone()[0], 0)
             # The worker removes processed outbox entries after queuing messages.
             conn.execute('DELETE FROM publication_outbox')
             extra = copy.deepcopy(data['assets'][0])
@@ -443,7 +457,8 @@ class ImportTests(unittest.TestCase):
             result = import_bundle(conn, self.root, archive_notices=True, sync=True)
             self.assertEqual(result['new'], [source_key(extra['url'])])
             self.assertEqual(conn.execute('SELECT count(*) FROM notices').fetchone()[0], 1)
-            self.assertEqual(conn.execute('SELECT count(*) FROM attachments').fetchone()[0], 2)
+            self.assertEqual(conn.execute('SELECT count(*) FROM attachments').fetchone()[0], 1)
+            self.assertEqual(result['pending_reviews'], 1)
             self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox').fetchone()[0], 0)
 
     def test_existing_public_imports_are_not_backfilled_for_new_subscribers(self):
@@ -462,7 +477,7 @@ class ImportTests(unittest.TestCase):
             subscription_fixture(conn)
         with self.assertRaisesRegex(RuntimeError, 'rollback'), connect(self.url) as conn:
             import_bundle(conn, self.root, publish_content=True, classify_navigation=True, archive_notices=True)
-            self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox').fetchone()[0], 4)
+            self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox').fetchone()[0], 0)
             raise RuntimeError('rollback')
         with connect(self.url) as conn:
             for table in ('publication_outbox', 'legacy_sources', 'notices', 'documents', 'attachments'):
@@ -503,97 +518,7 @@ class ImportTests(unittest.TestCase):
                 self.assertEqual(again['new'], [])
                 self.assertEqual(len(again['unchanged']), 2)
 
-    def test_local_reset_preserves_pages_and_file_links_and_restores_protection(self):
-        navigation_bundle(self.root)
-        with patch.dict(os.environ, LOCAL_PREVIEW_ENV):
-            with connect(self.url) as conn:
-                import_bundle(conn, self.root, publish_content=True)
-                attachment_id = conn.execute('SELECT id FROM attachments ORDER BY id LIMIT 1').fetchone()[0]
-                conn.execute("INSERT INTO pages(slug,title,content,updated_at) VALUES ('local','Local page',%s,'2026-10-01T12:00:00+00:00')",
-                             (f'Local edit [Zápis](</api/v1/attachments/{attachment_id}>)',))
-                pages = conn.execute('SELECT * FROM pages ORDER BY id').fetchall()
-                ids = dict(conn.execute('SELECT source_key,attachment_id FROM legacy_sources WHERE attachment_id IS NOT NULL'))
-                with self.assertRaisesRegex(ValueError, 'reconciliation'):
-                    import_bundle(conn, self.root, classify_navigation=True)
-                counts, preserved = reset_library(conn)
-                self.assertEqual(counts['documents'], 2)
-                self.assertEqual(ids, preserved)
-                import_bundle(conn, self.root, publish_content=True, classify_navigation=True, preview_notices=True, attachment_ids=preserved)
-                self.assertEqual(pages, conn.execute('SELECT * FROM pages ORDER BY id').fetchall())
-                self.assertEqual(ids, dict(conn.execute('SELECT source_key,attachment_id FROM legacy_sources WHERE attachment_id IS NOT NULL')))
-                self.assertEqual(conn.execute('SELECT count(*) FROM documents').fetchone()[0], 1)
-                self.assertEqual(conn.execute('SELECT count(*) FROM notices').fetchone()[0], 1)
-                self.assertEqual(conn.execute("SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgenabled='D'").fetchone()[0], 0)
-            with self.assertRaisesRegex(RuntimeError, 'abort'), connect(self.url) as conn:
-                reset_library(conn)
-                raise RuntimeError('abort')
-            with connect(self.url) as conn:
-                self.assertEqual(conn.execute('SELECT count(*) FROM notices').fetchone()[0], 1)
-                self.assertEqual(conn.execute("SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgenabled='D'").fetchone()[0], 0)
 
-    def test_full_reimport_removes_only_imported_records_and_rolls_back_failures(self):
-        data = navigation_bundle(self.root)
-        page = add_page(self.root, data, '<div id="stred"><h1>Historie</h1><p>Text.</p></div>')
-        event = add_page(self.root, data, '<div id="stred"><h1>Setkání</h1><p>Na návsi.</p></div>',
-                         'https://vysker.cz/setkani/a-1')
-        event['event'] = dict(event_timing('1.10.2026 19:00'), location='Náves')
-        (Path(self.root) / 'manifest.json').write_text(json.dumps(data))
-        tables = ('pages', 'page_revisions', 'page_images', 'events', 'documents', 'notices',
-                  'attachments', 'notice_events', 'legacy_sources', 'legacy_notice_imports', 'legacy_sync_reviews')
-        with patch.dict(os.environ, LOCAL_PREVIEW_ENV):
-            with connect(self.url) as conn:
-                import_bundle(conn, self.root, classify_navigation=True)
-                local_page = conn.execute("INSERT INTO pages(slug,title,content,updated_at) VALUES ('local','Local','Edited','2026-10-01') RETURNING id").fetchone()[0]
-                local_document = conn.execute("INSERT INTO documents(title,created_at) VALUES ('Local','2026-10-01') RETURNING id").fetchone()[0]
-                conn.execute("INSERT INTO notices(title) VALUES ('Local')")
-                conn.execute("INSERT INTO events(title,starts_at,ends_at,updated_at) VALUES ('Local','2026-10-01','2026-10-02','2026-10-01')")
-                conn.execute("INSERT INTO attachments(document_id,name,content_type,size_bytes,data) VALUES (%s,'local.pdf','application/pdf',1,%s)", (local_document, b'x'))
-                conn.execute('''INSERT INTO page_revisions(page_id,version,title,content,slug,published,saved_at)
-                    SELECT id,version,title,content,slug,published,updated_at FROM pages WHERE id=%s''', (local_page,))
-                conn.execute('''INSERT INTO page_images(page_id,name,content_type,size_bytes,width,height,data,sha256,created_at)
-                    SELECT id,'local.png','image/png',1,1,1,%s,'test','2026-10-01' FROM pages''', (b'x',))
-                conn.execute("INSERT INTO notice_events(notice_id,occurred_at,kind,payload,sha256) SELECT id,'2026-10-01','test','{}','test' FROM notices")
-                attachment_ids = dict(conn.execute('SELECT source_key,attachment_id FROM legacy_sources WHERE attachment_id IS NOT NULL'))
-                # The updated source page now links to a document and must disappear on reimport.
-                page['assets'].append(dict(url=FILE))
-                page['content'] += f'\n[Zápis](<{FILE}>)'
-                (Path(self.root) / 'manifest.json').write_text(json.dumps(data))
-                import_bundle(conn, self.root, classify_navigation=True, sync=True)
-                self.assertEqual(conn.execute('SELECT count(*) FROM legacy_sync_reviews').fetchone()[0], 1)
-                before = {table: conn.execute('SELECT * FROM '+table+' ORDER BY 1').fetchall() for table in tables}
-                local = {table: conn.execute('SELECT * FROM '+table+" WHERE title='Local' ORDER BY id").fetchall()
-                         for table in ('pages', 'events', 'documents', 'notices')}
-            with self.assertRaisesRegex(ValueError, 'Invalid mapped page slug'), connect(self.url) as conn:
-                reset_import(conn)
-                import_bundle(conn, self.root, page_map={'ms:1': 'invalid/slug'})
-            with connect(self.url) as conn:
-                self.assertEqual(before, {table: conn.execute('SELECT * FROM '+table+' ORDER BY 1').fetchall() for table in tables})
-                self.assertEqual(conn.execute("SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgenabled='D'").fetchone()[0], 0)
-                counts, preserved = reset_import(conn)
-                self.assertEqual(counts['pages'], 1)
-                self.assertEqual(counts['events'], 1)
-                self.assertEqual(counts['documents'], 1)
-                self.assertEqual(counts['notices'], 1)
-                self.assertEqual(counts['attachments'], 2)
-                self.assertEqual(counts['page_images'], 1)
-                self.assertEqual(counts['page_revisions'], 1)
-                self.assertEqual(counts['notice_events'], 1)
-                self.assertEqual(counts['legacy_sync_reviews'], 1)
-                self.assertEqual(preserved, attachment_ids)
-                result = import_bundle(conn, self.root, classify_navigation=True, attachment_ids=preserved)
-                self.assertEqual(len(result['skipped_document_pages']), 3)
-                self.assertEqual(conn.execute('SELECT count(*) FROM pages').fetchone()[0], 1)
-                self.assertEqual(conn.execute('SELECT count(*) FROM page_images').fetchone()[0], 1)
-                self.assertEqual(conn.execute('SELECT count(*) FROM page_revisions').fetchone()[0], 1)
-                self.assertEqual(conn.execute('SELECT count(*) FROM events').fetchone()[0], 2)
-                self.assertEqual(conn.execute('SELECT count(*) FROM attachments').fetchone()[0], 3)
-                self.assertEqual(conn.execute('SELECT count(*) FROM legacy_sync_reviews').fetchone()[0], 0)
-                self.assertEqual(local, {table: conn.execute('SELECT * FROM '+table+" WHERE title='Local' ORDER BY id").fetchall() for table in local})
-                self.assertEqual(preserved, dict(conn.execute('SELECT source_key,attachment_id FROM legacy_sources WHERE attachment_id IS NOT NULL')))
-                self.assertEqual(conn.execute("SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgenabled='D'").fetchone()[0], 0)
-            with patch.dict(os.environ, {'OBEC_PRODUCTION': 'true'}), connect(self.url) as conn:
-                with self.assertRaisesRegex(ValueError, 'local'):
-                    reset_import(conn)
 
     def test_navigation_notice_deadline_is_not_a_withdrawal_date(self):
         item = dict(title='Zápis', url=FILE, parents=['ms:1'], evidence='Vyvěšeno: 2. 3. 2020, Lhůta do: 20. 3. 2020')
@@ -673,8 +598,7 @@ class ImportTests(unittest.TestCase):
             document_ids = [row[0] for row in conn.execute('SELECT id FROM documents ORDER BY id')]
             self.assertEqual(conn.execute('''SELECT notice_id,document_id,subscriber_id,consent_id
                 FROM publication_outbox ORDER BY id''').fetchall(),
-                [(None, document_id, *subscribers[name]) for document_id in document_ids
-                 for name in ('active', 'active_other')])
+                [])
 
     def test_plain_pages_and_image_articles_keep_their_content_and_revisions(self):
         data = bundle(self.root, document_links=False)
@@ -745,7 +669,8 @@ class ImportTests(unittest.TestCase):
             subscription_fixture(conn)
             import_bundle(conn, self.root, publish_content=True)
             self.assertEqual(conn.execute('SELECT status,retain_attachments,published_at FROM notices').fetchone(), ('draft', False, None))
-            self.assertEqual(conn.execute('SELECT count(*) FROM documents').fetchone()[0], 0)
+            self.assertEqual(conn.execute('SELECT count(*) FROM documents').fetchone()[0], 1)
+            self.assertFalse(conn.execute('SELECT public_access FROM documents').fetchone()[0])
             self.assertIsNotNone(conn.execute('SELECT notice_id FROM attachments').fetchone()[0])
             self.assertEqual(conn.execute('SELECT count(*) FROM notice_events').fetchone()[0], 0)
             self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
@@ -835,72 +760,28 @@ class ImportTests(unittest.TestCase):
             for table in ('events', 'legacy_sources', 'publication_outbox', 'legacy_event_announcements'):
                 self.assertEqual(conn.execute('SELECT count(*) FROM ' + table).fetchone()[0], 0)
 
-    def test_file_notices_reconcile_idempotently_without_changing_documents(self):
-        data=bundle(self.root)
-        file=data['assets'][0]
-        file['dates']={}
-        file['evidence']='Vyvěšeno 2. 3. 2020, Lhůta do: 20. 3. 2020'
-        (Path(self.root)/'manifest.json').write_text(json.dumps(data))
-        mapping={data['pages'][0]['key']:'Zastupitelstvo'}
-        with connect(self.url) as conn:
-            import_bundle(conn,self.root,publish_content=True)
-        with connect(self.url) as conn:
-            conn.execute('SET TRANSACTION READ ONLY')
-            plan=reconcile(conn,self.root,mapping)
-            self.assertEqual(len(plan['notices_created']),1)
-            self.assertEqual(conn.execute('SELECT count(*) FROM notices').fetchone()[0],0)
-        with connect(self.url) as conn:
-            result=reconcile(conn,self.root,mapping,apply=True)
-            self.assertEqual(len(result['dates_updated']),0)
-            self.assertEqual(conn.execute('SELECT source_published_on,published_at,status FROM documents').fetchone(),
-                             (date(2020,3,2),None,'published'))
-            self.assertEqual(conn.execute('SELECT status,withdraw_on,published_at FROM notices').fetchone(),('draft',None,None))
-            self.assertEqual(conn.execute('SELECT count(*) FROM attachments').fetchone()[0],2)
-            self.assertEqual(conn.execute('SELECT count(DISTINCT sha256) FROM attachments').fetchone()[0],1)
-            self.assertEqual(conn.execute('SELECT count(*) FROM notice_events').fetchone()[0],0)
-            self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0],0)
-        with connect(self.url) as conn:
-            conn.execute("UPDATE notices SET title='Local edit'")
-            repeated=reconcile(conn,self.root,mapping,apply=True)
-            self.assertEqual(len(repeated['notices_created']),0)
-            self.assertEqual(len(repeated['notices_unchanged']),1)
-            self.assertEqual(conn.execute('SELECT title FROM notices').fetchone()[0],'Local edit')
 
-    def test_local_notice_preview_keeps_source_dates_separate_from_publication_evidence(self):
-        data=bundle(self.root)
-        data['assets'][0]['evidence']='Vyvěšeno: 2. 3. 2020, Lhůta do: 20. 3. 2020'
-        (Path(self.root)/'manifest.json').write_text(json.dumps(data))
-        with connect(self.url) as conn:
-            import_bundle(conn,self.root,publish_content=True)
-        with patch.dict(os.environ,LOCAL_PREVIEW_ENV):
-            with connect(self.url) as conn:
-                reconcile(conn,self.root,{data['pages'][0]['key']:'Zastupitelstvo'},apply=True,preview=True,as_of=date(2026,10,1))
-                self.assertEqual(conn.execute('SELECT status,published_on,withdraw_on,published_at,withdrawn_at FROM notices').fetchone(),
-                                 ('archived',date(2020,3,2),date(2020,3,21),None,None))
-                self.assertTrue(conn.execute('SELECT preview_published FROM legacy_notice_imports').fetchone()[0])
-                self.assertEqual(conn.execute('SELECT count(*) FROM notice_events').fetchone()[0],0)
-                self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0],0)
 
-    def test_reconciliation_does_not_publish_edited_documents(self):
-        data=bundle(self.root)
-        with connect(self.url) as conn:
-            import_bundle(conn,self.root,publish_content=True)
-            conn.execute("UPDATE documents SET title='Local title'")
-        with connect(self.url) as conn:
-            result=reconcile(conn,self.root,{data['pages'][0]['key']:'Zastupitelstvo'},apply=True)
-            self.assertEqual(len(result['notices_created']),0)
-            self.assertEqual(conn.execute('SELECT title FROM documents').fetchone()[0],'Local title')
 
-    def test_reconciliation_keeps_incomplete_posting_dates_unknown(self):
-        data=bundle(self.root)
-        data['assets'][0].update(dates={},evidence='Vyvěšeno: 20. 12., Lhůta do: 5. 1. 2020')
-        (Path(self.root)/'manifest.json').write_text(json.dumps(data))
+
+    def test_old_reset_paths_cannot_remove_canonical_documents_or_disable_guards(self):
+        bundle(self.root, notice=True)
+        with patch.dict(os.environ, LOCAL_PREVIEW_ENV), connect(self.url) as conn:
+            import_bundle(conn, self.root, archive_notices=True)
+            for action in (reset_library, reset_import):
+                with self.subTest(action=action.__name__), self.assertRaisesRegex(ValueError, 'Destructive reimport is disabled'):
+                    action(conn)
+            self.assertEqual(conn.execute('SELECT count(*) FROM documents').fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgenabled='D'").fetchone()[0], 0)
+
+    def test_old_copy_reconciliation_cannot_duplicate_canonical_content(self):
+        data = bundle(self.root)
         with connect(self.url) as conn:
-            import_bundle(conn,self.root,publish_content=True)
-            result=reconcile(conn,self.root,{data['pages'][0]['key']:'Zastupitelstvo'},apply=True)
-            self.assertEqual(result['notices_created'],[])
-            self.assertIsNone(conn.execute('SELECT source_published_on FROM documents').fetchone()[0])
-            self.assertEqual(len(result['review']),1)
+            import_bundle(conn, self.root, publish_content=True)
+            with self.assertRaisesRegex(ValueError, 'Destructive reimport is disabled'):
+                reconcile(conn, self.root, {data['pages'][0]['key']: 'Zastupitelstvo'}, apply=True)
+            self.assertEqual(conn.execute('SELECT count(*) FROM documents').fetchone()[0], 1)
+            self.assertEqual(conn.execute('SELECT count(*) FROM attachments').fetchone()[0], 1)
 
 
 if __name__ == '__main__':

@@ -127,21 +127,31 @@ class IncrementalCaptureTests(unittest.TestCase):
         capture.opener.open = Mock(return_value=Response(url, raw, headers))
         return capture.fetch(url, 100_000)
 
-    def test_known_asset_is_reused_without_network_or_delay_and_metadata_preserved(self):
-        original = self.prime(headers={'Content-Disposition': 'attachment; filename="original.pdf"'})
+    def test_known_asset_is_conditionally_revalidated_and_metadata_preserved(self):
+        original = self.prime(headers={'Content-Disposition': 'attachment; filename="original.pdf"',
+                                       'ETag': '"original"'})
         capture = self.capture()
-        capture.opener.open = Mock(side_effect=AssertionError('Known asset requested'))
-        with patch('legacy.time.sleep') as sleep:
-            result = capture.fetch(FILE, 100_000)
-        self.assertEqual(result, original)
-        sleep.assert_not_called()
-        capture.opener.open.assert_not_called()
+        capture.opener.open = Mock(side_effect=HTTPError(FILE, 304, 'Not Modified', Message(), None))
+        result, raw = capture.fetch(FILE, 100_000)
+        self.assertEqual(raw, original[1])
+        self.assertEqual(result['disposition'], original[0]['disposition'])
+        self.assertEqual(capture.opener.open.call_args[0][0].get_header('If-none-match'), '"original"')
         self.assertEqual(capture.blob(original[0]['sha256']), self.pdf)
         self.assertEqual(capture.stats['assets_reused'], 1)
-        self.assertEqual(capture.stats['network_requests'], 0)
+        self.assertEqual(capture.stats['network_requests'], 1)
         self.assertEqual(capture.stats['downloaded_bytes'], 0)
 
-    def test_new_attachment_on_existing_page_is_discovered_and_only_it_downloaded(self):
+    def test_same_asset_url_with_new_bytes_is_detected_without_refresh_flag(self):
+        self.prime()
+        capture = self.capture()
+        replacement = b'%PDF-1.7\nchanged source'
+        capture.opener.open = Mock(return_value=Response(FILE, replacement))
+        result, raw = capture.fetch(FILE, 100_000)
+        self.assertEqual(raw, replacement)
+        self.assertNotEqual(result['sha256'], digest(self.pdf))
+        self.assertEqual(capture.stats['assets_downloaded'], 1)
+
+    def test_new_attachment_on_existing_page_is_discovered_and_existing_files_rechecked(self):
         new_file = ORIGIN + '/assets/new.pdf'
         html = [HTML]
         requested = []
@@ -163,11 +173,11 @@ class IncrementalCaptureTests(unittest.TestCase):
         manifest = second.crawl()
         self.assertTrue(manifest['complete'])
         self.assertIn(PAGE, requested)
-        self.assertNotIn(FILE, requested)
+        self.assertIn(FILE, requested)
         self.assertEqual(requested.count(new_file), 1)
         self.assertEqual({item['url'] for item in manifest['assets']}, {FILE, new_file})
-        self.assertEqual(second.stats['assets_reused'], 1)
-        self.assertEqual(second.stats['assets_downloaded'], 1)
+        self.assertEqual(second.stats['assets_reused'], 0)
+        self.assertEqual(second.stats['assets_downloaded'], 2)
 
     def test_asset_identity_includes_query_parameters(self):
         first = ORIGIN + '/assets/File.ashx?id_dokumenty=1&id_org=18774'
@@ -177,9 +187,10 @@ class IncrementalCaptureTests(unittest.TestCase):
         capture.opener.open = Mock(return_value=Response(second, b'%PDF-1.7\nsecond'))
         capture.fetch(second, 100_000)
         capture.opener.open.assert_called_once()
+        capture.opener.open = Mock(return_value=Response(first, self.pdf))
         self.assertEqual(capture.fetch(first, 100_000)[1], self.pdf)
-        self.assertEqual(capture.stats['assets_downloaded'], 1)
-        self.assertEqual(capture.stats['assets_reused'], 1)
+        self.assertEqual(capture.stats['assets_downloaded'], 2)
+        self.assertEqual(capture.stats['assets_reused'], 0)
 
     def test_corrupt_or_missing_cache_object_is_repaired_by_download(self):
         for damage in ('corrupt', 'missing'):
@@ -234,20 +245,20 @@ class IncrementalCaptureTests(unittest.TestCase):
         self.assertEqual(fresh.fetch(FILE, 100_000)[1], self.pdf)
         fresh.opener.open.assert_called_once()
 
-    def test_database_loader_seeds_persistent_cache_without_http(self):
+    def test_database_loader_seeds_cache_then_revalidates_remote_asset(self):
         metadata = dict(url=FILE, final_url=FILE, captured_at='2026-10-01T12:00:00Z',
                         content_type='application/pdf', disposition='attachment; filename="known.pdf"',
-                        size=len(self.pdf), sha256=digest(self.pdf))
+                        size=len(self.pdf), sha256=digest(self.pdf), etag='"original"')
         loader = Mock(return_value=(metadata, self.pdf))
         capture = self.capture(asset_loader=loader)
-        capture.opener.open = Mock(side_effect=AssertionError('Seeded asset requested'))
-        self.assertEqual(capture.fetch(FILE, 100_000), (metadata, self.pdf))
+        capture.opener.open = Mock(side_effect=HTTPError(FILE, 304, 'Not Modified', Message(), None))
+        self.assertEqual(capture.fetch(FILE, 100_000)[1], self.pdf)
         loader.assert_called_once_with(FILE)
         self.assertEqual(capture.stats['assets_seeded'], 1)
         self.assertEqual(capture.stats['assets_reused'], 1)
         another = self.capture(asset_loader=Mock(side_effect=AssertionError('Already seeded')))
-        another.opener.open = Mock(side_effect=AssertionError('Already cached'))
-        self.assertEqual(another.fetch(FILE, 100_000), (metadata, self.pdf))
+        another.opener.open = Mock(side_effect=HTTPError(FILE, 304, 'Not Modified', Message(), None))
+        self.assertEqual(another.fetch(FILE, 100_000)[1], self.pdf)
 
     def test_invalid_loader_object_falls_back_to_remote(self):
         capture = self.capture(asset_loader=Mock(return_value=({}, self.pdf)))
@@ -302,7 +313,7 @@ class IncrementalCaptureTests(unittest.TestCase):
         self.assertEqual(capture.fetch(FILE, 100_000)[1], updated)
         self.assertEqual(capture.stats['assets_downloaded'], 1)
         later = self.capture()
-        later.opener.open = Mock(side_effect=AssertionError('Refreshed asset requested'))
+        later.opener.open = Mock(return_value=Response(FILE, updated))
         self.assertEqual(later.fetch(FILE, 100_000)[1], updated)
 
     def test_conditional_page_and_sitemap_304_preserve_bytes_and_recheck_http(self):

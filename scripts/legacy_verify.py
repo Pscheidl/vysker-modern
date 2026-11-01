@@ -27,10 +27,13 @@ def verify(base):
     with connect() as conn:
         conn.execute('SET TRANSACTION READ ONLY')
         rows = conn.execute("""SELECT s.source_url,s.destination,
-            coalesce(p.published OR d.status='published' OR e.published OR n.status IN ('published','archived','withdrawn'),FALSE)
+            coalesce(p.published OR (e.published AND NOT e.cancelled) OR
+                (document_is_public(d,(now() AT TIME ZONE 'Europe/Prague')::date)
+                 AND (s.attachment_id IS NULL OR (d.attachments_public AND a.is_public
+                     AND a.data IS NOT NULL AND a.removed_at IS NULL))),FALSE)
             FROM legacy_sources s LEFT JOIN pages p ON p.id=s.page_id
             LEFT JOIN documents d ON d.id=s.document_id LEFT JOIN events e ON e.id=s.event_id
-            LEFT JOIN notices n ON n.id=s.notice_id ORDER BY s.source_key""").fetchall()
+            LEFT JOIN attachments a ON a.id=s.attachment_id ORDER BY s.source_key""").fetchall()
         for source, destination, public in rows:
             url = urlsplit(source)
             if url.path == '/':
@@ -48,15 +51,11 @@ def verify(base):
                 else:
                     redirects += 1
         files = conn.execute("""SELECT a.id,a.sha256,a.size_bytes FROM attachments a
-            LEFT JOIN documents d ON d.id=a.document_id LEFT JOIN notices n ON n.id=a.notice_id
-            JOIN legacy_sources s ON s.attachment_id=a.id
-            WHERE (d.status='published' OR
-                (n.status='published' AND (n.published_on IS NULL OR n.published_on<=CURRENT_DATE)
-                    AND (n.withdraw_on IS NULL OR n.withdraw_on>CURRENT_DATE)) OR
-                (n.status IN ('published','archived','withdrawn') AND n.retain_attachments
-                    AND coalesce(n.review_json::jsonb->>'archive_basis','')<>''
-                    AND (n.review_json::jsonb->>'archive_until')::date>CURRENT_DATE))
-                AND a.data IS NOT NULL AND a.removed_at IS NULL ORDER BY a.id""").fetchall()
+            JOIN documents d ON d.id=a.document_id
+            WHERE document_is_public(d,(now() AT TIME ZONE 'Europe/Prague')::date)
+                AND d.attachments_public AND a.is_public AND a.data IS NOT NULL AND a.removed_at IS NULL
+                AND EXISTS(SELECT 1 FROM legacy_sources s WHERE s.attachment_id=a.id)
+            ORDER BY a.id""").fetchall()
         for id, expected, size in files:
             checksum = hashlib.sha256()
             actual = 0

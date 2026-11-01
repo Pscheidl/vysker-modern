@@ -371,7 +371,7 @@ pub fn NoticeCard(notice: Notice) -> impl IntoView {
         <article class="notice-card">
             <div class="notice-meta"><span>{notice.category}</span><time datetime=(!notice.posted_iso.is_empty()).then_some(notice.posted_iso.clone())>{notice.posted}</time></div>
             <h3><A href=site_url(&href)>{notice.title}</A></h3>
-            <div class="notice-card-bottom"><span>{if notice.ends_iso.is_none() { "" } else if notice.archived { "Sejmuto " } else { "Sejmutí " }}{notice.ends}</span><Icon/></div>
+            <div class="notice-card-bottom"><span>{if notice.ends_iso.is_none() { "" } else if notice.archived { "Sejmuto " } else { "Plánované sejmutí " }}{notice.ends}</span><Icon/></div>
             {if !notice.archived { notice.remaining.filter(|d| *d <= 6).map(|days| view! {<span class="status-badge warning">{remaining_text(days)}</span>}) } else {None}}
         </article>
     }
@@ -387,6 +387,7 @@ pub fn remaining_text(days: i64) -> String {
     }
 }
 
+#[cfg(feature = "demo")]
 #[component]
 pub fn NoticeRow(notice: Notice) -> impl IntoView {
     let href = notice.href();
@@ -399,7 +400,7 @@ pub fn NoticeRow(notice: Notice) -> impl IntoView {
                 <p>{if notice.posted_iso.is_empty() {""} else {"Vyvěšeno "}}<time datetime=(!notice.posted_iso.is_empty()).then_some(notice.posted_iso.clone())>{notice.posted}</time>
                 {if archived_without_files {view! {<span class="removed-label">"Záznam bez příloh"</span>}.into_any()} else {().into_any()}}</p>
             </div>
-            <div class="document-date"><span>{if notice.archived {"Sejmuto"} else {"Sejmutí"}}</span><strong>{notice.ends}</strong>
+            <div class="document-date"><span>{if notice.archived {"Sejmuto"} else {"Plánované sejmutí"}}</span><strong>{notice.ends}</strong>
             {if !notice.archived {notice.remaining.filter(|d| *d<=6).map(|d| view!{<span class="status-badge warning">{remaining_text(d)}</span>})} else {None}}</div>
             <Icon class="row-arrow"/>
         </article>
@@ -474,7 +475,7 @@ fn NewsletterForm(notice: crate::privacy::PrivacyNotice) -> impl IntoView {
             }
         }
     }>
-        <div class="email-field"><label for="newsletter-email">"E-mailová adresa"</label><input node_ref=input id="newsletter-email" name="email" type="email" autocomplete="email" placeholder="vas@email.cz" required maxlength="254" pattern=r"[^\s@]+@[^\s@]+\.[^\s@]+" title="Zadejte e-mailovou adresu ve tvaru jmeno@domena.cz." prop:value=move ||email.get() disabled=move ||request.pending().get() on:input=move |ev|{email.set(event_target_value(&ev));confirmed.set(false);request.value().set(None);}/></div>
+        <div class="email-field"><label for="newsletter-email">"E-mailová adresa"</label><input node_ref=input id="newsletter-email" name="email" type="email" autocomplete="email" placeholder="vas@email.cz" required maxlength="254" pattern=r"[^\s@]+@[^\s@]+\.[^\s@]+" title="Zadejte e-mailovou adresu ve tvaru jmeno@domena.cz." prop:value=move ||email.get() disabled=move ||!ready.get() ||request.pending().get() on:input=move |ev|{email.set(event_target_value(&ev));confirmed.set(false);request.value().set(None);}/></div>
         <button class="button primary" class:newsletter-confirmed=move ||confirmed.get() type="submit" disabled=move ||!ready.get() ||request.pending().get() ||confirmed.get()>{move ||if request.pending().get(){"Odesílám…"}else if confirmed.get(){"Zkontrolujte e-mail"}else{"Přihlásit k odběru"}}</button>
         <details node_ref=preference_details class="newsletter-preferences">
             <summary>"Co chcete dostávat"<span>{move ||{
@@ -557,11 +558,13 @@ pub fn LoadError(
     view! {<div class="empty-state" role="alert"><Icon name="info"/><h2>"Dokumenty nejsou právě dostupné"</h2><p>{message}</p><button class="button secondary" type="button" on:click=move |_|if let Some(retry)=on_retry{retry.run(())}else{board.refetch()}>"Zkusit znovu"</button></div>}
 }
 
+#[cfg(feature = "demo")]
 #[component]
 pub fn EmptyState(
     #[prop(default = "Žádné dokumenty k zobrazení")] title: &'static str,
+    #[prop(default = false)] searched: bool,
 ) -> impl IntoView {
-    view! {<div class="empty-state"><Icon name="search"/><h2>{title}</h2><p>"Zkuste jiný výraz nebo upravte výběr kategorie."</p></div>}
+    view! {<div class="empty-state"><Icon name="search"/><h2>{title}</h2>{searched.then(||view!{<p>"Zkuste jiný výraz nebo upravte výběr kategorie."</p>})}</div>}
 }
 
 pub fn posted_count(count: usize) -> String {

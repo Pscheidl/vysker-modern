@@ -126,7 +126,7 @@ impl App {
             .unwrap()
     }
     pub async fn notice(&self, extra: Value) -> i64 {
-        let mut input = json!({"title":"Testovací vyhláška","description":"Informace pro občany"});
+        let mut input = json!({"title":"Testovací vyhláška","description":"Informace pro občany","retain_attachments":false});
         input
             .as_object_mut()
             .unwrap()
@@ -138,10 +138,20 @@ impl App {
         body_json(response).await["id"].as_i64().unwrap()
     }
     pub async fn publish(&self, id: i64) -> Response {
+        let preview = body_json(
+            self.call(
+                "GET",
+                &format!("/api/v1/admin/documents/{id}/preview"),
+                None,
+                true,
+            )
+            .await,
+        )
+        .await;
         self.call(
             "POST",
             &format!("/api/v1/admin/notices/{id}/publish"),
-            None,
+            Some(json!({"token":preview["token"]})),
             true,
         )
         .await

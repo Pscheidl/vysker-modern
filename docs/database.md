@@ -16,8 +16,14 @@ internal `_sqlx_migrations` table are exceptions. Municipal content stays Czech.
 | Table | Purpose |
 | --- | --- |
 | `categories` | Notice board categories |
-| `notices` | Drafts, published notices and permanent archive records |
-| `documents` | General documents |
+| `notices` | Compatibility view of canonical documents, no second content store |
+| `documents` | Canonical content, public visibility, permanent lock and indexed current projections |
+| `document_postings` | Separate local/source posting history and exact content fingerprint |
+| `document_relations` | Directed corrections, supplements, replacements and source observations |
+| `document_events` | Append-only internal operation history |
+| `document_import_revisions` | Immutable private source candidates and final decisions |
+| `document_announcements` | Permanent first-announcement identity, including historical suppression |
+| `document_disposals` | Guarded separate retention dispositions, never editorial unlocking |
 | `attachments` | Metadata, SHA-256 and binary contents |
 | `pages` | Content pages with optimistic versions |
 | `page_images` | Page-owned image bytes, decoded dimensions, MIME type, SHA-256 and uploader |
@@ -49,12 +55,24 @@ remain text with PostgreSQL JSON validation, preserving the serialized evidence
 and API format. Queries use numbered bind parameters, `RETURNING` and PostgreSQL
 JSON operators.
 
-`retain_attachments` defaults to `false` and controls only attachment contents.
-A minimal notice record always remains. PostgreSQL triggers prevent deletion or
-truncation of notice records and attachment metadata. Audit and publication
-evidence updates are rejected. Deletion is allowed only through the retention
-guards used by the application's maintenance transaction. The database owner can
-alter schema objects, so operator access must remain restricted.
+Migration 0029 merges the two former content tables into `documents`. Existing
+ordinary IDs remain, former notice IDs are mapped above both old namespaces, and
+attachments, provenance, evidence and pending mail references are repointed.
+Only `documents` stores content. The compatibility `notices` view translates older
+internal calls to the same rows. Do not run old import binaries after this migration.
+
+Native board creation requires an explicit attachment-access choice, with no API
+or UI default. `lock_state` is `draft`, permanently `locked`, or conservatively
+`review` when historical evidence is incomplete. Attachments carry server-verified
+SHA-256 and immutable ID-based storage keys. All public downloads check current
+parent and attachment visibility, independent of search projections.
+
+Migration 0030 adds explicit source authority, aliases, observed revisions and
+run evidence. Migration 0031 adds measured indexed search and actual-posting
+projections. Migration 0032 separates policy-driven disposal from withdrawal.
+Migration 0033 permanently suppresses reannouncement of old content without
+inserting mail or changing already queued recipients. See the measured plans,
+counts and rollback procedure in [verification](unified-documents-verification.md).
 
 ## Transactions and concurrency
 

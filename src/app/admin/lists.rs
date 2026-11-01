@@ -22,7 +22,7 @@ pub fn Overview() -> impl IntoView {
                     <Quick href="/admin/uredni-deska/nove" title="Vyvěsit na úřední desku" description="Koncept, přílohy a termín sejmutí." icon="board"/>
                     <Quick href="/admin/dokumenty/nove" title="Přidat dokument" description="Formuláře a další dokumenty ke stažení." icon="paper"/>
                     <Quick href="/admin/stranky/nove" title="Vytvořit stránku" description="Nové informace pro občany." icon="pages"/>
-                </section><section class="admin-panel admin-overview-aside"><span class="admin-kicker"><Icon name="check"/>"PŘEHLED OBSAHU"</span><h2>"Web obce v číslech"</h2><dl><div><dt>"Zveřejněné dokumenty"</dt><dd>{stats.documents}</dd></div><div><dt>"Zveřejněné stránky"</dt><dd>{stats.pages}</dd></div></dl><p>"Každá změna obsahu se zapisuje do auditu. Záznamy úřední desky zůstávají v archivu i po odstranění příloh."</p><AdminLink href="/admin/audit" label="Otevřít audit" icon="history"/></section></div>
+                </section><section class="admin-panel admin-overview-aside"><span class="admin-kicker"><Icon name="check"/>"PŘEHLED OBSAHU"</span><h2>"Web obce v číslech"</h2><dl><div><dt>"Zveřejněné dokumenty"</dt><dd>{stats.documents}</dd></div><div><dt>"Zveřejněné stránky"</dt><dd>{stats.pages}</dd></div></dl><p>"Obsah, veřejná dostupnost a vyvěšení se evidují samostatně. Po prvním vyvěšení je obsah nevratně uzamčen."</p><AdminLink href="/admin/audit" label="Otevřít audit" icon="history"/></section></div>
             }.into_any()
         })}</Suspense>
     }
@@ -66,7 +66,7 @@ pub fn Entries(kind: Kind) -> impl IntoView {
         Kind::Notice => {
             "Koncepty, aktuální vyvěšení i archiv. Všechny záznamy zůstávají dohledatelné."
         }
-        Kind::Document => "Správa formulářů, obecních dokumentů a jejich příloh.",
+        Kind::Document => "Společná evidence všech dokumentů, včetně písemností úřední desky.",
         Kind::Page => "Obsahové stránky veřejného webu, koncepty a zveřejnění.",
     };
     view! {
@@ -84,7 +84,7 @@ pub fn Entries(kind: Kind) -> impl IntoView {
                 Ok(rows)=>{
                     let count=rows.len();
                     view!{<div class="admin-table-wrap"><table class="admin-table"><caption class="sr-only">{kind.title()}</caption><thead><tr><th>"Název"</th><th>"Stav"</th><th>{if kind==Kind::Notice{"Vyvěšeno / sejmutí"}else if kind==Kind::Page{"Adresa stránky"}else{"Typ"}}</th><th><span class="sr-only">"Otevřít"</span></th></tr></thead><tbody>
-                        {rows.into_iter().take(20).map(|row|{let state=row.status().to_string();let href=format!("{}/{}",kind.path(),row.id);view!{<tr><td class="admin-name"><AdminLink href=href.clone() label=row.title icon=if kind==Kind::Page{"pages"}else{"paper"}/><span class="admin-row-id">{format!("#{:04}",row.id)}</span></td><td><Status value=state/></td><td class="admin-table-meta">{if kind==Kind::Notice{view!{<span>{row.published_on.as_deref().map(api::date).unwrap_or_else(||"Datum vyvěšení není uvedeno".into())}</span><small>{row.withdraw_on.as_deref().map(|d|format!("Do {}",api::date(d))).unwrap_or_else(||"Datum sejmutí není uvedeno".into())}</small>}.into_any()}else if kind==Kind::Page{view!{<span>{crate::catalog::page_path(&row.slug)}</span>}.into_any()}else{view!{<span>"Obecný dokument"</span>}.into_any()}}</td><td class="admin-row-open"><AdminLink href label="Otevřít"/></td></tr>}}).collect_view()}
+                        {rows.into_iter().take(20).map(|row|{let state=row.status().to_string();let href=format!("{}/{}",kind.path(),row.id);view!{<tr><td class="admin-name"><AdminLink href=href.clone() label=row.title icon=if kind==Kind::Page{"pages"}else{"paper"}/><span class="admin-row-id">{format!("#{:04}",row.id)}</span></td><td>{if kind==Kind::Page{view!{<Status value=state/>}.into_any()}else{view!{<strong>{match row.lock_state.as_str(){"locked" if matches!(row.board_status.as_str(),"published"|"archived"|"withdrawn")=>"Uzamčeno po vyvěšení","locked"=>"Uzamčeno","review"=>"K ověření",_=>"Koncept"}}</strong><small>{if row.public_access&&!row.access_blocked{"Veřejně dostupný"}else{"Neveřejný"}}</small>}.into_any()}}</td><td class="admin-table-meta">{if kind==Kind::Notice{view!{<span>{row.published_on.as_deref().map(api::date).unwrap_or_else(||"Datum vyvěšení není uvedeno".into())}</span><small>{row.withdraw_on.as_deref().map(|d|format!("Plánované sejmutí {}",api::date(d))).unwrap_or_else(||"Datum sejmutí není uvedeno".into())}</small>}.into_any()}else if kind==Kind::Page{view!{<span>{crate::catalog::page_path(&row.slug)}</span>}.into_any()}else{view!{<span>{match row.board_status.as_str(){"published"=>"Aktuálně vyvěšeno","scheduled"=>"Vyvěšení naplánováno","archived"|"withdrawn"=>"Sejmuto",_=>"Bez aktuálního vyvěšení"}}</span>}.into_any()}}</td><td class="admin-row-open"><AdminLink href label="Otevřít"/></td></tr>}}).collect_view()}
                     </tbody></table></div>
                     {(count==0).then(||view!{<div class="admin-empty"><Icon name="search"/><h2>"Žádné záznamy"</h2><p>"Upravte hledání nebo přidejte nový obsah."</p></div>})}
                     <Pager offset count/>

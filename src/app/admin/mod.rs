@@ -3,9 +3,13 @@ mod accounts;
 #[cfg(not(feature = "demo"))]
 mod api;
 #[cfg(not(feature = "demo"))]
+mod document_actions;
+#[cfg(not(feature = "demo"))]
 mod editor;
 #[cfg(not(feature = "demo"))]
 mod events;
+#[cfg(not(feature = "demo"))]
+mod import_revisions;
 #[cfg(not(feature = "demo"))]
 mod lists;
 #[cfg(not(feature = "demo"))]
@@ -212,6 +216,7 @@ mod workspace {
                         <AdminLink href="/admin" label="Přehled" icon="grid" exact=true/>
                         <AdminLink href="/admin/uredni-deska" label="Úřední deska" icon="board"/>
                         <AdminLink href="/admin/dokumenty" label="Dokumenty" icon="paper"/>
+                        <AdminLink href="/admin/importy" label="Kontrola importu" icon="history"/>
                         <AdminLink href="/admin/stranky" label="Stránky" icon="pages"/>
                         <AdminLink href="/admin/kalendar" label="Kalendář" icon="calendar"/>
                         <AdminLink href="/admin/hlaseni-zavad" label="Podněty a závady" icon="info"/>
@@ -236,6 +241,7 @@ mod workspace {
                             ""=>view!{<Overview/>}.into_any(),
                             "uredni-deska"=>view!{<Entries kind=Kind::Notice/>}.into_any(),
                             "dokumenty"=>view!{<Entries kind=Kind::Document/>}.into_any(),
+                            "importy"=>view!{<super::import_revisions::ImportRevisions/>}.into_any(),
                             "stranky"=>view!{<Entries kind=Kind::Page/>}.into_any(),
                             "kalendar"=>view!{<super::events::Events/>}.into_any(),
                             "hlaseni-zavad"=>view!{<super::reports::Reports/>}.into_any(),

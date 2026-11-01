@@ -19,6 +19,9 @@ def queue_publication(conn, timestamp, notice_id=None, document_id=None, event_i
             ON CONFLICT DO NOTHING''',
             (event_id, int(datetime.fromisoformat(timestamp).timestamp()), event_id))
         return
+    target = notice_id if notice_id is not None else document_id
+    if not conn.execute('SELECT claim_document_announcement(%s,%s::timestamptz)', (target, timestamp)).fetchone()[0]:
+        return
     conn.execute('''INSERT INTO publication_outbox
         (notice_id,document_id,subscriber_id,consent_id,created_at)
         SELECT %s,%s,s.id,c.id,%s FROM subscribers s

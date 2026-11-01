@@ -115,6 +115,9 @@ pub async fn notice(
     Ok(Json(notices::NoticeDetail {
         record,
         attachments,
+        postings: super::registry::postings(&s.pool, id, false).await?,
+        relations: documents::public_relations(&s.pool, id).await?,
+        origin: super::registry::origin(&s.pool, id).await?,
     }))
 }
 pub async fn document(
@@ -131,6 +134,9 @@ pub async fn document(
     Ok(Json(documents::DocumentDetail {
         record,
         attachments,
+        postings: super::registry::postings(&s.pool, id, false).await?,
+        relations: documents::public_relations(&s.pool, id).await?,
+        origin: super::registry::origin(&s.pool, id).await?,
     }))
 }
 pub async fn page(
@@ -175,8 +181,7 @@ pub async fn remove_file(
     let now = OffsetDateTime::now_utc();
     let changed = sqlx::query(
         "UPDATE attachments SET data=NULL,removed_at=$1 WHERE id=$2 AND removed_at IS NULL AND
-        (EXISTS(SELECT 1 FROM notices WHERE id=attachments.notice_id AND status='draft') OR
-         EXISTS(SELECT 1 FROM documents WHERE id=attachments.document_id AND status='draft'))",
+        EXISTS(SELECT 1 FROM documents WHERE id=attachments.document_id AND status='draft' AND lock_state='draft' AND board_status IS DISTINCT FROM 'scheduled')",
     )
     .bind(timestamp(now))
     .bind(id)

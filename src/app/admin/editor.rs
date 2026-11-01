@@ -47,16 +47,22 @@ fn EditorForm(
     reload: RwSignal<u64>,
 ) -> impl IntoView {
     let ctx = expect_context::<AdminContext>();
+    let mut entry = entry;
+    if kind == Kind::Notice && entry.board_status.is_empty() {
+        entry.board_status = entry.status.clone();
+    }
     let site = use_context::<crate::app::SiteResource>();
     let id = entry.id;
     let version = entry.version;
+    let content_version = entry.content_version;
+    let operational_entry = entry.clone();
     let status = entry.status().to_string();
-    let draft = id == 0 || status == "draft";
     let scheduled = status == "scheduled";
-    let archived = matches!(status.as_str(), "archived" | "withdrawn");
-    let locked = kind != Kind::Page && !draft;
+    let immutable = entry.lock_state == "locked" || entry.lock_state == "review";
+    let locked = kind != Kind::Page && (immutable || scheduled || (id > 0 && status != "draft"));
     let name = RwSignal::new(entry.title.clone());
     let description = RwSignal::new(entry.description.clone().unwrap_or_default());
+    let document_date = RwSignal::new(entry.document_date.clone().unwrap_or_default());
     let reference = RwSignal::new(entry.reference_number.clone().unwrap_or_default());
     let issuer = RwSignal::new(entry.issuer.clone().unwrap_or_default());
     let category = RwSignal::new(
@@ -78,7 +84,11 @@ fn EditorForm(
         }
         .to_string(),
     );
-    let retention = RwSignal::new(entry.retain_attachments);
+    let retention = RwSignal::new(if id == 0 {
+        None
+    } else {
+        Some(entry.retain_attachments)
+    });
     let review: crate::notice_policy::NoticeReview =
         serde_json::from_str(&entry.review_json).unwrap_or_default();
     let rule = RwSignal::new(if review.rule.is_empty() {
@@ -121,8 +131,6 @@ fn EditorForm(
         }
         .earliest(date)
     });
-    let withdrawal_reason = RwSignal::new(String::new());
-    let emergency = RwSignal::new(false);
     let slug = RwSignal::new(entry.slug.clone());
     let content = RwSignal::new(entry.content.clone());
     let published = RwSignal::new(entry.published.unwrap_or(false));
@@ -136,7 +144,7 @@ fn EditorForm(
                 json!({"title":name.get_untracked(),"description":description.get_untracked(),"reference_number":optional(reference.get_untracked()),"issuer":optional(issuer.get_untracked()),"category_id":category.get_untracked().parse::<i64>().ok(),"published_on":optional(posted.get_untracked()),"withdraw_on":if mode.get_untracked()=="date"{optional(until.get_untracked())}else{None},"duration_days":if mode.get_untracked()=="days"{duration.get_untracked().parse::<i64>().ok()}else{None},"unlimited":mode.get_untracked()=="unlimited","retain_attachments":retention.get_untracked(),"review":{"rule":rule.get_untracked(),"legal_basis":legal_basis.get_untracked(),"not_before":optional(not_before.get_untracked()),"decision_on":optional(decision_on.get_untracked()),"original_reference":original_reference.get_untracked(),"reviewed":reviewed.get_untracked(),"archive_title":archive_title.get_untracked(),"archive_basis":archive_basis.get_untracked(),"archive_until":optional(archive_until.get_untracked())}})
             }
             Kind::Document => {
-                json!({"title":name.get_untracked(),"description":description.get_untracked()})
+                json!({"title":name.get_untracked(),"description":description.get_untracked(),"reference_number":optional(reference.get_untracked()),"issuer":optional(issuer.get_untracked()),"document_date":optional(document_date.get_untracked()),"expected_version":content_version})
             }
             Kind::Page => {
                 json!({"title":name.get_untracked(),"slug":slug.get_untracked(),"content":content.get_untracked(),"published":published.get_untracked(),"expected_version":version})
@@ -168,59 +176,48 @@ fn EditorForm(
             }
         }
     });
-    let loaded_status = status.clone();
-    let transition = Action::new_local(move |operation: &String| {
-        let operation = operation.clone();
-        let expected_status = loaded_status.clone();
-        async move {
-            error.set(None);
-            match api::save(
-                "POST",
-                &format!("/api/v1/admin/{}/{id}/{operation}", kind.api()),
-                if operation=="withdraw" {Some(json!({"reason":withdrawal_reason.get_untracked(),"emergency":emergency.get_untracked(),"expected_status":expected_status}))}else{None},
-            )
-            .await
-            {
-                Ok(_) => {
-                    ctx.dirty.set(false);
-                    if let Some(site)=site {site.refetch();}
-                    ctx.changed(if operation == "publish" {
-                        "Zveřejnění je uložené. Oznámení dostanou ověření odběratelé v hodinovém souhrnu po vyvěšení."
-                    } else if operation == "withdraw" && scheduled {
-                        "Plánované zveřejnění je zrušené. Dokument i přílohy zůstávají v soukromém konceptu."
-                    } else {
-                        "Dokument je v archivu."
-                    });
-                    reload.update(|v| *v += 1);
-                }
-                Err(failure) => error.set(Some(failure)),
-            }
-        }
-    });
-    let busy = Signal::derive(move || {
-        save.pending().get() || transition.pending().get() || file_busy.get()
-    });
-    let action_disabled = Signal::derive(move || busy.get() || ctx.dirty.get());
+    let busy = Signal::derive(move || save.pending().get() || file_busy.get());
     let heading = if id == 0 {
         kind.create_label().to_string()
     } else {
         entry.title.clone()
     };
     let public_url = match kind {
-        Kind::Notice => format!("/uredni-deska/{id}"),
+        Kind::Notice => format!("/dokumenty/{id}"),
         Kind::Document => format!("/dokumenty/{id}"),
         Kind::Page => crate::catalog::page_path(&entry.slug),
     };
-    let public_visible = kind == Kind::Page && entry.published == Some(true)
-        || kind != Kind::Page
-            && !draft
-            && status != "scheduled"
-            && !(kind == Kind::Document && archived);
-    let notice_retention = entry.retain_attachments;
+    let public_visible = if kind == Kind::Page {
+        entry.published == Some(true)
+    } else {
+        entry.public_access && !entry.access_blocked
+    };
+    let lock_label = match entry.lock_state.as_str() {
+        "locked"
+            if !entry.postings.is_empty()
+                || matches!(
+                    entry.board_status.as_str(),
+                    "published" | "archived" | "withdrawn"
+                ) =>
+        {
+            "Uzamčeno po vyvěšení"
+        }
+        "locked" => "Uzamčeno",
+        "review" => "Obsah blokován k ověření",
+        _ => "Koncept",
+    };
+    let board_label = match entry.board_status.as_str() {
+        "published" => "Aktuálně vyvěšeno",
+        "scheduled" => "Vyvěšení naplánováno",
+        "archived" | "withdrawn" => "Sejmuto",
+        _ => "Bez aktuálního vyvěšení",
+    };
     view! {
         <Title text=format!("{heading} · Správa Vyskře")/>
         <div class="admin-editor-back"><AdminLink href=kind.path() label=kind.title() icon="back"/><span>"/"</span><span>{if id==0{"Nový záznam".into()}else{format!("#{id:04}")}}</span></div>
-        <div class="admin-editor-heading"><h1>{heading}</h1><Status value=status.clone()/></div>
+        <div class="admin-editor-heading"><h1>{heading}</h1>{if kind==Kind::Page {view!{<Status value=status.clone()/>}.into_any()}else{view!{<span class="status-badge">{lock_label}</span>}.into_any()}}</div>
+        {(kind!=Kind::Page).then(||view!{<dl class="document-state-facts"><div><dt>"Obsah"</dt><dd>{lock_label}</dd></div><div><dt>"Veřejná dostupnost"</dt><dd>{if public_visible {"Veřejně dostupný"}else{"Neveřejný"}}</dd></div><div><dt>"Úřední deska"</dt><dd>{board_label}</dd></div>{entry.attachments_public.map(|files_public|view!{<div><dt>"Přílohy"</dt><dd>{if files_public&&public_visible{"Veřejně dostupné"}else{"Pouze pro administrátory"}}</dd></div>})}</dl>})}
+        {entry.origin.clone().map(|origin|view!{<AdminOrigin origin/>})}
         <ErrorMessage error/>
         <div class="admin-editor-grid"><div class="admin-editor-content">
             <form id="content-editor" on:submit=move |ev|{ev.prevent_default();if !busy.get_untracked()&&!locked{save.dispatch(());}}>
@@ -233,9 +230,10 @@ fn EditorForm(
                             <super::markdown_editor::MarkdownEditor id title=name content busy working=file_busy/>
                         }.into_any()}else{view!{
                             <TextArea id="entry-description" label="Popis" value=description/>
-                            {(kind==Kind::Notice).then(move ||view!{
-                                <div class="admin-form-row"><label class="admin-field" for="notice-category"><span>"Kategorie"</span><select id="notice-category" prop:value=move||category.get() on:change=move |ev|{category.set(event_target_value(&ev));ctx.dirty.set(true);}><option value="">"Bez kategorie"</option>{categories.into_iter().map(|c|view!{<option value=c.id.to_string()>{c.name}</option>}).collect_view()}</select></label><Field id="notice-reference" label="Číslo jednací" value=reference maxlength="200"/></div>
+                            {(kind!=Kind::Page).then(move ||view!{
+                                <div class="admin-form-row">{(kind==Kind::Notice).then(||view!{<label class="admin-field" for="notice-category"><span>"Kategorie"</span><select id="notice-category" prop:value=move||category.get() on:change=move |ev|{category.set(event_target_value(&ev));ctx.dirty.set(true);}><option value="">"Bez kategorie"</option>{categories.into_iter().map(|c|view!{<option value=c.id.to_string()>{c.name}</option>}).collect_view()}</select></label>})}<Field id="notice-reference" label="Číslo jednací" value=reference maxlength="200"/></div>
                                 <Field id="notice-issuer" label="Původce dokumentu" value=issuer maxlength="300"/>
+                                {(kind==Kind::Document).then(move ||view!{<Field id="document-date" label="Datum dokumentu" kind="date" value=document_date help="Pokud datum není známé, ponechte pole prázdné."/>})}
                             })}
                         }.into_any()}}
                     </section>
@@ -252,11 +250,11 @@ fn EditorForm(
                             <Show when=move||mode.get()=="date"><Field id="notice-until" label="Datum sejmutí" kind="date" value=until required=true help="První den, kdy už dokument na desce nevisí."/></Show>
                             <p class="field-note" role="status">{move||match minimum.get(){Ok(Some(day))=>format!("Podle zvoleného pravidla lze sejmout nejdříve {}.",api::date(&day.to_string())),Ok(None)=>"Lhůtu informativního oznámení určuje správce.".into(),Err(e)=>e.into()}}</p>
                             <Show when=move||minimum.get().is_ok_and(|d|d.is_some())><button type="button" class="button secondary" on:click=move |_|{if let Ok(Some(day))=minimum.get_untracked(){until.set(day.to_string());mode.set("date".into());ctx.dirty.set(true);}}>"Použít vypočtený termín"</button></Show>
-                            <label class="admin-check"><input type="checkbox" prop:checked=move||retention.get() on:change=move|ev|{retention.set(event_target_checked(&ev));ctx.dirty.set(true);}/><span><strong>"Zachovat přílohy v archivu"</strong><small>"Ve výchozím stavu se jejich obsah při sejmutí odstraní."</small></span></label>
-                            <Field id="notice-archive-title" label="Veřejný název v archivu" value=archive_title maxlength="300" help="Bez osobních údajů. Prázdné pole použije jen číslo záznamu. Původní popis se po sejmutí nezobrazuje."/>
-                            <Show when=move||retention.get()><Field id="notice-archive-basis" label="Důvod zveřejnění příloh v archivu" value=archive_basis required=true maxlength="2000"/><Field id="notice-archive-until" label="Přílohy v archivu do (výlučně)" kind="date" value=archive_until required=true/></Show>
+                            <label class="admin-field" for="notice-attachment-access"><span>"Dostupnost příloh po sejmutí *"</span><select id="notice-attachment-access" required prop:value=move ||match retention.get(){Some(true)=>"public",Some(false)=>"private",None=>""} on:change=move|ev|{retention.set(match event_target_value(&ev).as_str(){"public"=>Some(true),"private"=>Some(false),_=>None});ctx.dirty.set(true);}><option value="">"Vyberte dostupnost příloh"</option><option value="public">"Po sejmutí ponechat přílohy veřejné"</option><option value="private">"Po sejmutí přílohy pouze pro administrátory"</option></select><small>"Volba nemění nevratné uzamčení obsahu. Oprávnění správci si uchované přílohy mohou stáhnout i po sejmutí."</small></label>
+                            <Field id="notice-archive-title" label="Veřejný název v archivu" value=archive_title maxlength="300" help="Bez osobních údajů. Tento údaj nemění původní uzamčený obsah."/>
+                            <Show when=move||retention.get()==Some(true)><Field id="notice-archive-basis" label="Důvod zveřejnění příloh v archivu" value=archive_basis required=true maxlength="2000"/><Field id="notice-archive-until" label="Přílohy v archivu do (výlučně)" kind="date" value=archive_until required=true/></Show>
                             <label class="admin-check"><input type="checkbox" prop:checked=move||reviewed.get() on:change=move|ev|{reviewed.set(event_target_checked(&ev));ctx.dirty.set(true);}/><span>"Zkontroloval/a jsem lhůtu, osobní údaje, přístupnost příloh a uložení originálu mimo web."</span></label>
-                            <div class="admin-note"><Icon name="archive"/><p>"Evidenční záznam zůstává vždy. Soubor na webu nenahrazuje úřední originál ve spisové službě."</p></div>
+                            <div class="admin-note"><Icon name="archive"/><p>"Vyvěšení a veřejná dostupnost se evidují samostatně. Soubor na webu nenahrazuje úřední originál ve spisové službě."</p></div>
                         </section>
                     })}
                     {(kind==Kind::Page).then(move||view!{<section class="admin-panel admin-form-section"><h2>"Dostupnost stránky"</h2><label class="admin-check"><input type="checkbox" prop:checked=move||published.get() on:change=move|ev|{published.set(event_target_checked(&ev));ctx.dirty.set(true);}/><span><strong>"Zveřejnit na webu"</strong><small>"Změna se projeví po uložení. Bez zaškrtnutí zůstává stránka konceptem."</small></span></label></section>})}
@@ -264,26 +262,42 @@ fn EditorForm(
             </form>
             {(kind==Kind::Page&&id>0).then(move||view!{<PageHistory id name content busy/>})}
             {(kind==Kind::Notice&&entry.published_at.is_some()).then(move||view!{<IncidentForm id/>})}
-            {(kind!=Kind::Page).then(move||view!{<Files kind id files=entry.attachments editable=draft busy working=file_busy reload/>})}
+            {(kind!=Kind::Page).then(move||view!{<Files kind id files=entry.attachments editable=!locked busy working=file_busy reload/>})}
+            {(kind!=Kind::Page&&id>0).then(move ||view!{<super::document_actions::DocumentActions entry=operational_entry busy reload/>})}
         </div>
         <aside class="admin-editor-sidebar"><section class="admin-panel admin-save-panel"><h2>"Uložení a zveřejnění"</h2>
-            {if locked{view!{<div class="admin-note"><Icon name="lock"/><p>{if archived{"Archivovaný záznam je pouze ke čtení."}else if scheduled{"Dokument čeká na plánované zveřejnění. Pro další úpravy nejprve zrušte plánované zveřejnění."}else{"Zveřejněný dokument je pouze ke čtení."}}</p></div>}.into_any()}else{view!{
+            {if locked{view!{<div class="admin-note"><Icon name="lock"/><p>{if scheduled{"Dokument čeká na plánované vyvěšení. Obsah této podoby nelze během čekání měnit."}else if immutable{"Obsah a přílohy nelze měnit. Opravu nebo doplnění založte jako nový propojený koncept."}else{"Zveřejněný dokument upravíte vytvořením nového navazujícího konceptu."}}</p></div>}.into_any()}else{view!{
                 <p>{if id==0&&kind!=Kind::Page{"Nejdříve uložte koncept. Potom přidejte přílohy a dokument zveřejněte."}else{"Uložte změny před dalšími kroky."}}</p>
                 <button class="button primary" type="submit" form="content-editor" disabled=move||busy.get()>{move||if save.pending().get(){"Ukládám…"}else if id==0&&kind!=Kind::Page{"Uložit koncept"}else{"Uložit změny"}}</button>
                 <span class="admin-save-state" role="status">{move||if ctx.dirty.get(){"Máte neuložené změny"}else if id==0{"Nový koncept"}else{"Všechny změny jsou uložené"}}</span>
             }.into_any()}}
-            {(id>0&&kind!=Kind::Page&&draft).then(move||view!{<hr/><ConfirmButton label="Zveřejnit" title="Zveřejnit dokument?" description=if kind==Kind::Notice{"Dokument se zveřejní podle data vyvěšení. Budoucí datum znamená naplánované zveřejnění. Ověření odběratelé dostanou oznámení v hodinovém souhrnu po zveřejnění."}else{"Dokument i jeho přílohy budou dostupné na webu. Ověření odběratelé dostanou oznámení v hodinovém souhrnu."} disabled=action_disabled on_confirm=Callback::new(move|()|{transition.dispatch("publish".into());})/>})}
-            {(id>0&&kind==Kind::Notice&&!draft&&!archived).then(move||view!{<hr/>
-                <label class="admin-field" for="withdrawal-reason"><span>{if scheduled{"Důvod zrušení plánovaného zveřejnění"}else{"Důvod ručního sejmutí"}}</span><input id="withdrawal-reason" maxlength="2000" prop:value=move||withdrawal_reason.get() on:input=move|ev|withdrawal_reason.set(event_target_value(&ev))/></label>
-                {(!scheduled).then(move||view!{<label class="admin-check"><input type="checkbox" prop:checked=move||emergency.get() on:change=move|ev|emergency.set(event_target_checked(&ev))/><span>"Mimořádné předčasné sejmutí kvůli incidentu"</span></label>})}
-                <ConfirmButton label=if scheduled{"Zrušit plánované zveřejnění"}else{"Sejmout do archivu"} title=if scheduled{"Zrušit plánované zveřejnění?"}else{"Sejmout dokument z úřední desky?"} description=if scheduled{"Dokument se vrátí do soukromého konceptu. Přílohy zůstanou zachované pro další úpravy a nebudou veřejně dostupné."}else if notice_retention{"Záznam se přesune do archivu. Přílohy zůstanou veřejně dostupné."}else{"Záznam zůstane v archivu. Obsah příloh se nenávratně odstraní podle uloženého nastavení."} danger=true disabled=action_disabled on_confirm=Callback::new(move|()|{transition.dispatch("withdraw".into());})/>
-            })}
-            {(id>0&&kind==Kind::Document&&!draft&&!archived).then(move||view!{<hr/><ConfirmButton label="Archivovat dokument" title="Archivovat dokument?" description="Dokument a jeho přílohy přestanou být veřejně dostupné." danger=true disabled=action_disabled on_confirm=Callback::new(move|()|{transition.dispatch("archive".into());})/>})}
             {public_visible.then(move||view!{<a href=public_url target="_blank" rel="noopener" class="admin-public-link">"Otevřít na webu"<Icon name="external"/></a>})}
             {(id>0&&kind==Kind::Notice).then(move||view!{<a class="admin-public-link" href=format!("/api/v1/admin/notices/{id}/evidence") download="doklad-vyveseni.json">"Stáhnout doklad vyvěšení"<Icon name="paper"/></a>})}
             <p class="admin-caption"><Icon name="history"/>"Změny se zapisují do auditu."</p>
         </section></aside></div>
     }
+}
+
+#[component]
+fn AdminOrigin(origin: serde_json::Value) -> impl IntoView {
+    let source = origin["source_url"].as_str().unwrap_or_default().to_owned();
+    let identity = origin["source_key"].as_str().unwrap_or_default().to_owned();
+    let published = origin["source_published_on"]
+        .as_str()
+        .map(crate::catalog::document_date);
+    let imported = origin["imported_at"]
+        .as_str()
+        .map(|value| crate::catalog::document_event_date(Some(value), None));
+    let observed = origin["last_observed_at"]
+        .as_str()
+        .map(|value| crate::catalog::document_event_date(Some(value), None));
+    view! {<aside class="info-banner" aria-label="Původ převzatého dokumentu"><div><strong>"Převzatý dokument"</strong><p>"Datum importu není datem původního ani místního vyvěšení."</p>
+        <dl class="document-facts">{(!source.is_empty()).then(||view!{<div><dt>"Původní adresa"</dt><dd class="source-identity">{source}</dd></div>})}{(!identity.is_empty()).then(||view!{<div><dt>"Zdrojová identita"</dt><dd>{identity}</dd></div>})}
+            {published.map(|value|view!{<div><dt>"Původní datum zveřejnění"</dt><dd>{value}</dd></div>})}
+            {imported.map(|value|view!{<div><dt>"Místní import"</dt><dd>{value}</dd></div>})}
+            {observed.map(|value|view!{<div><dt>"Poslední pozorování zdroje"</dt><dd>{value}</dd></div>})}
+        </dl>
+    </div></aside>}
 }
 
 fn optional(value: String) -> Option<String> {

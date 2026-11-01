@@ -9,8 +9,21 @@ use std::io::Read;
 async fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let first = args.next().ok_or_else(|| {
-        anyhow::anyhow!("Usage: obec-admin [create | reset-password] EMAIL [--password-stdin]")
+        anyhow::anyhow!(
+            "Usage: obec-admin migrate | [create | reset-password] EMAIL [--password-stdin]"
+        )
     })?;
+    if first == "migrate" {
+        anyhow::ensure!(
+            args.next().is_none(),
+            "Migrate does not accept additional arguments"
+        );
+        let config = Config::from_env()?;
+        let pool = db::connect(&config).await?;
+        pool.close().await;
+        println!("Database migrations applied. No application or mail workers started.");
+        return Ok(());
+    }
     let reset = first == "reset-password";
     let email = if reset || first == "create" {
         args.next()

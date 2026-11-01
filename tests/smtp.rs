@@ -146,6 +146,7 @@ async fn unavailable_smtp(app: &App) -> Backend {
 async fn imported_notice(app: &App, recipient: (i64, i64), now: OffsetDateTime) -> i64 {
     let id = sqlx::query_scalar::<_, i64>("INSERT INTO notices(title,status,review_json) VALUES ('Interní název','archived','{\"archive_title\":\"Veřejný archivní název\"}') RETURNING id")
         .fetch_one(&app.state.pool).await.unwrap();
+    sqlx::query("UPDATE documents SET public_access=TRUE,metadata_restricted=TRUE,public_title='Veřejný archivní název' WHERE id=$1").bind(id).execute(&app.state.pool).await.unwrap();
     queue_import(app, id, recipient, now).await;
     id
 }
@@ -183,7 +184,7 @@ async fn archived_import_uses_original_audience_public_title_and_retry_queue_onc
     assert!(
         message
             .3
-            .contains(&format!("http://localhost:3000/uredni-deska/{id}"))
+            .contains(&format!("http://localhost:3000/dokumenty/{id}"))
     );
     assert_eq!(message.4, 1);
     assert_eq!(message.5, None);
@@ -255,7 +256,7 @@ async fn imported_notifications_recheck_original_consent_and_public_visibility()
     assert_eq!(recipient.0, renewed.0);
     assert_ne!(recipient.1, renewed.1);
     let hidden = imported_notice(&app, renewed, now).await;
-    sqlx::query("UPDATE notices SET status='draft' WHERE id=$1")
+    sqlx::query("UPDATE documents SET public_access=FALSE,access_blocked=TRUE WHERE id=$1")
         .bind(hidden)
         .execute(&app.state.pool)
         .await
@@ -550,7 +551,7 @@ async fn native_publication_materialization_rolls_back_as_a_batch_and_survives_r
     assert_eq!(messages.len(), 1);
     assert!(messages.iter().all(|row| (row.0, row.1) == original));
     assert!(messages[0].2.starts_with("digest:"));
-    assert!(messages[0].3.contains(&format!("/uredni-deska/{notice}")));
+    assert!(messages[0].3.contains(&format!("/dokumenty/{notice}")));
     assert!(messages[0].3.contains(&format!("/dokumenty/{document}")));
     let item_count: i64 = sqlx::query_scalar("SELECT count(*) FROM mail_publication_items")
         .fetch_one(&restarted.pool)

@@ -321,6 +321,11 @@ async fn one_recipient_can_drop_notices_and_still_receive_documents_in_the_same_
     .await;
     let notice: i64 = sqlx::query_scalar("INSERT INTO notices(title,status,review_json) VALUES ('Drop notice','archived','{}') RETURNING id")
         .fetch_one(&app.state.pool).await.unwrap();
+    sqlx::query("UPDATE documents SET public_access=TRUE WHERE id=$1")
+        .bind(notice)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO publication_outbox(notice_id,subscriber_id,consent_id,created_at) VALUES ($1,$2,$3,$4)")
         .bind(notice).bind(recipient.0).bind(recipient.1).bind(cutoff.unix_timestamp()-1)
         .execute(&app.state.pool).await.unwrap();
@@ -340,7 +345,7 @@ async fn one_recipient_can_drop_notices_and_still_receive_documents_in_the_same_
     );
     let sent = capture.message().await;
     assert!(sent.contains(&format!("/dokumenty/{doc}")));
-    assert!(!sent.contains("/uredni-deska/"));
+    assert!(!sent.contains(&format!("/dokumenty/{notice}")));
     assert_eq!(counts(&app).await, (0, 1, 2));
 }
 
@@ -446,7 +451,7 @@ async fn recipients_receive_separate_messages_with_only_their_snapshotted_items(
 }
 
 #[tokio::test]
-async fn unsubscribe_and_deleting_all_items_cancel_materialized_digests_without_smtp() {
+async fn unsubscribe_and_withdrawing_all_items_cancel_materialized_digests_without_smtp() {
     let app = App::new().await;
     let unsubscribed = recipient(&app, "unsubscribe-digest@example.test").await;
     let deleted = recipient(&app, "deleted-digest@example.test").await;
@@ -486,12 +491,12 @@ async fn unsubscribe_and_deleting_all_items_cancel_materialized_digests_without_
     subscriptions::use_token(&app.state, &common::token_from_body(&body), false, cutoff)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM documents WHERE id=$1")
+    sqlx::query("UPDATE documents SET public_access=FALSE,access_blocked=TRUE WHERE id=$1")
         .bind(removed)
         .execute(&app.state.pool)
         .await
         .unwrap();
-    assert_eq!(counts(&app).await, (0, 2, 1));
+    assert_eq!(counts(&app).await, (0, 2, 2));
     let mut capture = Capture::new(false).await;
     let state = capture.backend(&app);
     let smtp = mail::transport(&state).unwrap();
@@ -563,4 +568,39 @@ async fn administrator_recovery_and_each_report_send_immediately_outside_documen
     let sent: (i64, i64) = sqlx::query_as("SELECT (SELECT count(*) FROM recovery_mail WHERE sent_at IS NOT NULL AND body IS NULL AND attempts=1),(SELECT count(*) FROM report_mail_queue WHERE sent_at IS NOT NULL AND body IS NULL AND attempts=1)")
         .fetch_one(&state.pool).await.unwrap();
     assert_eq!(sent, (1, 2));
+}
+
+#[tokio::test]
+async fn pre_upgrade_individual_message_rechecks_current_document_visibility() {
+    let app = App::new().await;
+    let recipient = recipient(&app, "old-private@example.test").await;
+    let cutoff = hour();
+    let id = document(
+        &app,
+        recipient,
+        "Previously public title",
+        cutoff - Duration::seconds(1),
+    )
+    .await;
+    sqlx::query("INSERT INTO mail_queue(subscriber_id,consent_id,purpose,deduplication_key,subject,body,next_attempt_at,created_at) VALUES($1,$2,'document',$3,'Old title','Old title and link',$4,$4)").bind(recipient.0).bind(recipient.1).bind(format!("document:{id}:{}",recipient.0)).bind(cutoff.unix_timestamp()-1).execute(&app.state.pool).await.unwrap();
+    sqlx::query("UPDATE documents SET public_access=FALSE,access_blocked=TRUE WHERE id=$1")
+        .bind(id)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    let mut capture = Capture::new(false).await;
+    let state = capture.backend(&app);
+    assert!(
+        mail::deliver_one(&state, &mail::transport(&state).unwrap(), cutoff)
+            .await
+            .unwrap()
+    );
+    let (cancelled, body): (bool, Option<String>) =
+        sqlx::query_as("SELECT cancelled,body FROM mail_queue WHERE purpose='document'")
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap();
+    assert!(cancelled);
+    assert!(body.is_none());
+    assert!(capture.messages.try_recv().is_err());
 }

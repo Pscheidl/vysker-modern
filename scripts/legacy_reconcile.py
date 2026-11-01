@@ -9,12 +9,14 @@ from zoneinfo import ZoneInfo
 
 from legacy import dates, now
 from legacy_import import load_bundle
+from legacy_documents import refuse_destructive_reimport
 from legacy_scope import require_local_preview
 from postgres import connect
 
 
 def reconcile(conn, root, notice_map, *, apply=False, preview=False,
               allow_incomplete=False, as_of=None):
+    refuse_destructive_reimport(conn)
     if preview:
         require_local_preview()
     if conn.execute("SELECT EXISTS(SELECT 1 FROM legacy_notice_imports WHERE metadata ? 'navigation')").fetchone()[0]:

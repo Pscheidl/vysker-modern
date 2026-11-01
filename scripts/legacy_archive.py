@@ -8,7 +8,7 @@ from pathlib import Path
 from psycopg.rows import dict_row
 
 from legacy import now
-from legacy_notifications import queue_publication
+from legacy_documents import source_policy, finalize_board_documents
 from legacy_scope import archive_review
 from postgres import connect
 
@@ -18,6 +18,8 @@ def plan_archive(conn):
     with conn.cursor(row_factory=dict_row) as cursor:
         rows = cursor.execute('''SELECT n.id,n.title,n.status,n.review_json,
             n.published_at IS NOT NULL OR n.withdrawn_at IS NOT NULL AS publication_history,
+            n.published_on IS NULL OR NOT EXISTS(SELECT 1 FROM document_postings p WHERE p.document_id=n.id AND p.removed_on IS NOT NULL AND p.removed_on<=(now() AT TIME ZONE 'Europe/Prague')::date) AS incomplete_dates,
+            n.access_blocked AS locally_blocked,
             n.updated_at IS DISTINCT FROM n.created_at AS changed_timestamp,
             EXISTS(SELECT 1 FROM notice_events e WHERE e.notice_id=n.id) AS has_events,
             EXISTS(SELECT 1 FROM audit_log l WHERE l.entity_type='notice'
@@ -41,7 +43,7 @@ def plan_archive(conn):
         reasons = []
         if row['status'] != 'draft':
             reasons.append('status_' + row['status'])
-        for field in ('publication_history', 'changed_timestamp', 'has_events',
+        for field in ('publication_history', 'changed_timestamp', 'has_events', 'incomplete_dates', 'locally_blocked',
                       'notice_edits', 'attachment_edits', 'unavailable_attachment'):
             if row[field]:
                 reasons.append(field)
@@ -66,10 +68,13 @@ def plan_archive(conn):
 
 
 def archive_imported_notices(conn, expected_count):
-    """Caller owns the transaction. First public availability notifies subscribers."""
+    """Caller owns the transaction. Historical availability never notifies subscribers."""
     if type(expected_count) is not int or expected_count < 0:
         raise ValueError('Expected count must be a non-negative integer')
     conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':vysker-write', 0))")
+    policy = source_policy(conn)
+    if not policy['allow_publication']:
+        raise ValueError('Source policy does not allow archive publication')
     report = plan_archive(conn)
     if report['candidate_count'] != expected_count:
         raise ValueError(f"Expected {expected_count} eligible notice drafts, found {report['candidate_count']}. Run plan again.")
@@ -83,7 +88,10 @@ def archive_imported_notices(conn, expected_count):
             (json.dumps(review, ensure_ascii=False), timestamp, notice_id))
         conn.execute('''INSERT INTO audit_log(occurred_at,operation,entity_type,entity_id)
             VALUES (%s,'legacy_archived','notice',%s)''', (timestamp, notice_id))
-        queue_publication(conn, timestamp, notice_id=notice_id)
+        if conn.execute('SELECT lock_state FROM documents WHERE id=%s', (notice_id,)).fetchone()[0] == 'draft':
+            finalize_board_documents(conn, [notice_id], timestamp, allow_publication=True)
+        conn.execute('''UPDATE documents SET public_access=TRUE,status='published',public_until=%s
+            WHERE id=%s AND NOT access_blocked''', (review.get('archive_until'), notice_id))
     report.update(archived_count=expected_count, archived_ids=report['candidate_ids'].copy(), archived_at=timestamp)
     return report
 

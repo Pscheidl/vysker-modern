@@ -5,7 +5,7 @@ use time::{Date, OffsetDateTime};
 
 /// Stav vyvěšení. Ukládá se jako TEXT, aby šel obsah databáze přečíst očima.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
-#[sqlx(rename_all = "lowercase")]
+#[sqlx(type_name = "text", rename_all = "lowercase")]
 pub enum NoticeStatus {
     /// Rozepsané, na desce není.
     Draft,
@@ -110,45 +110,24 @@ pub fn publication_period(
     })
 }
 
-async fn public_row(
-    pool: &PgPool,
-    record: crate::backend::notices::NoticeRecord,
-) -> sqlx::Result<Notice> {
-    let record = record.into_public(OffsetDateTime::now_utc());
-    let category_name: Option<String> =
-        sqlx::query_scalar("SELECT name FROM categories WHERE id=$1")
-            .bind(record.category_id)
-            .fetch_optional(pool)
-            .await?;
-    Ok(Notice {
-        id: record.id,
-        title: record.title,
-        reference_number: record.reference_number,
-        category_name,
-        issuer: record.issuer,
-        description: record.description,
-        published_on: record.published_on,
-        withdraw_on: record.withdraw_on,
-        withdrawn_at: record.withdrawn_at.and_then(|v| {
-            OffsetDateTime::parse(&v, &time::format_description::well_known::Rfc3339).ok()
-        }),
-        retain_attachments: record.retain_attachments,
-        status: if record.status == "published" {
-            NoticeStatus::Published
-        } else {
-            NoticeStatus::Archived
-        },
-    })
-}
+// The compact board projection is independent of planned removal dates.
+// Actual, documented posting/removal evidence determines membership.
+pub const CURRENT: &str = "d.board_status='published' AND d.has_current_posting";
+pub const ARCHIVED: &str = "d.board_status IN ('withdrawn','archived') AND d.has_removed_posting";
+const PROJECTION: &str = "d.id,CASE WHEN d.metadata_restricted THEN coalesce(d.public_title,'Záznam úřední desky #'||d.id) ELSE d.title END AS title,CASE WHEN d.metadata_restricted THEN NULL ELSE d.reference_number END AS reference_number,c.name AS category_name,CASE WHEN d.metadata_restricted THEN NULL ELSE d.issuer END AS issuer,CASE WHEN d.metadata_restricted THEN NULL ELSE d.description END AS description,d.published_on,d.withdraw_on,d.withdrawn_at::timestamptz AS withdrawn_at,document_files_public(d,(now() AT TIME ZONE 'Europe/Prague')::date) AS retain_attachments,CASE WHEN d.board_status='published' THEN 'published' ELSE 'archived' END AS status";
+
 async fn list(pool: &PgPool, archived: bool, limit: i64) -> sqlx::Result<Vec<Notice>> {
-    let day = crate::backend::today(OffsetDateTime::now_utc());
-    let records:Vec<crate::backend::notices::NoticeRecord>=sqlx::query_as("SELECT * FROM notices WHERE ($1=FALSE AND status='published' AND (published_on IS NULL OR published_on<=$2) AND (withdraw_on IS NULL OR withdraw_on>$3)) OR ($4=TRUE AND (status IN ('withdrawn','archived') OR (status='published' AND withdraw_on<=$5))) ORDER BY published_on DESC NULLS LAST,id DESC LIMIT $6")
-        .bind(archived).bind(day).bind(day).bind(archived).bind(day).bind(limit).fetch_all(pool).await?;
-    let mut result = Vec::with_capacity(records.len());
-    for row in records {
-        result.push(public_row(pool, row).await?);
-    }
-    Ok(result)
+    let predicate = if archived { ARCHIVED } else { CURRENT };
+    let query = format!(
+        "SELECT {PROJECTION} FROM documents d LEFT JOIN categories c ON c.id=d.category_id WHERE document_is_public(d,$1) AND ({predicate}) ORDER BY d.published_on DESC NULLS LAST,d.id DESC LIMIT $2"
+    );
+    let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new(query);
+    query
+        .build_query_as()
+        .bind(crate::backend::today(OffsetDateTime::now_utc()))
+        .bind(limit.clamp(0, 100))
+        .fetch_all(pool)
+        .await
 }
 pub async fn published(pool: &PgPool, limit: i64) -> sqlx::Result<Vec<Notice>> {
     list(pool, false, limit).await
@@ -157,11 +136,19 @@ pub async fn archived(pool: &PgPool, limit: i64) -> sqlx::Result<Vec<Notice>> {
     list(pool, true, limit).await
 }
 pub async fn by_id(pool: &PgPool, id: i64) -> sqlx::Result<Option<Notice>> {
-    let record=sqlx::query_as("SELECT * FROM notices WHERE id=$1 AND status IN ('published','archived','withdrawn') AND (status='archived' OR published_on IS NULL OR published_on<=$2)").bind(id).bind(crate::backend::today(OffsetDateTime::now_utc())).fetch_optional(pool).await?;
-    match record {
-        Some(row) => Ok(Some(public_row(pool, row).await?)),
-        None => Ok(None),
-    }
+    Ok(by_ids(pool, &[id]).await?.into_iter().next())
+}
+pub async fn by_ids(pool: &PgPool, ids: &[i64]) -> sqlx::Result<Vec<Notice>> {
+    let query = format!(
+        "SELECT {PROJECTION} FROM documents d LEFT JOIN categories c ON c.id=d.category_id WHERE d.id=ANY($1) AND d.board_status IS NOT NULL AND (d.has_current_posting OR d.has_removed_posting) AND document_is_public(d,$2)"
+    );
+    let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new(query);
+    query
+        .build_query_as()
+        .bind(ids)
+        .bind(crate::backend::today(OffsetDateTime::now_utc()))
+        .fetch_all(pool)
+        .await
 }
 pub async fn attachments(pool: &PgPool, id: i64) -> sqlx::Result<Vec<Attachment>> {
     let files = crate::backend::documents::public_notice_files(pool, id, OffsetDateTime::now_utc())
@@ -181,17 +168,26 @@ pub async fn attachments(pool: &PgPool, id: i64) -> sqlx::Result<Vec<Attachment>
         .collect())
 }
 pub async fn counts(pool: &PgPool) -> sqlx::Result<NoticeCounts> {
-    let day = crate::backend::today(OffsetDateTime::now_utc());
-    sqlx::query_as("SELECT count(*) FILTER(WHERE status='published' AND (withdraw_on IS NULL OR withdraw_on>$1)) AS published,count(*) FILTER(WHERE status IN ('archived','withdrawn') AND extract(year FROM withdrawn_at::timestamptz)=extract(year FROM $2::date)) AS withdrawn_this_year,count(*) FILTER(WHERE status IN ('archived','withdrawn') OR (status='published' AND withdraw_on<=$3)) AS archived FROM notices")
-        .bind(day).bind(day).bind(day).fetch_one(pool).await
+    let query = format!(
+        "SELECT count(*) FILTER(WHERE {CURRENT}) AS published,count(*) FILTER(WHERE ({ARCHIVED}) AND extract(year FROM d.withdrawn_at::timestamptz)=extract(year FROM $1::date)) AS withdrawn_this_year,count(*) FILTER(WHERE {ARCHIVED}) AS archived FROM documents d WHERE document_is_public(d,$1) AND d.board_status IS NOT NULL"
+    );
+    let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new(query);
+    query
+        .build_query_as()
+        .bind(crate::backend::today(OffsetDateTime::now_utc()))
+        .fetch_one(pool)
+        .await
 }
 pub async fn next_withdrawal(pool: &PgPool) -> sqlx::Result<Option<Date>> {
-    sqlx::query_scalar(
-        "SELECT min(withdraw_on) FROM notices WHERE status='published' AND withdraw_on>$1",
-    )
-    .bind(crate::backend::today(OffsetDateTime::now_utc()))
-    .fetch_one(pool)
-    .await
+    let query = format!(
+        "SELECT min(d.withdraw_on) FROM documents d WHERE document_is_public(d,$1) AND ({CURRENT}) AND d.withdraw_on>$1"
+    );
+    let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new(query);
+    query
+        .build_query_scalar()
+        .bind(crate::backend::today(OffsetDateTime::now_utc()))
+        .fetch_one(pool)
+        .await
 }
 
 #[cfg(test)]

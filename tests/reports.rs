@@ -12,9 +12,7 @@ use http_body_util::BodyExt;
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
 use lettre::{AsyncSmtpTransport, Tokio1Executor};
 use obecni_web::backend::{self, reports};
-use obecni_web::reports::{
-    REPORT_MAP_LIMIT, REPORT_UPLOAD_BYTES, Report, ReportStatusFilter,
-};
+use obecni_web::reports::{REPORT_MAP_LIMIT, REPORT_UPLOAD_BYTES, Report, ReportStatusFilter};
 use serde_json::json;
 use std::{io::Cursor, net::SocketAddr};
 use time::OffsetDateTime;

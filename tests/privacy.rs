@@ -330,7 +330,7 @@ async fn private_operator_subscription_uses_actual_controller_and_no_fictitious_
 }
 
 #[tokio::test]
-async fn internal_notice_data_expires_without_erasing_the_public_record() {
+async fn separate_retention_tombstones_private_content_without_unlocking() {
     let app = App::new().await;
     let id=app.notice(json!({"title":"Osobní údaje","description":"Interní popis","reference_number":"osobní reference"})).await;
     app.publish(id).await;
@@ -341,6 +341,17 @@ async fn internal_notice_data_expires_without_erasing_the_public_record() {
         true,
     )
     .await;
+    assert_eq!(
+        app.call(
+            "POST",
+            &format!("/api/v1/admin/documents/{id}/archive"),
+            Some(json!({"reason":"Samostatné ukončení veřejného přístupu před retenční lhůtou"})),
+            true
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
     let now = OffsetDateTime::now_utc() + Duration::days(400);
     privacy::maintenance(&app.state, now).await.unwrap();
     let row: (String, Option<String>) =
@@ -349,7 +360,17 @@ async fn internal_notice_data_expires_without_erasing_the_public_record() {
             .fetch_one(&app.state.pool)
             .await
             .unwrap();
-    assert_eq!(row, (format!("Záznam úřední desky #{id}"), None));
+    assert_eq!(
+        row,
+        (format!("Skartovaný dokument #{id}"), Some(String::new()))
+    );
+    let state: (String, bool) =
+        sqlx::query_as("SELECT lock_state,disposed_at IS NOT NULL FROM documents WHERE id=$1")
+            .bind(id)
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap();
+    assert_eq!(state, ("locked".into(), true));
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM notice_events WHERE notice_id=$1")
         .bind(id)
         .fetch_one(&app.state.pool)

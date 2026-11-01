@@ -21,7 +21,7 @@ async fn publication_is_not_backdated_and_live_content_is_immutable() {
         app.call(
             "PUT",
             &format!("/api/v1/admin/notices/{id}"),
-            Some(json!({"title":"Dodatečná změna"})),
+            Some(json!({"title":"Dodatečná změna","retain_attachments":false})),
             true
         )
         .await
@@ -111,13 +111,13 @@ async fn statutory_minimum_blocks_early_removal_except_documented_incident() {
 }
 
 #[tokio::test]
-async fn expired_metadata_is_minimized_in_api_and_ssr_before_maintenance() {
+async fn visibility_revocation_hides_detail_and_files_but_preserves_admin_original() {
     let app = App::new().await;
-    let id=app.notice(json!({"title":"Jméno občana","description":"Osobní údaje","reference_number":"Citlivá reference","issuer":"Osobní jméno","review":{"archive_title":"Doručování písemnosti"}})).await;
+    let id=app.notice(json!({"title":"Původní název","description":"Původní popis","reference_number":"Původní reference","issuer":"Původce"})).await;
     let file = body_json(
         app.upload(
             &format!("/api/v1/admin/notices/{id}/attachments"),
-            "osobni-jmeno.pdf",
+            "original.pdf",
             PDF,
         )
         .await,
@@ -125,50 +125,76 @@ async fn expired_metadata_is_minimized_in_api_and_ssr_before_maintenance() {
     .await["id"]
         .as_i64()
         .unwrap();
-    app.publish(id).await;
-    sqlx::query(
-        "UPDATE notices SET published_on='2019-12-01',withdraw_on='2020-01-01' WHERE id=$1",
+    assert_eq!(app.publish(id).await.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        app.call(
+            "POST",
+            &format!("/api/v1/admin/notices/{id}/withdraw"),
+            None,
+            true
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    // Hiding attachments after removal leaves the independent public metadata intact.
+    let detail = body_json(
+        app.call("GET", &format!("/api/v1/notices/{id}"), None, false)
+            .await,
     )
-    .bind(id)
-    .execute(&app.state.pool)
-    .await
-    .unwrap();
-    let response = app
-        .call("GET", &format!("/api/v1/notices/{id}"), None, false)
-        .await;
-    assert_eq!(response.headers()["x-robots-tag"], "noindex, noarchive");
-    assert_eq!(response.headers()["cache-control"], "no-store");
-    let detail = body_json(response).await;
-    assert_eq!(detail["title"], "Doručování písemnosti");
-    assert!(detail["description"].is_null());
-    assert!(detail["reference_number"].is_null());
-    assert_eq!(detail["attachments"][0]["name"], format!("Příloha #{file}"));
-    assert_eq!(detail["attachments"][0]["available"], false);
-    let live = body_json(app.call("GET", "/api/v1/notices", None, false).await).await;
-    assert!(live.as_array().unwrap().is_empty());
+    .await;
+    assert_eq!(detail["title"], "Původní název");
+    assert_eq!(detail["status"], "archived");
+    assert!(detail["attachments"].as_array().unwrap().is_empty());
     let row = model::notices::by_id(&app.state.pool, id)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(row.title, "Doručování písemnosti");
-    assert!(row.description.is_none());
-    let files = model::notices::attachments(&app.state.pool, id)
+    assert_eq!(row.title, "Původní název");
+    assert!(
+        model::notices::attachments(&app.state.pool, id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        app.call(
+            "POST",
+            &format!("/api/v1/admin/documents/{id}/archive"),
+            Some(json!({"reason":"Okamžité ukončení veřejného přístupu"})),
+            true
+        )
         .await
-        .unwrap();
-    assert!(!files[0].has_content);
-    assert_eq!(files[0].name, format!("Příloha #{file}"));
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    for path in [
+        format!("/api/v1/notices/{id}"),
+        format!("/api/v1/documents/{id}"),
+        format!("/api/v1/attachments/{file}"),
+    ] {
+        let response = app.call("GET", &path, None, false).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+    }
+    assert!(
+        model::notices::by_id(&app.state.pool, id)
+            .await
+            .unwrap()
+            .is_none()
+    );
     let admin = body_json(
         app.call("GET", &format!("/api/v1/admin/notices/{id}"), None, true)
             .await,
     )
     .await;
-    assert_eq!(admin["title"], "Jméno občana");
-    assert_eq!(
-        app.call("GET", &format!("/api/v1/attachments/{file}"), None, false)
-            .await
-            .status(),
-        StatusCode::NOT_FOUND
-    );
+    assert_eq!(admin["title"], "Původní název");
+    let preserved: Vec<u8> = sqlx::query_scalar("SELECT data FROM attachments WHERE id=$1")
+        .bind(file)
+        .fetch_one(&app.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(preserved, PDF);
 }
 
 #[tokio::test]
@@ -216,7 +242,11 @@ async fn retained_files_require_justification_and_expire() {
             .status(),
         StatusCode::OK
     );
-    sqlx::query("UPDATE notices SET review_json=jsonb_set(review_json::jsonb,'{archive_until}','\"2020-01-01\"')::text WHERE id=$1").bind(id).execute(&app.state.pool).await.unwrap();
+    sqlx::query("UPDATE documents SET posting_public_until='2020-01-01' WHERE id=$1")
+        .bind(id)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
     assert_eq!(
         app.call("GET", &format!("/api/v1/attachments/{file}"), None, false)
             .await
@@ -226,12 +256,13 @@ async fn retained_files_require_justification_and_expire() {
     notices::maintenance(&app.state, OffsetDateTime::now_utc())
         .await
         .unwrap();
-    let removed: bool = sqlx::query_scalar("SELECT data IS NULL FROM attachments WHERE id=$1")
-        .bind(file)
-        .fetch_one(&app.state.pool)
-        .await
-        .unwrap();
-    assert!(removed);
+    let preserved: bool =
+        sqlx::query_scalar("SELECT data IS NOT NULL FROM attachments WHERE id=$1")
+            .bind(file)
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap();
+    assert!(preserved);
 }
 
 #[tokio::test]

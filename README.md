@@ -176,10 +176,9 @@ Basic environment settings:
 
 - Official notice board with a default withdrawal interval of 15 days and a
   manual override, subject to the selected publication rule.
-- **A minimal document record always remains in the archive**, even after the
-  attachment contents are removed.
-- Retaining attachments in the public archive is a separate choice, **off by default**.
-- General documents and their administration.
+- The public archive contains documented removed postings whose documents remain public.
+- Attachment availability after removal is an explicit mandatory choice with no default. Private attachments remain downloadable by administrators until separate retention disposal.
+- A single document catalogue and administration, with separate posting history.
 - Notifications about new documents, including official notices, activated
   after email verification.
 - A read-only audit log with no editing or deletion controls in administration.
@@ -191,29 +190,31 @@ These core workflows are implemented. Launch still requires real municipal
 content, approved operating policies, hosting configuration and acceptance checks.
 See the [remaining work](docs/roadmap.md).
 
-## Notice board data model
+## Canonical document registry
 
-```text
-notices
-  id, title, reference_number, category_id, issuer, description
-  published_on       DATE NOT NULL       # ISO date
-  published_at       TEXT NULL           # actual publication timestamp
-  withdraw_on        DATE NULL           # first day no longer published
-  withdrawn_at       TEXT NULL           # actual withdrawal timestamp
-  retain_attachments BOOLEAN NOT NULL DEFAULT FALSE
-  review_json        TEXT NOT NULL       # publication and archive rules
-  status             draft | scheduled | published | withdrawn | archived
-```
+`documents` is the only document-content table. Both ordinary documents and
+board documents have the same ID, detail and attachment owner. Migration 0029
+physically merges the former `notices` content table, preserves numeric-ID
+collisions through `document_legacy_ids`, and replaces `notices` with a narrow
+compatibility projection of the same canonical rows.
 
-`withdraw_on = NULL` means no automatic withdrawal date. `retain_attachments`
-controls attachment contents only. State changes and audit entries are written
-in the same database transaction.
+`document_postings` records each local or source posting separately. Actual
+posting, planned removal, actual removal, public visibility and permanent content
+locking are independent. The first actual posting freezes content and ordered
+attachment bytes through database guards. Publication requires a server-generated
+preview fingerprint. Corrections and observed source revisions create new linked
+concepts, never rewrite locked originals.
 
-Tables, columns, states, Rust models and JSON APIs use English identifiers.
-The initial PostgreSQL schema is in `migrations/0001_initial.sql`. Since the web
-has not been deployed, it replaces the former development-only SQLite migration
-chain. No SQLite data upgrade is provided. After deployment, add new migrations
-without rewriting applied SQLx checksums. See [database.md](docs/database.md).
+Access to attachment URLs is checked against the current canonical record at
+request time. Removal can leave files public or restrict them to administration,
+according to the mandatory choice. Full withdrawal also hides the detail and
+search results. Historical migration/import does not send announcements, and
+`document_announcements` prevents existing content being announced again.
+
+See [migration and import](docs/migration.md), [editorial workflow](docs/editorial.md),
+[board rules](docs/notice-board.md) and [measured verification](docs/unified-documents-verification.md).
+Production rollout is a separate maintenance-window operation with a verified
+backup and paused application/import/mail writers.
 
 ## Repository layout
 

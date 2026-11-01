@@ -1,6 +1,6 @@
 use super::{
-    Backend, Pagination, Result, audit, auth::Admin, bad, conflict, documents::Attachment, mail,
-    missing, text, timestamp, today,
+    Backend, Pagination, Result, audit, auth::Admin, bad, conflict, documents::Attachment, missing,
+    text, timestamp, today,
 };
 use crate::notice_policy::NoticeReview;
 use axum::{
@@ -26,8 +26,7 @@ pub struct NoticeInput {
     pub duration_days: Option<i64>,
     #[serde(default)]
     pub unlimited: bool,
-    #[serde(default)]
-    pub retain_attachments: bool,
+    pub retain_attachments: Option<bool>,
     #[serde(default)]
     pub review: NoticeReview,
 }
@@ -70,6 +69,11 @@ impl NoticeInput {
     }
     async fn validate(&self, conn: &mut PgConnection) -> Result<()> {
         text(&self.title, 300)?;
+        if self.retain_attachments.is_none() {
+            return Err(bad(
+                "Povinně vyberte, zda budou přílohy po sejmutí veřejné, nebo dostupné pouze v administraci.",
+            ));
+        }
         for value in [
             &self.review.legal_basis,
             &self.review.original_reference,
@@ -82,14 +86,14 @@ impl NoticeInput {
         if self.review.archive_title.len() > 300 {
             return Err(bad("Název v archivu je příliš dlouhý."));
         }
-        if self.retain_attachments
+        if self.retain_attachments == Some(true)
             && (self.review.archive_basis.trim().is_empty() || self.review.archive_until.is_none())
         {
             return Err(bad(
                 "Ponechání příloh vyžaduje důvod a konečné datum zveřejnění v archivu.",
             ));
         }
-        if self.retain_attachments
+        if self.retain_attachments == Some(true)
             && self
                 .review
                 .archive_until
@@ -136,12 +140,23 @@ pub struct NoticeRecord {
     pub status: String,
     pub review_json: String,
     pub published_at: Option<String>,
+    pub lock_state: String,
+    pub public_access: bool,
+    pub access_blocked: bool,
+    pub public_until: Option<Date>,
+    pub content_version: i64,
+    pub metadata_restricted: bool,
+    pub public_title: Option<String>,
+    pub attachments_public: bool,
 }
 #[derive(Serialize)]
 pub struct NoticeDetail {
     #[serde(flatten)]
     pub record: NoticeRecord,
     pub attachments: Vec<Attachment>,
+    pub postings: Vec<serde_json::Value>,
+    pub relations: Vec<serde_json::Value>,
+    pub origin: Option<serde_json::Value>,
 }
 
 pub async fn create(
@@ -153,7 +168,7 @@ pub async fn create(
     let (posted, end) = input.dates(now)?;
     let mut tx = crate::db::begin_write(&s.pool).await?;
     input.validate(&mut tx).await?;
-    if input.retain_attachments
+    if input.retain_attachments == Some(true)
         && input
             .review
             .archive_until
@@ -163,7 +178,7 @@ pub async fn create(
     }
     let id = sqlx::query_scalar::<_, i64>("INSERT INTO notices(title,description,reference_number,category_id,issuer,published_on,withdraw_on,retain_attachments,status,created_at,updated_at,review_json) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'draft',$9,$10,$11) RETURNING id")
         .bind(input.title.trim()).bind(input.description).bind(input.reference_number).bind(input.category_id).bind(input.issuer)
-        .bind(posted).bind(end).bind(input.retain_attachments).bind(timestamp(now)).bind(timestamp(now)).bind(serde_json::to_string(&input.review).unwrap()).fetch_one(&mut *tx).await?;
+        .bind(posted).bind(end).bind(input.retain_attachments.unwrap_or(false)).bind(timestamp(now)).bind(timestamp(now)).bind(serde_json::to_string(&input.review).unwrap()).fetch_one(&mut *tx).await?;
     audit(&mut tx, Some(admin.id), "created", "notice", id, now).await?;
     tx.commit().await?;
     Ok((StatusCode::CREATED, Json(serde_json::json!({"id":id}))))
@@ -178,7 +193,7 @@ pub async fn update(
     let (posted, end) = input.dates(now)?;
     let mut tx = crate::db::begin_write(&s.pool).await?;
     input.validate(&mut tx).await?;
-    if input.retain_attachments
+    if input.retain_attachments == Some(true)
         && input
             .review
             .archive_until
@@ -191,7 +206,7 @@ pub async fn update(
         .fetch_optional(&mut *tx)
         .await?;
     let old = old.ok_or_else(missing)?;
-    if old.status != "draft" {
+    if old.status != "draft" || old.lock_state != "draft" {
         return Err(conflict(
             "Upravovat lze pouze koncept. Zveřejněné znění musí zůstat doložitelné.",
         ));
@@ -205,29 +220,56 @@ pub async fn update(
     }
     sqlx::query("UPDATE notices SET title=$1,description=$2,reference_number=$3,category_id=$4,issuer=$5,published_on=$6,withdraw_on=$7,retain_attachments=$8,updated_at=$9,review_json=$10 WHERE id=$11")
         .bind(input.title.trim()).bind(input.description).bind(input.reference_number).bind(input.category_id).bind(input.issuer)
-        .bind(posted).bind(end).bind(input.retain_attachments).bind(timestamp(now)).bind(serde_json::to_string(&input.review).unwrap()).bind(id).execute(&mut *tx).await?;
+        .bind(posted).bind(end).bind(input.retain_attachments.unwrap_or(false)).bind(timestamp(now)).bind(serde_json::to_string(&input.review).unwrap()).bind(id).execute(&mut *tx).await?;
     audit(&mut tx, Some(admin.id), "updated", "notice", id, now).await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublishInput {
+    pub token: String,
 }
 pub async fn publish(
     State(s): State<Backend>,
     admin: Admin,
     Path(id): Path<i64>,
+    Json(input): Json<PublishInput>,
 ) -> Result<StatusCode> {
-    publish_at(&s, id, admin.id, OffsetDateTime::now_utc()).await?;
+    publish_checked(
+        &s,
+        id,
+        admin.id,
+        OffsetDateTime::now_utc(),
+        Some(input.token),
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 pub async fn publish_at(s: &Backend, id: i64, actor: i64, now: OffsetDateTime) -> Result<()> {
+    publish_checked(s, id, actor, now, None).await
+}
+async fn publish_checked(
+    s: &Backend,
+    id: i64,
+    actor: i64,
+    now: OffsetDateTime,
+    token: Option<String>,
+) -> Result<()> {
     let mut tx = crate::db::begin_write(&s.pool).await?;
     let record: NoticeRecord = sqlx::query_as("SELECT * FROM notices WHERE id=$1")
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(missing)?;
-    if record.status != "draft" {
+    if record.status != "draft" || record.lock_state != "draft" {
         return Err(conflict("Zveřejnit lze pouze koncept."));
     }
+    let current_hash = super::registry::fingerprint(&mut tx, id).await?;
+    if token.as_ref().is_some_and(|t| t != &current_hash) {
+        return Err(conflict("Obsah se změnil. Načtěte nový finální náhled."));
+    }
+    sqlx::query("UPDATE documents SET posting_after_action=CASE WHEN retain_attachments THEN 'retain' ELSE 'hide' END,posting_public_until=(review_json::jsonb->>'archive_until')::date,scheduled_sha256=$2 WHERE id=$1").bind(id).bind(current_hash).execute(&mut *tx).await?;
     let posted = record
         .published_on
         .ok_or_else(|| bad("Datum vyvěšení není uvedeno."))?;
@@ -298,7 +340,7 @@ pub async fn publish_at(s: &Backend, id: i64, actor: i64, now: OffsetDateTime) -
             now,
         )
         .await?;
-        mail::enqueue_publication(&mut tx, mail::PublicationTarget::Notice(id), now).await?;
+        super::registry::start_posting(&mut tx, id, Some(actor), "Schválený náhled", now).await?;
     }
     tx.commit().await?;
     Ok(())
@@ -383,7 +425,7 @@ async fn return_to_draft(
 ) -> Result<()> {
     // A cancelled or missed schedule never made the record public. Keep its
     // attachments available to editors and do not create a public archive entry.
-    sqlx::query("UPDATE notices SET status='draft',updated_at=$1 WHERE id=$2")
+    sqlx::query("UPDATE documents SET board_status=CASE WHEN has_removed_posting THEN 'archived' ELSE 'draft' END,updated_at=$1 WHERE id=$2")
         .bind(timestamp(now))
         .bind(id)
         .execute(&mut *conn)
@@ -398,13 +440,14 @@ async fn archive_record(
     actor: Option<i64>,
     now: OffsetDateTime,
 ) -> Result<()> {
-    let changed = sqlx::query("UPDATE notices SET status='archived',withdrawn_at=COALESCE(withdrawn_at,$1),updated_at=$2 WHERE id=$3 AND status IN ('published','withdrawn')")
-        .bind(timestamp(now)).bind(timestamp(now)).bind(id).execute(&mut *conn).await?.rows_affected();
-    if changed == 0 {
-        return Err(conflict("Záznam nelze sejmout v tomto stavu."));
+    let postings:Vec<i64>=sqlx::query_scalar("SELECT id FROM document_postings WHERE document_id=$1 AND certainty='documented' AND removed_on IS NULL AND removed_at IS NULL ORDER BY id").bind(id).fetch_all(&mut *conn).await?;
+    if postings.is_empty() {
+        return Err(conflict("Není doloženo probíhající vyvěšení."));
     }
-    sqlx::query("UPDATE attachments SET data=NULL,removed_at=COALESCE(removed_at,$1) WHERE notice_id=$2 AND EXISTS(SELECT 1 FROM notices WHERE id=$3 AND retain_attachments=FALSE)")
-        .bind(timestamp(now)).bind(id).bind(id).execute(&mut *conn).await?;
+    for posting in postings {
+        super::registry::remove_posting(conn, posting, actor, "Sejmutí", now).await?;
+    }
+
     evidence(conn, id, actor, "withdrawn", serde_json::json!({}), now).await?;
     audit(conn, actor, "withdrawn", "notice", id, now).await
 }
@@ -412,7 +455,7 @@ async fn archive_record(
 /// Dohání i termíny z doby, kdy server neběžel. Opakovaný běh je idempotentní.
 pub async fn maintenance(s: &Backend, now: OffsetDateTime) -> Result<()> {
     let mut tx = crate::db::begin_write(&s.pool).await?;
-    let expired: Vec<i64> = sqlx::query_scalar("SELECT id FROM notices WHERE status='withdrawn' OR (status='published' AND withdraw_on IS NOT NULL AND withdraw_on<=$1) ORDER BY id LIMIT 500")
+    let expired: Vec<i64> = sqlx::query_scalar("SELECT d.id FROM documents d WHERE d.board_status='published' AND d.withdraw_on<=$1 AND EXISTS(SELECT 1 FROM document_postings p WHERE p.document_id=d.id AND p.origin='local' AND p.removed_at IS NULL AND p.removed_on IS NULL) ORDER BY d.id LIMIT 500")
         .bind(today(now)).fetch_all(&mut *tx).await?;
     for id in expired {
         archive_record(&mut tx, id, None, now).await?;
@@ -424,6 +467,18 @@ pub async fn maintenance(s: &Backend, now: OffsetDateTime) -> Result<()> {
     .fetch_all(&mut *tx)
     .await?;
     for record in scheduled {
+        if record.access_blocked {
+            return_to_draft(
+                &mut tx,
+                record.id,
+                None,
+                "schedule_cancelled",
+                serde_json::json!({"reason":"Místní zákaz zveřejnění"}),
+                now,
+            )
+            .await?;
+            continue;
+        }
         if record
             .published_on
             .is_some_and(|posted| posted < today(now))
@@ -457,10 +512,16 @@ pub async fn maintenance(s: &Backend, now: OffsetDateTime) -> Result<()> {
             now,
         )
         .await?;
-        mail::enqueue_publication(&mut tx, mail::PublicationTarget::Notice(record.id), now).await?;
+        super::registry::start_posting(
+            &mut tx,
+            record.id,
+            None,
+            "Plánované vyvěšení schválené podoby",
+            now,
+        )
+        .await?;
     }
-    sqlx::query("UPDATE attachments SET data=NULL,removed_at=COALESCE(removed_at,$1) WHERE notice_id IN (SELECT id FROM notices WHERE status IN ('archived','withdrawn') AND (retain_attachments=FALSE OR (review_json::jsonb->>'archive_until') IS NULL OR (review_json::jsonb->>'archive_until')::date<=$2)) AND data IS NOT NULL")
-        .bind(timestamp(now)).bind(today(now)).execute(&mut *tx).await?;
+    sqlx::query("UPDATE documents SET attachments_public=FALSE WHERE board_status IN ('archived','withdrawn') AND attachments_public AND posting_public_until<=$1").bind(today(now)).execute(&mut *tx).await?;
     // Úklid relací a tokenů.
     sqlx::query("DELETE FROM sessions WHERE expires_at<=$1")
         .bind(now.unix_timestamp())
@@ -508,19 +569,22 @@ pub async fn public_list(
     }
     .bounds()?;
     let now = OffsetDateTime::now_utc();
-    let rows:Vec<NoticeRecord>=sqlx::query_as("SELECT * FROM notices WHERE ($1=FALSE AND status='published' AND (published_on IS NULL OR published_on<=$2) AND (withdraw_on IS NULL OR withdraw_on>$3)) OR ($4=TRUE AND (status IN ('withdrawn','archived') OR (status='published' AND withdraw_on<=$5))) ORDER BY published_on DESC NULLS LAST,id DESC LIMIT $6 OFFSET $7")
-        .bind(q.archived).bind(today(now)).bind(today(now)).bind(q.archived).bind(today(now)).bind(limit).bind(offset).fetch_all(&s.pool).await?;
+    let rows:Vec<NoticeRecord>=sqlx::query_as("SELECT n.* FROM notices n JOIN documents d ON d.id=n.id WHERE document_is_public(d,$2) AND (($1=FALSE AND n.status='published' AND d.has_current_posting) OR ($1=TRUE AND n.status IN ('archived','withdrawn') AND d.has_removed_posting)) ORDER BY n.published_on DESC NULLS LAST,n.id DESC LIMIT $3 OFFSET $4")
+        .bind(q.archived).bind(today(now)).bind(limit).bind(offset).fetch_all(&s.pool).await?;
     Ok(Json(rows.into_iter().map(|r| r.into_public(now)).collect()))
 }
 pub async fn detail(State(s): State<Backend>, Path(id): Path<i64>) -> Result<Json<NoticeDetail>> {
     let record:NoticeRecord = sqlx::query_as(
-        "SELECT * FROM notices WHERE id=$1 AND status IN ('published','withdrawn','archived') AND (status='archived' OR published_on IS NULL OR published_on<=$2)",
+        "SELECT n.* FROM notices n JOIN documents d ON d.id=n.id WHERE n.id=$1 AND document_is_public(d,$2)",
     ).bind(id).bind(today(OffsetDateTime::now_utc())).fetch_optional(&s.pool).await?.ok_or_else(missing)?;
     let files =
         super::documents::public_notice_files(&s.pool, id, OffsetDateTime::now_utc()).await?;
     Ok(Json(NoticeDetail {
         record: record.into_public(OffsetDateTime::now_utc()),
         attachments: files,
+        postings: super::registry::postings(&s.pool, id, true).await?,
+        relations: super::documents::public_relations(&s.pool, id).await?,
+        origin: None,
     }))
 }
 
@@ -542,33 +606,24 @@ impl NoticeRecord {
         serde_json::from_str(&self.review_json)
             .map_err(|_| conflict("Poškozené nastavení vyvěšení."))
     }
-    pub fn active(&self, now: OffsetDateTime) -> bool {
-        self.status == "published"
-            && self.published_on.is_none_or(|posted| posted <= today(now))
-            && self.withdraw_on.is_none_or(|d| d > today(now))
+    pub fn active(&self, _now: OffsetDateTime) -> bool {
+        self.status == "published" && self.public_access && !self.access_blocked
     }
     pub fn files_public(&self, now: OffsetDateTime) -> bool {
-        self.active(now)
-            || (matches!(self.status.as_str(), "published" | "archived" | "withdrawn")
-                && self.retain_attachments
-                && self.review().is_ok_and(|r| {
-                    !r.archive_basis.trim().is_empty()
-                        && r.archive_until.is_some_and(|end| end > today(now))
-                }))
+        self.public_access
+            && !self.access_blocked
+            && self.public_until.is_none_or(|d| d > today(now))
+            && (self.status == "published" || self.retain_attachments)
     }
-    pub fn into_public(mut self, now: OffsetDateTime) -> Self {
-        if !self.active(now) {
-            let review = self.review().unwrap_or_default();
-            self.title = if review.archive_title.trim().is_empty() {
-                format!("Záznam úřední desky #{}", self.id)
-            } else {
-                review.archive_title
-            };
+    pub fn into_public(mut self, _now: OffsetDateTime) -> Self {
+        if self.metadata_restricted {
+            self.title = self
+                .public_title
+                .clone()
+                .unwrap_or_else(|| format!("Záznam úřední desky #{}", self.id));
             self.description = None;
             self.reference_number = None;
             self.issuer = None;
-            self.status = "archived".into();
-            self.retain_attachments = self.files_public(now);
         }
         self.review_json = "{}".into();
         self

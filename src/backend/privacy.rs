@@ -198,16 +198,19 @@ pub async fn maintenance(s: &Backend, now: OffsetDateTime) -> Result<()> {
         .bind(&notice_cutoff)
         .execute(&mut *tx)
         .await?;
+    sqlx::query("WITH expired AS (UPDATE documents SET public_access=FALSE,access_blocked=TRUE WHERE board_status IN ('archived','withdrawn') AND withdrawn_at<$1 AND public_access RETURNING id) INSERT INTO document_events(document_id,kind,reason,payload) SELECT id,'retention_access_ended','Configured internal retention period ended',jsonb_build_object('cutoff',$1::text) FROM expired").bind(&notice_cutoff).execute(&mut *tx).await?;
     let proofs=sqlx::query("DELETE FROM notice_events WHERE occurred_at<$1 AND notice_id IN (SELECT id FROM notices WHERE status IN ('archived','withdrawn') AND withdrawn_at<$2)")
         .bind(&notice_cutoff).bind(&notice_cutoff).execute(&mut *tx).await?.rows_affected();
+    // Separate retention disposition. Withdrawal itself never destroys attachment bytes.
+    let records=sqlx::query("INSERT INTO document_disposals(document_id,disposed_at,policy_cutoff,content_sha256,attachment_hashes) SELECT d.id,$2::timestamptz,$1::timestamptz,d.content_sha256,coalesce((SELECT jsonb_agg(jsonb_build_object('id',a.id,'sha256',a.sha256,'size_bytes',a.size_bytes) ORDER BY a.id) FROM attachments a WHERE a.document_id=d.id),'[]'::jsonb) FROM documents d WHERE d.board_status IN ('archived','withdrawn') AND d.withdrawn_at<$1 AND NOT d.public_access AND d.disposed_at IS NULL ON CONFLICT DO NOTHING")
+        .bind(&notice_cutoff).bind(timestamp(now)).execute(&mut *tx).await?.rows_affected();
+    sqlx::query("UPDATE attachments SET name='Příloha #'||id,data=NULL,removed_at=coalesce(removed_at,$1) WHERE document_id IN (SELECT document_id FROM document_disposals WHERE policy_cutoff=$2::timestamptz) AND data IS NOT NULL")
+        .bind(timestamp(now)).bind(&notice_cutoff).execute(&mut *tx).await?;
+    sqlx::query("UPDATE documents SET title='Skartovaný dokument #'||id,description='',reference_number=NULL,issuer=NULL,disposed_at=$2::timestamptz WHERE id IN(SELECT document_id FROM document_disposals WHERE policy_cutoff=$1::timestamptz) AND disposed_at IS NULL")
+        .bind(&notice_cutoff).bind(timestamp(now)).execute(&mut *tx).await?;
     sqlx::query("UPDATE privacy_maintenance SET notice_delete_before=NULL WHERE id=1")
         .execute(&mut *tx)
         .await?;
-    // Keep the permanent public record, remove internal text once its separate purpose expires.
-    let records=sqlx::query("UPDATE notices SET title='Záznam úřední desky #'||id,description=NULL,reference_number=NULL,issuer=NULL,review_json='{}',retain_attachments=FALSE WHERE status IN ('archived','withdrawn') AND withdrawn_at<$1 AND (description IS NOT NULL OR reference_number IS NOT NULL OR issuer IS NOT NULL OR review_json<>'{}' OR title<>'Záznam úřední desky #'||id)")
-        .bind(&notice_cutoff).execute(&mut *tx).await?.rows_affected();
-    sqlx::query("UPDATE attachments SET name='Příloha #'||id,data=NULL,removed_at=COALESCE(removed_at,$1) WHERE notice_id IN (SELECT id FROM notices WHERE status IN ('archived','withdrawn') AND withdrawn_at<$2) AND (name<>'Příloha #'||id OR data IS NOT NULL OR removed_at IS NULL)")
-        .bind(timestamp(now)).bind(&notice_cutoff).execute(&mut *tx).await?;
     if mail + subscribers + consents + events + proofs + records > 0 {
         audit(&mut tx, None, "retention_applied", "privacy", 1, now).await?;
         // Aggregate counts only. Never copy erased identities into another log.

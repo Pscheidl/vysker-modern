@@ -16,19 +16,28 @@ pub(crate) async fn import_origin(
     document_id: Option<i64>,
     show_link: bool,
 ) -> sqlx::Result<Option<crate::content::ImportOrigin>> {
-    let source: Option<String> = sqlx::query_scalar(
-        "SELECT s.source_url FROM legacy_sources s
-        LEFT JOIN legacy_notice_imports n ON n.source_key=s.source_key
-        WHERE s.notice_id=$1 OR n.notice_id=$1 OR s.document_id=$2
+    let source: Option<(String, bool)> = sqlx::query_as(
+        "WITH source_keys AS (
+            SELECT source_key FROM legacy_sources WHERE document_id=ANY(ARRAY[$1::bigint,$2::bigint])
+            UNION SELECT source_key FROM legacy_notice_imports WHERE notice_id=$1
+            UNION SELECT source_key FROM document_import_revisions WHERE accepted_document_id=ANY(ARRAY[$1::bigint,$2::bigint])
+        ) SELECT s.source_url,(s.attachment_id IS NULL OR EXISTS(
+            SELECT 1 FROM attachments a WHERE a.id=s.attachment_id AND a.is_public
+            AND a.data IS NOT NULL AND a.removed_at IS NULL)) AS link_allowed
+        FROM source_keys k JOIN legacy_sources s USING(source_key)
         ORDER BY (s.attachment_id IS NOT NULL),s.source_key LIMIT 1",
     )
     .bind(notice_id)
     .bind(document_id)
     .fetch_optional(pool)
     .await?;
-    Ok(source.map(|source| crate::content::ImportOrigin {
-        source_url: show_link.then(|| source_link(&source)).flatten(),
-    }))
+    Ok(
+        source.map(|(source, link_allowed)| crate::content::ImportOrigin {
+            source_url: (show_link && link_allowed)
+                .then(|| source_link(&source))
+                .flatten(),
+        }),
+    )
 }
 
 fn source_link(source: &str) -> Option<String> {
@@ -143,12 +152,32 @@ pub async fn redirects(State(state): State<Backend>, request: Request, next: Nex
             };
             return (StatusCode::MOVED_PERMANENTLY, [(header::LOCATION, target)]).into_response();
         }
+        if let Some(old_id) = request
+            .uri()
+            .path()
+            .strip_prefix("/uredni-deska/")
+            .and_then(|v| v.trim_end_matches('/').parse::<i64>().ok())
+        {
+            let found:Result<Option<i64>,_>=sqlx::query_scalar("SELECT d.id FROM documents d WHERE d.id=coalesce((SELECT document_id FROM document_legacy_ids WHERE old_model='notice' AND old_id=$1),$1) AND document_is_public(d,(now() AT TIME ZONE 'Europe/Prague')::date)").bind(old_id).fetch_optional(&state.pool).await;
+            return match found {
+                Ok(Some(id)) => (
+                    StatusCode::MOVED_PERMANENTLY,
+                    [
+                        (header::LOCATION, format!("/dokumenty/{id}")),
+                        (header::CACHE_CONTROL, "no-store".to_string()),
+                    ],
+                )
+                    .into_response(),
+                Ok(None) => StatusCode::NOT_FOUND.into_response(),
+                Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+            };
+        }
         if request.uri().path().eq_ignore_ascii_case("/index.asp") {
             return (StatusCode::MOVED_PERMANENTLY, [(header::LOCATION, "/")]).into_response();
         }
         if let Some(key) = source_key(request.uri().path(), request.uri().query()) {
             let found: Result<Option<String>, _> = sqlx::query_scalar(
-                "SELECT s.destination FROM legacy_sources s LEFT JOIN pages p ON p.id=s.page_id LEFT JOIN documents d ON d.id=s.document_id LEFT JOIN notices n ON n.id=s.notice_id LEFT JOIN events e ON e.id=s.event_id WHERE s.source_key=$1 AND (p.published=TRUE OR d.status='published' OR n.status IN ('published','archived','withdrawn') OR e.published=TRUE)"
+                "SELECT s.destination FROM legacy_sources s LEFT JOIN pages p ON p.id=s.page_id LEFT JOIN documents d ON d.id=s.document_id LEFT JOIN notices n ON n.id=s.notice_id LEFT JOIN events e ON e.id=s.event_id WHERE s.source_key=$1 AND (p.published=TRUE OR document_is_public(d,(now() AT TIME ZONE 'Europe/Prague')::date) OR e.published=TRUE)"
             ).bind(key).fetch_optional(&state.pool).await;
             match found {
                 Ok(Some(target))
@@ -191,25 +220,16 @@ pub async fn admin_media(
 }
 
 pub async fn media(State(state): State<Backend>, Path(id): Path<i64>) -> super::Result<Response> {
-    let file: Option<(String, Vec<u8>, Option<i64>)> = sqlx::query_as(
-        "SELECT a.content_type,a.data,a.notice_id FROM attachments a LEFT JOIN documents d ON d.id=a.document_id JOIN legacy_sources s ON s.attachment_id=a.id WHERE a.id=$1 AND (d.status='published' OR a.notice_id IS NOT NULL) AND a.removed_at IS NULL AND a.data IS NOT NULL AND a.content_type IN ('image/png','image/jpeg','image/gif','image/webp')"
+    let file: Option<(String, Vec<u8>)> = sqlx::query_as(
+        "SELECT a.content_type,a.data FROM attachments a JOIN documents d ON d.id=a.document_id WHERE a.id=$1 AND document_files_public(d,(now() AT TIME ZONE 'Europe/Prague')::date) AND a.is_public AND a.removed_at IS NULL AND a.data IS NOT NULL AND a.content_type IN ('image/png','image/jpeg','image/gif','image/webp') AND EXISTS(SELECT 1 FROM legacy_sources s WHERE s.attachment_id=a.id)"
     ).bind(id).fetch_optional(&state.pool).await?;
-    let (mime, bytes, notice_id) = file.ok_or_else(missing)?;
-    if let Some(id) = notice_id {
-        let record: super::notices::NoticeRecord =
-            sqlx::query_as("SELECT * FROM notices WHERE id=$1")
-                .bind(id)
-                .fetch_one(&state.pool)
-                .await?;
-        if !record.files_public(time::OffsetDateTime::now_utc()) {
-            return Err(missing());
-        }
-    }
+    let (mime, bytes) = file.ok_or_else(missing)?;
     image_response(mime, bytes)
 }
 
 fn image_response(mime: String, bytes: Vec<u8>) -> super::Result<Response> {
     let mut headers = HeaderMap::new();
+    headers.insert(header::CACHE_CONTROL, "no-store, private".parse().unwrap());
     headers.insert(header::CONTENT_TYPE, mime.parse().map_err(|_| missing())?);
     headers.insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
     headers.insert(

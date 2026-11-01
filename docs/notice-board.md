@@ -6,7 +6,7 @@ Categories help visitors navigate. The legal publication rule is selected separa
 
 | Rule | Application behavior |
 | --- | --- |
-| Informational notice | Defaults to 15 days with a manual override, without claiming a statutory minimum |
+| Informational notice | The operator supplies the intended interval or leaves the plan open, without a claimed statutory minimum |
 | Service by public notice under Section 25 | Publication day is day 0. The fifteenth day is included, with a weekend or Czech public holiday moved to the next working day. Withdrawal starts no earlier than the following day |
 | Municipal property disposal intention | Conservatively requires 15 complete calendar days after publication day before the decision |
 | Council meeting announcement | Conservatively requires seven complete calendar days after publication day before the meeting, with visibility through the meeting day |
@@ -15,73 +15,124 @@ Categories help visitors navigate. The legal publication rule is selected separa
 These profiles do not determine which law applies to a particular document.
 Special rules or circumstances may require another profile, later withdrawal or
 publication without an end date. A manually entered date or interval cannot be
-shorter than the calculated minimum. `withdraw_on` is **the first day the notice
-is no longer published**, in the Europe/Prague time zone.
+shorter than the calculated minimum. `withdraw_on` is the planned first day outside the posting interval in the
+Europe/Prague time zone. Actual removal is recorded separately.
 
 References: [SÚKL on Section 25 and time limits](https://sukl.gov.cz/probihajici-a-planovana-rizeni/informace-o-dorucovani-verejnou-vyhlaskou/),
 [Ministry of the Interior on municipal property and meetings](https://mv.gov.cz/povinnosti-pri-nakladani-s-majetkem-obce).
 
-## Review before publication
+## One document and distinct posting events
 
-In production, an administrator must specify the rule, legal basis and internal
-reference to the stored official original, and confirm review of content,
-personal data and attachment accessibility. The website cannot assess the
-lawfulness of a document or the accessibility of a particular PDF. Internal
-review information remains available only to authorized administrators.
+`documents` is the canonical content table for ordinary records and official
+notice-board records. `document_postings` stores each posting with its source,
+certainty, precise content fingerprint, planned removal and actual removal.
+The `notices` compatibility view is only an adapter over this same content table.
+It is not a second content store.
 
-Publication cannot be backdated. Published and scheduled notices are immutable.
-Corrections require a new notice. A future date schedules publication, while
-`published_at` records the actual publication time. If the server misses the
-scheduled day, it returns a still-valid notice to draft and records
-`schedule_missed`. A schedule whose entire interval has expired is archived
-without sending notifications or claiming that publication actually occurred.
+The public **Dokumenty** catalogue contains every currently public document.
+**Úřední deska → Aktuálně vyvěšeno** contains documents with an actual current
+posting. **Veřejný archiv** contains removed postings whose document metadata
+remains public. A retained record may have private attachments, according to the
+explicit decision made for that posting. A wholly hidden document is absent from
+both views and from public search. All views link to `/dokumenty/{id}`.
 
-Withdrawal before the minimum requires an explicit emergency action with a
-reason, for example a personal data disclosure. This does not establish that
-the statutory publication period was satisfied. The responsible administrator
-must decide what happens next, including any repeat publication. Production
-also requires a reason for ordinary manual withdrawal.
+A passed planned date alone does not prove an actual removal. The worker records
+the removal transaction and then updates the current-state projection. Public
+posting history distinguishes the plan and the recorded event. Missing source
+dates stay missing. A source day is not expanded into an invented event time.
+Actual event timestamps are stored consistently and presented in Europe/Prague.
 
-## Archive and attachments
+## Review and permanent content locking
 
-The notice record is never deleted. By default, the public archive displays
-only its identifier, category and dates. An optional archive title must contain
-no personal data. The original description, reference number, issuer and names
-of unavailable attachments are no longer public. This projection applies to
-both the API and SSR immediately at expiry, before the next maintenance run.
+In production, the administrator specifies the rule, legal basis and internal
+reference to the stored official original, and confirms review of content,
+personal data and attachment accessibility. These internal details are not part
+of the public document. The application cannot determine whether the underlying
+publication is legally sufficient.
 
-Attachment contents are removed from the web database on withdrawal by default.
-Keeping them in the public archive requires a basis and an end date. Access ends
-on that date and maintenance removes the contents. Legacy notices without
-supported archive settings are not treated as permission to keep publishing
-files. Review active notices and justified archive publication before migration.
+Choose **Zkontrolovat finální náhled** and review the exact saved title, text,
+reference number, issuer and ordered files. The warning is **Po vyvěšení již
+obsah dokumentu nelze upravit.** The submitted token binds approval to these
+content bytes and metadata. Concurrent edits or uploads require a new preview.
+The shared write transaction and database guards prevent a publication/edit race.
 
-Official originals must be stored in the municipal records management system
-before publication. The website database and its backups do not replace that
-system. A pre-migration backup is also necessary because cleanup may remove
-legacy archive attachments.
+The first actual posting permanently locks the content and the complete ordered
+attachment list. Administrative APIs, imports and maintenance cannot modify,
+add, remove or replace those attachments or unlock the document. Withdrawal,
+hiding or another posting does not change this lock. The database retains the
+SHA-256 fingerprints and stored bytes under stable attachment identifiers.
 
-Public responses containing official notices use `no-store` and `X-Robots-Tag`
-to restrict caching and indexing. They cannot retract copies already downloaded.
-Reference: [ÚOOÚ on service through official notice boards](https://uoou.gov.cz/poznatek-z-dozorove-cinnosti-k-dorucovani-pisemnosti-na-uredni-desce).
+A future local date schedules the reviewed content. Cancelling a schedule records
+its reason, keeps attachments and refuses cancellation after actual posting.
+If the server misses a scheduled date it must not manufacture an earlier actual
+event or silently satisfy a legal period. Review the recorded missed schedule.
 
-## Publication evidence and outages
+An anonymized version selected for later release has its own final preview and
+confirmation token. Confirmation freezes the approved copy before it can be
+released after removal. Its administrative state is **Uzamčeno**, without an
+invented posting event or a claim that its bytes were originally posted.
 
-Administration can download JSON evidence through
-`GET /api/v1/admin/notices/{id}/evidence`. It includes the current internal record,
-actual transition times, published record fingerprints and attachment SHA-256
-hashes. Events are protected against modification and deletion during the approved
-`retention.notice_internal_days` period after withdrawal. Controlled cleanup then
-removes them and the internal text. Evidence contains no copies of the files.
-Attach it to the official case record after withdrawal under municipal procedures.
+Corrections, supplements, replacement documents and anonymized versions are new
+linked concepts with new IDs and their own attachment records. They are not
+automatically public or posted. Reposting an unchanged locked document adds a new
+posting event. Neither creating a correction nor importing history starts a new
+legal period by itself.
 
-The incident form records UTC times and a description of the response. The API
-is `POST /api/v1/admin/notices/{id}/incidents` with RFC 3339 `started_at` and
-`ended_at` values and a `reason`. Do not include personal data in the reason.
-Events are not cryptographically signed and do not independently prove continuous
-internet availability or the state of the physical notice board. Independent
-monitoring and municipal records cover those aspects.
+## Mandatory attachment availability decision
 
-After an outage, the responsible person assesses delivery effects, any need to
-repeat publication and consistency with the physical board. The application
-does not silently extend the publication interval.
+There is no preselected post-removal access policy. The operator must explicitly
+choose **Po sejmutí ponechat přílohy veřejné** or **Po sejmutí přílohy pouze pro
+administrátory**, or choose a separately linked anonymized version. The draft
+notice form and the final posting form require this choice.
+
+Admin-only access after removal hides filenames and downloads from the public
+detail and all public file routes. The immutable original bytes remain available
+to authenticated administrators. Public access to the whole document is a
+separate operation. **Ukončit veřejné zpřístupnění** hides the detail, search
+result, public APIs and every direct or legacy attachment link and records an
+internal reason. Importers cannot reverse that local decision.
+
+This access choice is independent of content locking. Routine removal does not
+delete posted bytes. Retention and disposal remain separate controlled processes
+with their own approved policy. The editorial workflow neither promises
+unlimited storage nor provides a bypass for modifying a posted original.
+Municipal originals must also be retained in the appropriate records system.
+Database backups include the web's retained attachments.
+
+Download authorization checks current database access on every request and does
+not depend on search-index refresh. File and document responses use no-store
+cache controls. Access revocation cannot retract copies already downloaded.
+
+## Imported history and evidence
+
+Imported publication dates, local import time, last source observation and local
+posting are separate facts. Historical takeover does not create a local posting
+or announce old records as new publications. Documented source postings lock the
+accepted content. Unclear history blocks content changes for review without
+claiming that a posting has been proved.
+
+Where only today's captured copy is available, the history records capture at
+migration and does not claim that its bytes are verified as the original
+historically posted version. Hashes detect byte changes but do not prove when a
+file was published or continuous availability.
+
+A changed locked source produces a private revision. Acceptance creates a new
+linked concept, while the old document and files stay intact. An unchanged
+repeat import creates no new record, posting, conflict or announcement. Missing
+source items and failed downloads are not deletion or removal instructions.
+
+**Zobrazit historii a interní audit** shows original operational events and
+subsequent plan changes. Corrections to evidence dates are appended with old and
+new values. Public history shows the original date and a separate correction
+note, while audit reasons remain private. The older notice evidence
+endpoint remains available for historical incident evidence:
+`GET /api/v1/admin/notices/{id}/evidence`.
+
+The incident endpoint accepts UTC RFC3339 `started_at`, `ended_at` and an
+internal reason at `POST /api/v1/admin/notices/{id}/incidents`. Recording an
+incident does not change the posting period. Responsible staff must assess
+its consequences using the municipal records and independent monitoring.
+
+Application events, hashes, successful imports and tests do not prove legally
+correct posting on the physical official notice board. They are technical
+records of the application's actions and the source evidence available to it.

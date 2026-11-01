@@ -121,7 +121,7 @@ async fn default_is_fifteen_days_and_no_file_retention() {
 }
 
 #[tokio::test]
-async fn withdrawal_removes_bytes_but_preserves_record_metadata_and_audit() {
+async fn withdrawal_hides_files_but_preserves_locked_bytes_metadata_and_audit() {
     let app = App::new().await;
     let id = app.notice(json!({})).await;
     let uploaded = app
@@ -188,10 +188,9 @@ async fn withdrawal_removes_bytes_but_preserves_record_metadata_and_audit() {
     )
     .await;
     assert_eq!(detail["status"], "archived");
-    assert_eq!(detail["attachments"][0]["name"], format!("Příloha #{file}"));
-    assert_eq!(detail["attachments"][0]["available"], false);
+    assert!(detail["attachments"].as_array().unwrap().is_empty());
     let removed: bool = sqlx::query_scalar(
-        "SELECT data IS NULL AND removed_at IS NOT NULL FROM attachments WHERE id=$1",
+        "SELECT data IS NOT NULL AND removed_at IS NULL FROM attachments WHERE id=$1",
     )
     .bind(file)
     .fetch_one(&app.state.pool)
@@ -389,7 +388,7 @@ async fn missed_schedule_returns_to_draft_without_announcing_expired_document() 
 }
 
 #[tokio::test]
-async fn expired_nonretained_file_is_hidden_even_before_worker_runs() {
+async fn planned_removal_waits_for_an_actual_recorded_worker_transition() {
     let app = App::new().await;
     let id = app.notice(json!({})).await;
     let file = body_json(
@@ -404,18 +403,16 @@ async fn expired_nonretained_file_is_hidden_even_before_worker_runs() {
         .as_i64()
         .unwrap();
     app.publish(id).await;
-    sqlx::query(
-        "UPDATE notices SET published_on='2020-01-01',withdraw_on='2020-01-16' WHERE id=$1",
-    )
-    .bind(id)
-    .execute(&app.state.pool)
-    .await
-    .unwrap();
+    sqlx::query("UPDATE documents SET withdraw_on='2020-01-16' WHERE id=$1")
+        .bind(id)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
     assert_eq!(
         app.call("GET", &format!("/api/v1/attachments/{file}"), None, false)
             .await
             .status(),
-        StatusCode::NOT_FOUND
+        StatusCode::OK
     );
     notices::maintenance(&app.state, OffsetDateTime::now_utc())
         .await
@@ -427,6 +424,20 @@ async fn expired_nonretained_file_is_hidden_even_before_worker_runs() {
             .await
             .unwrap();
     assert_eq!(count, 1);
+    assert_eq!(
+        app.call("GET", &format!("/api/v1/attachments/{file}"), None, false)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let preserved: bool = sqlx::query_scalar(
+        "SELECT data IS NOT NULL AND removed_at IS NULL FROM attachments WHERE id=$1",
+    )
+    .bind(file)
+    .fetch_one(&app.state.pool)
+    .await
+    .unwrap();
+    assert!(preserved);
 }
 
 #[tokio::test]
@@ -674,7 +685,7 @@ async fn generic_documents_and_pages_are_private_until_published() {
         app.call(
             "POST",
             &format!("/api/v1/admin/documents/{id}/archive"),
-            None,
+            Some(json!({"reason":"Ukončení veřejného zpřístupnění v testu"})),
             true
         )
         .await

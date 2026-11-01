@@ -3,6 +3,26 @@ use crate::content::{Attachment, ImportOrigin};
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
+/// Missing source dates are displayed without substituting the import date.
+pub fn document_date(value: &str) -> String {
+    let day = value.get(..10).unwrap_or(value);
+    let parts: Vec<_> = day.split('-').collect();
+    if parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+    {
+        format!(
+            "{}. {}. {}",
+            parts[2].trim_start_matches('0'),
+            parts[1].trim_start_matches('0'),
+            parts[0]
+        )
+    } else {
+        "Datum není uvedeno".into()
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Document {
     pub id: i64,
@@ -10,8 +30,71 @@ pub struct Document {
     pub description: String,
     pub files: Vec<Attachment>,
     #[serde(default)]
+    pub reference_number: Option<String>,
+    #[serde(default)]
+    pub issuer: Option<String>,
+    #[serde(default)]
+    pub document_date: Option<String>,
+    #[serde(default)]
+    pub topic: Option<String>,
+    #[serde(default)]
+    pub postings: Vec<DocumentPosting>,
+    #[serde(default)]
+    pub relations: Vec<DocumentRelation>,
+    #[serde(default)]
     pub import_origin: Option<ImportOrigin>,
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DocumentPosting {
+    pub id: i64,
+    pub origin: String,
+    pub certainty: String,
+    pub started_on: Option<String>,
+    pub started_at: Option<String>,
+    pub planned_removal_on: Option<String>,
+    pub removed_on: Option<String>,
+    pub removed_at: Option<String>,
+    #[serde(default)]
+    pub corrections: Vec<PostingCorrection>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PostingCorrection {
+    pub id: i64,
+    pub field: String,
+    pub original: Option<String>,
+    pub corrected: Option<String>,
+    pub recorded_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ssr", derive(sqlx::FromRow))]
+pub struct DocumentRelation {
+    pub id: i64,
+    pub title: String,
+    pub kind: String,
+    pub direction: String,
+}
+
+pub fn document_event_date(timestamp: Option<&str>, day: Option<&str>) -> String {
+    timestamp
+        .and_then(|value| {
+            time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok()
+        })
+        .map(|value| {
+            format!(
+                "{}. {}. {} v {:02}:{:02} (Europe/Prague)",
+                value.day(),
+                value.month() as u8,
+                value.year(),
+                value.hour(),
+                value.minute()
+            )
+        })
+        .or_else(|| day.map(document_date))
+        .unwrap_or_else(|| "Není doloženo".into())
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Page {
     pub title: String,
@@ -39,20 +122,48 @@ pub async fn document_from_pool(
     pool: &sqlx::PgPool,
     id: i64,
 ) -> Result<Option<Document>, ServerFnError> {
-    let row: Option<(String, String)> = sqlx::query_as(
-        "SELECT title,description FROM documents WHERE id=$1 AND status='published'",
+    let today = crate::backend::today(time::OffsetDateTime::now_utc());
+    #[derive(sqlx::FromRow)]
+    struct Record {
+        title: String,
+        description: String,
+        reference_number: Option<String>,
+        issuer: Option<String>,
+        document_date: Option<String>,
+        topic: Option<String>,
+        files_public: bool,
+    }
+    let record: Option<Record> = sqlx::query_as(
+        "SELECT CASE WHEN d.metadata_restricted THEN coalesce(d.public_title,'Dokument #'||d.id) ELSE d.title END AS title,
+         CASE WHEN d.metadata_restricted THEN '' ELSE coalesce(d.description,'') END AS description,
+         CASE WHEN d.metadata_restricted THEN NULL ELSE d.reference_number END AS reference_number,
+         CASE WHEN d.metadata_restricted THEN NULL ELSE d.issuer END AS issuer,
+         d.catalog_date::text AS document_date,c.name AS topic,document_files_public(d,$2) AS files_public
+         FROM documents d LEFT JOIN categories c ON c.id=d.category_id
+         WHERE d.id=$1 AND document_is_public(d,$2)",
     )
     .bind(id)
+    .bind(today)
     .fetch_optional(pool)
     .await
     .map_err(|_| ServerFnError::new("Dokument nelze načíst."))?;
-    let Some((title, description)) = row else {
+    let Some(record) = record else {
         return Ok(None);
     };
-    let rows:Vec<(i64,String,i64,bool)>=sqlx::query_as("SELECT id,name,size_bytes,data IS NOT NULL AND removed_at IS NULL FROM attachments WHERE document_id=$1 ORDER BY sort_order,id").bind(id).fetch_all(pool).await.map_err(|_|ServerFnError::new("Přílohy nelze načíst."))?;
+    let rows: Vec<(i64, String, i64)> = sqlx::query_as(
+        "SELECT id,name,size_bytes FROM attachments
+         WHERE document_id=$1 AND is_public AND data IS NOT NULL AND removed_at IS NULL
+         AND EXISTS(SELECT 1 FROM documents d WHERE d.id=$1 AND document_files_public(d,$2))
+         ORDER BY sort_order,id",
+    )
+    .bind(id)
+    .bind(today)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| ServerFnError::new("Přílohy nelze načíst."))?;
     let files = rows
         .into_iter()
-        .map(|(id, name, size, available)| Attachment {
+        .map(|(id, name, size)| Attachment {
             name,
             size: if size < 1024 {
                 format!("{size} B")
@@ -61,20 +172,99 @@ pub async fn document_from_pool(
             } else {
                 format!("{:.1} MB", size as f64 / 1_048_576.0)
             },
-            removed: !available,
-            url: available.then(|| format!("/api/v1/attachments/{id}")),
+            removed: false,
+            url: Some(format!("/api/v1/attachments/{id}")),
         })
         .collect();
+    #[derive(sqlx::FromRow)]
+    struct Posting {
+        id: i64,
+        origin: String,
+        certainty: String,
+        started_on: Option<time::Date>,
+        started_at: Option<time::OffsetDateTime>,
+        planned_removal_on: Option<time::Date>,
+        removed_on: Option<time::Date>,
+        removed_at: Option<time::OffsetDateTime>,
+    }
+    let postings: Vec<Posting> = sqlx::query_as(
+        "SELECT id,origin,certainty,started_on,started_at,planned_removal_on,removed_on,removed_at
+         FROM document_postings WHERE document_id=$1 ORDER BY started_on DESC NULLS LAST,id DESC",
+    )
+    .bind(id)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| ServerFnError::new("Historii vyvěšení nelze načíst."))?;
+    let timestamp = |value: time::OffsetDateTime| {
+        use time_tz::OffsetDateTimeExt;
+        value
+            .to_timezone(time_tz::timezones::db::europe::PRAGUE)
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default()
+    };
+    let corrections:Vec<(i64,i64,String,Option<String>,Option<String>,time::OffsetDateTime)>=sqlx::query_as(
+        "SELECT id,(payload->>'posting_id')::bigint,payload->>'field',payload->>'original',payload->>'corrected',occurred_at
+         FROM document_events WHERE document_id=$1 AND kind='evidence_corrected' ORDER BY id"
+    ).bind(id).fetch_all(pool).await.map_err(|_|ServerFnError::new("Opravy evidenčních údajů nelze načíst."))?;
+    let postings = postings
+        .into_iter()
+        .map(|posting| DocumentPosting {
+            id: posting.id,
+            origin: posting.origin,
+            certainty: posting.certainty,
+            started_on: posting.started_on.map(|v| v.to_string()),
+            started_at: posting.started_at.map(timestamp),
+            planned_removal_on: posting.planned_removal_on.map(|v| v.to_string()),
+            removed_on: posting.removed_on.map(|v| v.to_string()),
+            removed_at: posting.removed_at.map(timestamp),
+            corrections: corrections
+                .iter()
+                .filter(|item| item.1 == posting.id)
+                .map(|item| PostingCorrection {
+                    id: item.0,
+                    field: item.2.clone(),
+                    original: item.3.clone(),
+                    corrected: item.4.clone(),
+                    recorded_at: timestamp(item.5),
+                })
+                .collect(),
+        })
+        .collect();
+    let relations: Vec<DocumentRelation> = sqlx::query_as(
+        "SELECT d.id,CASE WHEN d.metadata_restricted THEN coalesce(d.public_title,'Dokument #'||d.id) ELSE d.title END AS title,r.kind,'following'::text AS direction FROM document_relations r
+         JOIN documents d ON d.id=r.related_id WHERE r.original_id=$1 AND document_is_public(d,$2)
+         UNION ALL
+         SELECT d.id,CASE WHEN d.metadata_restricted THEN coalesce(d.public_title,'Dokument #'||d.id) ELSE d.title END AS title,r.kind,'original'::text AS direction FROM document_relations r
+         JOIN documents d ON d.id=r.original_id WHERE r.related_id=$1 AND document_is_public(d,$2)
+         ORDER BY id",
+    )
+    .bind(id)
+    .bind(today)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| ServerFnError::new("Související dokumenty nelze načíst."))?;
     Ok(Some(Document {
         id,
-        title,
-        description,
+        title: record.title,
+        description: record.description,
         files,
-        import_origin: crate::backend::legacy::import_origin(pool, None, Some(id), true)
-            .await
-            .map_err(|_| ServerFnError::new("Původ dokumentu nelze načíst."))?,
+        reference_number: record.reference_number,
+        issuer: record.issuer,
+        document_date: record.document_date,
+        topic: record.topic,
+        postings,
+        relations,
+        import_origin: crate::backend::legacy::import_origin(
+            pool,
+            None,
+            Some(id),
+            record.files_public,
+        )
+        .await
+        .map_err(|_| ServerFnError::new("Původ dokumentu nelze načíst."))?,
     }))
 }
+
 #[cfg(feature = "demo")]
 pub async fn load_document(_id: i64) -> Result<Option<Document>, ServerFnError> {
     Ok(None)
@@ -312,4 +502,24 @@ pub fn default_navigation() -> Vec<NavigationLink> {
         children: Vec::new(),
     })
     .collect()
+}
+
+#[cfg(test)]
+mod document_dates_tests {
+    use super::*;
+
+    #[test]
+    fn imported_day_precision_does_not_invent_an_event_time() {
+        assert_eq!(document_event_date(None, Some("2015-06-14")), "14. 6. 2015");
+        assert_eq!(document_event_date(None, None), "Není doloženo");
+        assert_eq!(document_date(""), "Datum není uvedeno");
+    }
+
+    #[test]
+    fn event_timestamp_preserves_prague_offset_and_clock_time() {
+        assert_eq!(
+            document_event_date(Some("2026-10-25T02:30:00+01:00"), Some("2026-10-25")),
+            "25. 10. 2026 v 02:30 (Europe/Prague)"
+        );
+    }
 }

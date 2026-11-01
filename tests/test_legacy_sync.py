@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from legacy import Capture, ORIGIN, digest, is_asset, source_key
+from legacy_documents import configure_source
 from legacy_import import import_bundle
 from legacy_sync import SYNC_LOCK, acknowledge, export_reviews, imported_asset_loader, run_sync
 from postgres import connect, temporary_database
@@ -50,6 +51,7 @@ class SyncTests(unittest.TestCase):
         with connect(self.url) as conn:
             for migration in sorted((Path(__file__).resolve().parents[1] / 'migrations').glob('*.sql')):
                 conn.execute(migration.read_text())
+            configure_source(conn, 'mirror', allow_publication=True, reason='Anonymous sync regression fixture')
 
     def tearDown(self):
         self.directory.cleanup()
@@ -82,7 +84,7 @@ class SyncTests(unittest.TestCase):
                 self.assertEqual(report['pending_reviews'], 2)
                 self.assertEqual(conn.execute('SELECT count(*) FROM legacy_sources').fetchone()[0], 4)
                 self.assertEqual(conn.execute('SELECT count(*) FROM pages').fetchone()[0], 1)
-                self.assertEqual(conn.execute('SELECT count(*) FROM documents').fetchone()[0], 2)
+                self.assertEqual(conn.execute('SELECT count(*) FROM documents WHERE board_status IS NULL').fetchone()[0], 2)
                 self.assertEqual(conn.execute('SELECT count(*) FROM notices').fetchone()[0], 1)
                 self.assertEqual(conn.execute('SELECT count(*) FROM attachments').fetchone()[0], 3)
                 self.assertEqual(conn.execute('SELECT count(*) FROM legacy_sync_reviews').fetchone()[0], 2)
@@ -162,7 +164,8 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(report['new'], [])
             self.assertEqual(conn.execute('SELECT count(*) FROM events').fetchone()[0], 0)
             self.assertEqual(conn.execute('SELECT count(*) FROM legacy_sources').fetchone()[0], 2)
-            self.assertEqual(report['pending_reviews'], 1)
+            self.assertEqual(report['pending_reviews'], 0)
+            self.assertEqual(conn.execute('SELECT count(*) FROM document_source_aliases WHERE source_key=%s', (data['pages'][0]['key'],)).fetchone()[0], 2)
 
     def test_concurrent_imports_insert_each_item_once(self):
         bundle(self.root)
@@ -181,9 +184,9 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(conn.execute('SELECT count(*) FROM legacy_sources').fetchone()[0], 1)
             self.assertEqual(conn.execute('SELECT count(*) FROM attachments').fetchone()[0], 1)
             self.assertEqual(conn.execute('SELECT count(*) FROM page_revisions').fetchone()[0], 0)
-            self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox').fetchone()[0], 2)
+            self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox').fetchone()[0], 0)
 
-    def test_import_publication_uses_subscriber_filters_for_notices_and_documents(self):
+    def test_historical_import_never_announces_notices_or_documents_to_any_topic(self):
         navigation_bundle(self.root)
         with connect(self.url) as conn:
             subscribers = subscription_fixture(conn)
@@ -200,10 +203,7 @@ class SyncTests(unittest.TestCase):
             notice = conn.execute('SELECT id FROM notices').fetchone()[0]
             document = conn.execute('SELECT id FROM documents').fetchone()[0]
             self.assertEqual(conn.execute('''SELECT notice_id,document_id,subscriber_id,consent_id
-                FROM publication_outbox ORDER BY subscriber_id''').fetchall(), [
-                (notice, None, *subscribers['active']),
-                (None, document, *subscribers['active_other']),
-            ])
+                FROM publication_outbox ORDER BY subscriber_id''').fetchall(), [])
             self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
 
     def test_sync_discovers_new_documents_on_previously_skipped_pages(self):
@@ -226,12 +226,12 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(repeated['new'], [])
             self.assertEqual(len(repeated['unchanged']), 2)
             self.assertEqual(conn.execute('SELECT count(*) FROM pages').fetchone()[0], 0)
-            self.assertEqual(conn.execute('SELECT count(*) FROM documents').fetchone()[0], 2)
+            self.assertEqual(conn.execute('SELECT count(*) FROM documents WHERE board_status IS NULL').fetchone()[0], 2)
             self.assertEqual(conn.execute('SELECT count(*) FROM attachments').fetchone()[0], 2)
             published_id = conn.execute("SELECT id FROM documents WHERE status='published'").fetchone()[0]
             self.assertEqual(conn.execute('''SELECT notice_id,document_id,subscriber_id,consent_id
                 FROM publication_outbox ORDER BY id''').fetchall(),
-                [(None, published_id, *subscribers[name]) for name in ('active', 'active_other')])
+                [])
 
     def test_skip_pages_ignores_source_page_conflicts_and_reviews_without_changing_local_pages(self):
         data = bundle(self.root, document_links=False)
@@ -294,7 +294,7 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(json.loads((Path(self.root) / 'last-success.json').read_text())['pending_reviews'], 1)
         self.assertEqual(len(json.loads((Path(self.root) / 'reviews.json').read_text())), 1)
 
-    def test_runner_bootstraps_existing_files_then_downloads_only_new_attachments(self):
+    def test_runner_bootstraps_existing_files_then_revalidates_every_attachment(self):
         html = [HTML.encode()]
         requested = []
         original_bytes = b'%PDF-1.7\nfixture\n%%EOF'
@@ -329,12 +329,12 @@ class SyncTests(unittest.TestCase):
                 self.assertEqual(first['new'], [])
                 self.assertEqual(first['conflicts'], [])
                 self.assertEqual(first['download_stats']['assets_seeded'], 1)
-                self.assertEqual(first['download_stats']['assets_reused'], 1)
-                self.assertEqual(first['download_stats']['assets_downloaded'], 0)
-                self.assertFalse(any(is_asset(url) for url in requested))
+                self.assertEqual(first['download_stats']['assets_reused'], 0)
+                self.assertEqual(first['download_stats']['assets_downloaded'], 1)
+                self.assertTrue(any(is_asset(url) for url in requested))
                 self.assertIn(URL, requested)
                 cached = state / 'capture-cache' / 'responses' / (digest(FILE.encode()) + '.json')
-                self.assertEqual(json.loads(cached.read_text()), metadata)
+                self.assertEqual(json.loads(cached.read_text())['sha256'], metadata['sha256'])
 
                 # New links on an existing HTML page are discovered on the next run.
                 html[0] = HTML.replace('</ul>', f'<li><a href="{second}">Nový dokument</a></li></ul>').encode()
@@ -343,9 +343,9 @@ class SyncTests(unittest.TestCase):
                 self.assertEqual(following['new'], [source_key(second)])
                 self.assertEqual(following['conflicts'], [])
                 self.assertEqual(following['download_stats']['assets_seeded'], 0)
-                self.assertEqual(following['download_stats']['assets_reused'], 1)
-                self.assertEqual(following['download_stats']['assets_downloaded'], 1)
-                self.assertEqual([url for url in requested if is_asset(url)], [second])
+                self.assertEqual(following['download_stats']['assets_reused'], 0)
+                self.assertEqual(following['download_stats']['assets_downloaded'], 2)
+                self.assertEqual([url for url in requested if is_asset(url)], [FILE, second])
                 self.assertEqual(conn.execute('SELECT * FROM attachments ORDER BY id LIMIT 1').fetchall(), original)
                 self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
                 self.assertGreater(following['duration_seconds'], 0)
@@ -361,8 +361,8 @@ class SyncTests(unittest.TestCase):
                 self.assertEqual(conn.execute('SELECT data FROM attachments ORDER BY id LIMIT 1').fetchone()[0], original_bytes)
                 # A queued replacement stays in cache without another HTTP download.
                 repeated = run_sync(conn, state, delay=0, publish_content=True, skip_pages=True)
-                self.assertEqual(repeated['download_stats']['assets_reused'], 2)
-                self.assertEqual(repeated['download_stats']['assets_downloaded'], 0)
+                self.assertEqual(repeated['download_stats']['assets_reused'], 0)
+                self.assertEqual(repeated['download_stats']['assets_downloaded'], 2)
                 self.assertEqual(repeated['pending_reviews'], 1)
                 self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
 
@@ -385,7 +385,10 @@ class SyncTests(unittest.TestCase):
                 with self.subTest(column=column):
                     with conn.transaction(force_rollback=True):
                         conn.execute(f'UPDATE attachments SET {column}=%s', (value,))
-                        self.assertIsNone(load(FILE))
+                        if column in ('sha256', 'size_bytes'):
+                            self.assertEqual(load(FILE)[1], original[1])
+                        else:
+                            self.assertIsNone(load(FILE))
             conn.execute("UPDATE attachments SET data=NULL, removed_at='2026-10-05'")
             self.assertIsNone(load(FILE))
             self.assertIsNone(imported_asset_loader(conn)(FILE))
@@ -404,7 +407,7 @@ class SyncTests(unittest.TestCase):
             return data
 
         with connect(self.url, autocommit=True) as conn, patch.object(Capture, 'crawl', crawl), \
-                patch('urllib.request.OpenerDirector.open', return_value=Response(FILE, raw,
+                patch('urllib.request.OpenerDirector.open', side_effect=lambda *args, **kwargs: Response(FILE, raw,
                     {'Content-Type': 'application/pdf', 'Content-Disposition': 'attachment; filename="zapis.pdf"'})) as http:
             with self.assertRaisesRegex(ValueError, 'incomplete'):
                 run_sync(conn, self.root, delay=0, publish_content=True, skip_pages=True)
@@ -415,10 +418,10 @@ class SyncTests(unittest.TestCase):
             for attempt in range(2):
                 report = run_sync(conn, self.root, delay=0, publish_content=True, skip_pages=True)
                 self.assertEqual(len(report['new']), 1 if attempt == 0 else 0)
-                self.assertEqual(report['download_stats']['assets_reused'], 1)
-                self.assertEqual(report['download_stats']['assets_downloaded'], 0)
+                self.assertEqual(report['download_stats']['assets_reused'], 0)
+                self.assertEqual(report['download_stats']['assets_downloaded'], 1)
                 self.assertEqual(report['conflicts'], [])
-            self.assertEqual(http.call_count, 1)
+            self.assertEqual(http.call_count, 3)
             self.assertEqual(conn.execute('SELECT count(*) FROM attachments').fetchone()[0], 1)
             self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
 
@@ -444,10 +447,10 @@ class SyncTests(unittest.TestCase):
                 self.assertEqual(conn.execute('SELECT count(*) FROM attachments WHERE data IS NOT NULL').fetchone()[0], 2)
                 self.assertEqual(conn.execute('SELECT count(*) FROM notice_events').fetchone()[0], 0)
                 self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
-                self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox').fetchone()[0], 4)
+                self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox').fetchone()[0], 0)
                 self.assertEqual(conn.execute('''SELECT DISTINCT subscriber_id,consent_id
                     FROM publication_outbox ORDER BY subscriber_id''').fetchall(),
-                    [subscribers[name] for name in ('active', 'active_other')])
+                    [])
 
     def test_runner_skips_overlapping_crawl(self):
         with connect(self.url, autocommit=True) as first, connect(self.url, autocommit=True) as second:

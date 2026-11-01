@@ -8,11 +8,15 @@ import re
 import unicodedata
 from urllib.parse import parse_qs, urlsplit
 
-from legacy import Capture, VERSION, canonical, digest, file_type, now, source_key
+from legacy import Capture, VERSION, canonical, dates, digest, file_type, now, source_key
 from legacy_galleries import group_galleries
 from legacy_notifications import queue_publication
+from legacy_documents import SOURCE_ID, source_policy, finalize_board_documents, queue_revision, observe
 from legacy_scope import notice_sections, notice_values, require_local_preview, source_dates
 from postgres import connect
+
+MAX_MANIFEST_BYTES = 64 * 1024 * 1024
+MAX_IMPORT_IDENTITIES = 20_000
 
 
 def fingerprint(item):
@@ -35,7 +39,13 @@ def slug(item):
 
 def load_bundle(root, allow_incomplete=False):
     capture = Capture(root, 0)
-    manifest = json.loads((Path(root) / 'manifest.json').read_text())
+    with (Path(root) / 'manifest.json').open('rb') as source:
+        raw_manifest = source.read(MAX_MANIFEST_BYTES + 1)
+    if len(raw_manifest) > MAX_MANIFEST_BYTES:
+        raise ValueError('Import manifest exceeds 64 MiB. Split the capture into smaller complete-document bundles.')
+    manifest = json.loads(raw_manifest)
+    if len(manifest.get('pages', [])) + len(manifest.get('assets', [])) > MAX_IMPORT_IDENTITIES:
+        raise ValueError('Import exceeds 20,000 source identities. Split it into smaller complete-document bundles.')
     if manifest['version'] != VERSION or manifest['origin'] != 'https://vysker.cz':
         raise ValueError('Unsupported bundle version or origin')
     if not manifest['complete'] and not allow_incomplete:
@@ -75,7 +85,7 @@ def document_pages(items, archive_notices=False, skip_pages=False):
         if 'mime' in item:
             continue
         # These records have structured destinations instead of content pages.
-        if item['kind'] == 'notice' and (archive_notices or skip_pages or item.get('dates', {}).get('published_on')):
+        if item['kind'] == 'notice':
             continue
         if item.get('event') and len(item['content']) <= 10_000:
             continue
@@ -113,21 +123,53 @@ def skipped_page_scope(items, sections):
 
 
 def prepare(conn, root, allow_incomplete=False, classify_navigation=False, archive_notices=False,
-            skip_pages=False):
-    manifest, items, capture = load_bundle(root, allow_incomplete)
-    known = {key: (signature, metadata) for key, signature, metadata in conn.execute(
-        'SELECT source_key,fingerprint,metadata FROM legacy_sources')}
+            skip_pages=False, validated=None):
+    manifest, items, capture = validated if validated is not None else load_bundle(root, allow_incomplete)
+    keys = [item['key'] for item in items]
+    known = {key: (signature, metadata, original_url) for key, signature, metadata, original_url in conn.execute(
+        'SELECT source_key,fingerprint,metadata,source_url FROM legacy_sources WHERE source_key=ANY(%s)', (keys,))}
+    accepted = {key: (fingerprint(proposal) if proposal is not None else signature, accepted_url, evidence)
+        for key, signature, proposal, accepted_url, evidence in conn.execute('''SELECT DISTINCT ON (source_key)
+            source_key,content_fingerprint,CASE WHEN proposal ? 'legacy_migrated_revision' THEN proposal END,
+            proposal->>'url',proposal->>'evidence'
+            FROM document_import_revisions WHERE state='accepted' AND source_key=ANY(%s)
+            ORDER BY source_key,decided_at DESC,id DESC''', (keys,))}
+    blocked = set(row[0] for row in conn.execute('''SELECT s.source_key FROM legacy_sources s
+        JOIN documents d ON d.id=s.document_id WHERE d.access_blocked AND s.source_key=ANY(%s)''', (keys,)))
     skipped = document_pages(items, archive_notices, skip_pages)
     result = {'new': [], 'unchanged': [], 'conflicts': [], 'review': [], 'skipped_document_pages': [], 'grouped_gallery_pages': [],
-              'skipped_content': [],
+              'skipped_content': [], 'blocked': sorted(blocked), 'incomplete_documents': [],
               'capture_errors': manifest['errors'], 'unavailable_resources': manifest.get('unavailable_resources', []),
               'source_summary': {'pages': len(manifest['pages']), 'assets': len(manifest['assets'])}}
     sections = notice_sections(items, capture) if classify_navigation or skip_pages else {}
     excluded = skipped_page_scope(items, sections) if skip_pages else {}
+    available_assets = {entry['key'] for entry in items if 'mime' in entry}
+    incomplete_owners = set()
+    notice_keys = {entry['key'] for entry in items if entry.get('kind') == 'notice' and 'mime' not in entry}
+    shared_attachments = {}
+    for entry in items:
+        owners = notice_keys.intersection(entry.get('parents', [])) if 'mime' in entry else set()
+        if len(owners) > 1:
+            for owner in owners:
+                shared_attachments.setdefault(owner, []).append(entry['key'])
+    for entry in items:
+        if 'mime' in entry or (entry.get('kind') != 'notice' and entry['key'] not in sections):
+            continue
+        missing = [reference['url'] for reference in entry.get('assets', [])
+                   if source_key(reference['url']) not in available_assets]
+        ambiguous = shared_attachments.get(entry['key'], [])
+        if missing or ambiguous:
+            incomplete_owners.add(entry['key'])
+            entry['review_required'] = ('Source attachment is linked from distinct notice identities. Confirm ownership before import.'
+                                        if ambiguous else 'Required source attachments are unavailable. Document is not complete.')
+            result['incomplete_documents'].append(dict(key=entry['key'], missing=missing, ambiguous_attachments=ambiguous))
+    for entry in items:
+        if 'mime' in entry and set(entry.get('parents', [])) & incomplete_owners:
+            entry['review_required'] = 'The owning notice has missing required attachments.'
     if classify_navigation:
         result['notice_sections'] = sections
         result['classification'] = {'notice': 0, 'document': 0}
-        owners = dict(conn.execute("SELECT source_key,notice_id IS NOT NULL FROM legacy_sources WHERE attachment_id IS NOT NULL"))
+        owners = dict(conn.execute("SELECT source_key,notice_id IS NOT NULL FROM legacy_sources WHERE attachment_id IS NOT NULL AND source_key=ANY(%s)", (keys,)))
         for item in items:
             if 'mime' not in item or item['key'] in excluded:
                 continue
@@ -135,6 +177,7 @@ def prepare(conn, root, allow_incomplete=False, classify_navigation=False, archi
             result['classification']['notice' if board else 'document'] += 1
             if item['key'] in owners and owners[item['key']] != board:
                 result['conflicts'].append(item['key'])
+    capture.import_fingerprints = {item['key']: fingerprint(item) for item in items}
     for item in items:
         key = item['key']
         if key in excluded:
@@ -149,8 +192,14 @@ def prepare(conn, root, allow_incomplete=False, classify_navigation=False, archi
         if item.get('review_required'):
             result['review'].append({'key': key, 'reason': item['review_required']})
         if key in known:
-            signature, metadata = known[key]
-            same = signature == fingerprint(item) and metadata.get('evidence') == item.get('evidence')
+            signature, metadata, original_url = known[key]
+            accepted_signature, accepted_url, evidence = accepted.get(key, (signature,original_url,metadata.get('evidence')))
+            same = accepted_signature == capture.import_fingerprints[key] and evidence == item.get('evidence')
+            if not same and item['url'] != accepted_url:
+                # A new friendly URL for the same stable Vismo identity is an
+                # alias, not an editorial change or a second document.
+                same = (accepted_signature == fingerprint(dict(item, url=accepted_url))
+                        and evidence == item.get('evidence'))
             result['unchanged' if same else 'conflicts'].append(key)
         elif not item.get('review_required') and key not in skipped:
             result['new'].append(key)
@@ -171,7 +220,9 @@ def queue_changes(conn, report, items, capture, timestamp):
         if 'notice_sections' in report and 'mime' in item:
             proposal['notice_owner'] = bool(set(item.get('parents', [])) & sections.keys())
         # Ownership changes need review even when the file bytes are unchanged.
-        signature = digest(json.dumps([fingerprint(item), item.get('evidence'), proposal.get('notice_owner')]).encode())
+        signature = digest(json.dumps([capture.import_fingerprints[item['key']], item.get('evidence'), proposal.get('notice_owner')]).encode())
+        queue_revision(conn, proposal, signature, capture.import_fingerprints[item['key']], capture, timestamp, items)
+        decided = conn.execute('SELECT state FROM document_import_revisions WHERE source_key=%s AND fingerprint=%s', (item['key'], signature)).fetchone()[0]
         conn.execute('''INSERT INTO legacy_sync_reviews
             (source_key,fingerprint,proposal,source_data,first_seen_at,last_seen_at)
             VALUES (%s,%s,%s::jsonb,%s,%s,%s)
@@ -181,11 +232,14 @@ def queue_changes(conn, report, items, capture, timestamp):
                 reviewed_at=CASE WHEN legacy_sync_reviews.fingerprint=EXCLUDED.fingerprint
                     THEN legacy_sync_reviews.reviewed_at ELSE NULL END,
                 fingerprint=EXCLUDED.fingerprint,proposal=EXCLUDED.proposal,
-                source_data=EXCLUDED.source_data,last_seen_at=EXCLUDED.last_seen_at''',
+                source_data=EXCLUDED.source_data,last_seen_at=EXCLUDED.last_seen_at
+                WHERE legacy_sync_reviews.fingerprint IS DISTINCT FROM EXCLUDED.fingerprint''',
             (item['key'], signature, json.dumps(proposal, ensure_ascii=False),
              capture.blob(item['capture']['sha256']), timestamp, timestamp))
+        if decided != 'pending':
+            conn.execute('UPDATE legacy_sync_reviews SET reviewed_at=%s WHERE source_key=%s AND reviewed_at IS NULL', (timestamp, item['key']))
     report['pending_reviews'] = conn.execute(
-        'SELECT count(*) FROM legacy_sync_reviews WHERE reviewed_at IS NULL').fetchone()[0]
+        "SELECT count(*) FROM document_import_revisions WHERE state='pending'").fetchone()[0]
 
 
 def audit(conn, kind, id, timestamp):
@@ -200,12 +254,20 @@ def import_bundle(conn, root, publish_content=False, allow_incomplete=False, pag
     """Caller owns transaction. Sync queues conflicts and imports only new identities."""
     if archive_notices and preview_notices:
         raise ValueError('Archive and preview notice imports are mutually exclusive')
+    # Download/capture and byte validation finish before taking the shared writer
+    # lock. The captured object paths are content-addressed and rechecked on read.
+    validated = load_bundle(root, allow_incomplete)
     conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':vysker-write', 0))")
     if preview_notices:
         require_local_preview()
         if not classify_navigation:
             raise ValueError('Preview notices require navigation classification')
-    report, items, capture = prepare(conn, root, allow_incomplete, classify_navigation, archive_notices, skip_pages)
+    policy = source_policy(conn)
+    requested_publication = publish_content or archive_notices
+    publish_content = publish_content and policy['allow_publication']
+    report, items, capture = prepare(conn, root, allow_incomplete, classify_navigation, archive_notices, skip_pages, validated=validated)
+    report['source_policy'] = policy
+    report['publication_blocked_by_source_policy'] = requested_publication and not policy['allow_publication']
     if report['conflicts'] and not sync:
         raise ValueError('Changed source records require manual reconciliation: ' + ', '.join(report['conflicts'][:20]))
     new = set(report['new'])
@@ -215,12 +277,18 @@ def import_bundle(conn, root, publish_content=False, allow_incomplete=False, pag
     if len(set(page_map.values())) != len(page_map):
         raise ValueError('Duplicate mapped page slug')
     timestamp = now()
+    run_id = conn.execute('''INSERT INTO document_import_runs(source_id,mode,status)
+        VALUES (%s,%s,'running') RETURNING id''', (SOURCE_ID, policy['mode'])).fetchone()[0]
+    report['run_id'] = run_id
     sections = report.get('notice_sections', {})
     categories = dict(conn.execute('SELECT name,id FROM categories'))
     attachment_ids = attachment_ids or {}
     notification_excluded_source_keys = set(notification_excluded_source_keys or ())
     # Ordinary content and the isolated notice rehearsal have separate publication flags.
-    routes = dict(conn.execute('SELECT source_key,destination FROM legacy_sources').fetchall())
+    item_keys = [item['key'] for item in items]
+    routes = dict(conn.execute('SELECT source_key,destination FROM legacy_sources WHERE source_key=ANY(%s)', (item_keys,)))
+    notice_owners = dict(conn.execute('SELECT source_key,notice_id FROM legacy_sources WHERE notice_id IS NOT NULL AND source_key=ANY(%s)', (item_keys,)))
+    imported_board_ids = set()
     notice_keys = {item['key'] for item in items if item.get('kind') == 'notice'}
     new_pages = []
     # Aliases can refer to pages occurring later in the original capture.
@@ -231,6 +299,11 @@ def import_bundle(conn, root, publish_content=False, allow_incomplete=False, pag
         page_id = document_id = attachment_id = notice_id = event_id = None
         new_publication = False
         metadata = {k: item.get(k) for k in ('dates', 'event', 'warnings', 'parents', 'evidence', 'capture')}
+        # The old generic withdrawal date may be a plan. Preserve explicit source
+        # label evidence separately without changing stable semantic fingerprints.
+        explicit_removal = dates(item.get('evidence') or item.get('content', '')).get('withdraw_on')
+        if explicit_removal:
+            metadata['dates'] = dict(item.get('dates') or {}, removed_on=explicit_removal)
         metadata['original_title'] = item['title']
         for key in ('page_alias', 'gallery_members'):
             if key in item:
@@ -246,9 +319,19 @@ def import_bundle(conn, root, publish_content=False, allow_incomplete=False, pag
             page_id, destination = owner
         elif 'mime' in item:
             on_board = bool(set(item.get('parents', [])) & sections.keys())
-            owners = conn.execute('SELECT notice_id FROM legacy_sources WHERE source_key=ANY(%s) AND notice_id IS NOT NULL ORDER BY source_key', (item.get('parents', []),)).fetchall() if not classify_navigation or on_board else []
+            owners = [(notice_owners[key],) for key in sorted(item.get('parents', [])) if key in notice_owners] if not classify_navigation or on_board else []
             if owners:
                 notice_id = owners[0][0]
+                if notice_id not in imported_board_ids:
+                    conn.execute('''INSERT INTO legacy_sources(source_key,source_url,fingerprint,captured_at,imported_at,metadata,notice_id,destination)
+                        VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s,%s)''',
+                        (item['key'], item['url'], capture.import_fingerprints[item['key']], item['capture']['captured_at'], timestamp,
+                         json.dumps(dict(metadata, pending_attachment=True)), notice_id, f'/dokumenty/{notice_id}'))
+                    signature = digest(json.dumps([capture.import_fingerprints[item['key']], item.get('evidence'), on_board if classify_navigation else None]).encode())
+                    queue_revision(conn, item, signature, capture.import_fingerprints[item['key']], capture, timestamp, items)
+                    report['review'].append({'key': item['key'], 'reason': 'New attachment to an immutable source document requires review.'})
+                    report['conflicts'].append(item['key'])
+                    continue
                 if len(owners) > 1:
                     report['review'].append({'key': item['key'], 'reason': 'Shared notice attachment. Review ownership before publishing.'})
             elif classify_navigation and on_board:
@@ -286,7 +369,7 @@ def import_bundle(conn, root, publish_content=False, allow_incomplete=False, pag
             audit(conn, 'attachment', attachment_id, timestamp)
             if document_id:
                 audit(conn, 'document', document_id, timestamp)
-        elif item['kind'] == 'notice' and (archive_notices or skip_pages or item.get('dates', {}).get('published_on')):
+        elif item['kind'] == 'notice':
             # No inferred posting time, no default +15 days, no fabricated publication event.
             if archive_notices:
                 values = notice_values(item, categories, sections, notice_map or {}, archive=True)
@@ -304,7 +387,7 @@ def import_bundle(conn, root, publish_content=False, allow_incomplete=False, pag
                 notice_id = conn.execute("INSERT INTO notices(title,description,published_on,withdraw_on,status,review_json) VALUES (%s,%s,%s,%s,'draft',%s) RETURNING id",
                     (item['title'][:300], item['content'], item.get('dates', {}).get('published_on'), item.get('dates', {}).get('withdraw_on'),
                      json.dumps({'original_reference': item['url']}))).fetchone()[0]
-            destination = f'/uredni-deska/{notice_id}'
+            destination = f'/dokumenty/{notice_id}'
             audit(conn, 'notice', notice_id, timestamp)
             if not archive_notices:
                 report['review'].append({'key': item['key'], 'reason': 'Notice remains a draft. Check dates, attachments and publication rules before cutover.'})
@@ -334,21 +417,26 @@ def import_bundle(conn, root, publish_content=False, allow_incomplete=False, pag
             page_slug = page_map.get(item['key'], slug(item))
             page_id = conn.execute('INSERT INTO pages(slug,title,content,published,updated_at) VALUES (%s,%s,%s,%s,%s) RETURNING id',
                 (page_slug, item['title'][:200], item['content'], publish_content and item['kind'] != 'notice', timestamp)).fetchone()[0]
-            if item['kind'] == 'notice':
-                report['review'].append({'key': item['key'], 'reason': 'Notice without a reliable posting date retained as a private content page.'})
             destination = f'/stranky/{page_slug}'
             new_pages.append((page_id, page_slug, item))
             audit(conn, 'page', page_id, timestamp)
+        if notice_id is not None:
+            notice_owners[item['key']] = notice_id
+            imported_board_ids.add(notice_id)
         routes[item['key']] = destination
         conn.execute('INSERT INTO legacy_sources(source_key,source_url,fingerprint,captured_at,imported_at,metadata,page_id,notice_id,document_id,attachment_id,event_id,destination) VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s)',
-            (item['key'], item['url'], fingerprint(item), item['capture']['captured_at'], timestamp,
+            (item['key'], item['url'], capture.import_fingerprints[item['key']], item['capture']['captured_at'], timestamp,
              json.dumps(metadata, ensure_ascii=False), page_id, notice_id, document_id, attachment_id, event_id, destination))
         if notice_metadata is not None:
             conn.execute('''INSERT INTO legacy_notice_imports(source_key,notice_id,imported_at,preview_published,metadata)
                 VALUES (%s,%s,%s,%s,%s::jsonb)''',
                 (item['key'], notice_id, timestamp, preview_notices, json.dumps(notice_metadata, ensure_ascii=False)))
-        if new_publication and not preview_notices and item['key'] not in notification_excluded_source_keys:
+        # Historical documents and notices never become fresh newsletter items.
+        # Existing calendar announcement behavior remains independent.
+        if event_id is not None and new_publication and not preview_notices and item['key'] not in notification_excluded_source_keys:
             queue_publication(conn, timestamp, notice_id=notice_id, document_id=document_id, event_id=event_id)
+    finalize_board_documents(conn, imported_board_ids, timestamp, policy['allow_publication'] or preview_notices)
+    observe(conn, items, timestamp, capture.import_fingerprints)
     unresolved = set()
     for page_id, page_slug, item in new_pages:
         def rewrite(match):
@@ -381,12 +469,14 @@ def import_bundle(conn, root, publish_content=False, allow_incomplete=False, pag
     report['imported_at'] = timestamp
     if sync:
         queue_changes(conn, report, items, capture, timestamp)
+    conn.execute("UPDATE document_import_runs SET status='applied',finished_at=now(),summary=%s::jsonb WHERE id=%s",
+        (json.dumps({key: len(report[key]) for key in ('new','unchanged','conflicts','blocked','review','capture_errors')}), run_id))
     return report
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['plan', 'import', 'sync'])
+    parser.add_argument('command', choices=['plan', 'import', 'sync', 'dry-run'])
     parser.add_argument('--bundle', required=True)
     parser.add_argument('--report', required=True)
     parser.add_argument('--allow-incomplete', action='store_true')
@@ -396,11 +486,11 @@ def main():
     parser.add_argument('--notice-map', help='Optional JSON mapping of source section keys to notice categories')
     notice_mode = parser.add_mutually_exclusive_group()
     notice_mode.add_argument('--preview-notices', action='store_true', help='Make imported notices visible only in an isolated local preview.')
-    notice_mode.add_argument('--archive-notices', action='store_true', help='Import historical notices directly into the public archive and notify current subscribers about new records.')
+    notice_mode.add_argument('--archive-notices', action='store_true', help='Request historical archive availability under the configured source policy, without historical notifications.')
     parser.add_argument('--publish-content', action='store_true', help='Publish ordinary content. Notice visibility is controlled separately.')
     args = parser.parse_args()
     with connect() as conn:
-        if args.command == 'plan':
+        if args.command in ('plan', 'dry-run'):
             conn.execute('SET TRANSACTION READ ONLY')
             report, _, _ = prepare(conn, args.bundle, args.allow_incomplete, args.classify_navigation,
                                    args.archive_notices, args.skip_pages)

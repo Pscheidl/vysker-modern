@@ -6,16 +6,115 @@ All administrators currently have equal privileges. Production administration,
 including password recovery, remains restricted to the configured office or VPN
 networks by the reverse proxy.
 
-## Notice and document attachments
+## Shared document catalogue and attachments
 
-One notice-board record or general document can contain multiple attachments.
+**Dokumenty** manages one common document record, including documents that also
+appear on the official notice board. The stable public detail is
+`/dokumenty/{id}`. The notice-board view filters recorded postings and does not
+create a second document or a second upload. Search lists a document once.
+
 Save the draft first, then use **Přílohy → Přidat přílohu → Nahrát soubor** for
 each file. Uploading another file keeps the earlier attachments. Files are
-selected and uploaded one at a time, with a limit of 10 MiB per file.
+selected and uploaded one at a time, with a limit of 10 MiB per file. Filenames,
+order, immutable file identifiers and SHA-256 fingerprints are part of the
+published document. Replacing a source URL never replaces the stored bytes.
 
-All available attachments appear on the public detail after publication, each
-with its own download link. Attachments can be added or removed only while the
-record is a draft. Published, scheduled and archived records have locked attachments.
+The editor shows three independent facts: content state, public availability,
+and posting state. **Koncept** has never been posted. **Uzamčeno po vyvěšení**
+cannot be edited again, including after withdrawal, hiding, importing again or
+posting again. **Obsah blokován k ověření** means the imported history is
+uncertain, not that a posting has been proved. Published ordinary records are
+read-only in the editor and can be followed by a new concept.
+
+Use **Veřejná dostupnost → Zpřístupnit v katalogu** to publish an ordinary
+record without posting it on the official notice board. The first eligible new
+publication follows the existing subscriber preferences and hourly digest.
+Historical migration and unchanged imports do not send old documents as news.
+
+## Final review and posting
+
+A saved document, including an ordinary catalogue document, can be posted using
+**Nové vyvěšení na úřední desce**. Enter the actual intended local date, an
+optional future removal plan, the publication rule and its grounds, and the
+internal original-record reference. Do not substitute a historical source date
+for a local posting date. The rule is independent of the catalogue topic.
+
+Every posting requires an explicit attachment-access choice. Neither option is
+preselected:
+
+- **Po sejmutí ponechat přílohy veřejné** keeps the retained files public.
+- **Po sejmutí přílohy pouze pro administrátory** revokes anonymous file access
+  while retaining the original bytes for authorized administration.
+- **Zpřístupnit samostatné anonymizované znění** requires a separate linked
+  anonymized document. It never overwrites the original. Its title, text and
+  attachments appear in a second final preview. Confirmation permanently
+  freezes that exact derived copy as well, without claiming it was the original
+  posted content. A concurrent change requires another preview.
+
+The notice draft form also requires this decision without a default. The final
+posting form requires it again for that specific posting. This choice controls
+file availability, not whether the document content is immutable. Administrators
+can download retained files even when visitors cannot.
+
+Choose **Zkontrolovat finální náhled**, inspect the title, text, reference,
+issuer, ordered attachments and their fingerprints, and confirm the review.
+The warning is **Po vyvěšení již obsah dokumentu nelze upravit.** Publication
+submits the same content fingerprint returned by this preview. A simultaneous
+edit or attachment change invalidates it and requires a new preview. The server
+and database enforce these rules independently of the controls shown on screen.
+
+A future date schedules this reviewed content. **Zrušit plánované vyvěšení**
+records a reason and refuses a stale cancellation if actual posting happened
+meanwhile. It never removes a permanent content lock from an earlier posting.
+
+## Corrections, access and operational history
+
+Under **Provozní úkony**, create an **Oprava**, **Doplnění**, **Nahrazení** or
+**Veřejné anonymizované znění** as a new linked concept with a new ID and its
+own attachment records. The original content and fingerprints remain intact.
+The new record is private and is not automatically posted. A correction does
+not itself start a new legal period.
+
+**Připojit existující doplnění nebo opravu** links a separately prepared document
+by its ID and relation type. It records an internal reason without changing
+either document's publication or posting state.
+
+**Historie vyvěšení** separates planned removal from actual removal. An
+operator can record removal or change a future plan with an internal reason.
+Changing a plan preserves the earlier plan in the event history. Reposting the
+same locked document adds a posting event for the same immutable content.
+
+Use **Opravit chybný evidenční údaj** only to correct a recorded source or event
+date. It appends an audit event containing the original and corrected values and
+an internal explanation. Leaving the corrected date empty explicitly records it
+as unknown. Public history shows the date correction separately, without the
+private explanation, and preserves the originally recorded event.
+
+**Ukončit veřejné zpřístupnění** immediately hides the whole record and its
+files, including direct and legacy links, from anonymous visitors. It records
+an internal reason and does not unlock or destroy the content. This is separate
+from the selected file-access policy after ordinary board removal. Importers
+must preserve a local access block. Public history never exposes the private
+reason or a pending source revision.
+
+**Tematické zařazení** is an audited catalogue operation available independently
+of the content lock. It does not alter the originally published content or
+establish that a document was posted. **Zobrazit historii a interní audit**
+shows the operational evidence available only to administrators.
+
+## Import changes for review
+
+**Kontrola importu** lists pending, accepted and rejected source revisions with
+pagination. Compare accepted and newly observed titles, text, source metadata
+and attachment fingerprints. Proposed files are available through authenticated
+downloads only. A source change is labelled as an observation and is not assumed
+to be an official correction by the original issuer.
+
+**Přijmout jako nový koncept** creates a new linked private document. It does
+not overwrite a locked original, publish the proposal or send subscribers a
+conflict notification. **Zamítnout revizi** records a final decision for that
+specific fingerprint. Reobserving the same revision does not reopen it or create
+a duplicate. A materially different source revision can create a new review.
 
 ## Password recovery
 
@@ -136,8 +235,9 @@ focus to its button. Clicking outside or choosing a link closes the submenu.
 Only one submenu opens at a time. The current section and page are highlighted.
 Without JavaScript the navigation links remain expanded and usable.
 
-**Kategorie** manages notice-board categories and their order. Used categories
-cannot be deleted because published and archived notices still refer to them.
+**Kategorie** manages catalogue topics and their order. Used categories
+cannot be deleted because document records still refer to them. Topic assignment
+is separate from posting and remains an audited operation after content locking.
 Names and order remain editable. Edits use version checks and all mutations are
 audited. Navigation supports up to 20 main entries and 60 entries in total.
 Keep the main menu concise, ideally five to seven main entries.

@@ -24,6 +24,8 @@ python3 tests/test_monitor.py
 python3 tests/test_package_prebuilt.py
 python3 tests/test_legacy.py
 python3 tests/test_legacy_capture.py
+python3 tests/test_unified_import.py
+python3 tests/test_document_migration.py
 python3 tests/test_legacy_archive.py
 python3 tests/test_legacy_replace.py
 python3 tests/test_legacy_galleries.py

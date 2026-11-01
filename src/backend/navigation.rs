@@ -267,7 +267,7 @@ impl CategoryInput {
     }
 }
 pub async fn categories(State(s): State<Backend>, _: Admin) -> Result<Json<Vec<Category>>> {
-    Ok(Json(sqlx::query_as("SELECT c.*,(SELECT count(*) FROM notices n WHERE n.category_id=c.id) AS usage_count FROM categories c ORDER BY sort_order,id").fetch_all(&s.pool).await?))
+    Ok(Json(sqlx::query_as("SELECT c.*,(SELECT count(*) FROM documents n WHERE n.category_id=c.id) AS usage_count FROM categories c ORDER BY sort_order,id").fetch_all(&s.pool).await?))
 }
 pub async fn create_category(
     State(s): State<Backend>,
@@ -337,7 +337,7 @@ pub async fn remove_category(
 ) -> Result<StatusCode> {
     let mut tx = crate::db::begin_write(&s.pool).await?;
     let used: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM notices WHERE category_id=$1)")
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM documents WHERE category_id=$1)")
             .bind(id)
             .fetch_one(&mut *tx)
             .await?;

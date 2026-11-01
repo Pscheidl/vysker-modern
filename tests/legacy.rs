@@ -172,18 +172,22 @@ fn missing_event_time_explains_legacy_origin() {
 #[tokio::test]
 async fn document_details_identify_imports_without_exposing_hidden_archive_sources() {
     let app = common::App::new().await;
-    sqlx::raw_sql("INSERT INTO documents(id,title,description,status,created_at) VALUES
-        (1,'Importovaný dokument','Popis','published','now'),
-        (2,'Nový dokument','Převedeno z původního webu.','published','now'),
-        (3,'Soukromý import','Popis','draft','now');
-        INSERT INTO notices(id,title,published_on,status,retain_attachments,review_json) VALUES
-        (1,'Importovaný záznam',NULL,'archived',TRUE,
+    sqlx::raw_sql("INSERT INTO documents(id,title,description,status,created_at,board_status,retain_attachments,metadata_restricted,public_title,posting_public_until,review_json) VALUES
+        (1,'Importovaný dokument','Popis','published','now',NULL,FALSE,FALSE,NULL,NULL,'{}'),
+        (2,'Nový dokument','Převedeno z původního webu.','published','now',NULL,FALSE,FALSE,NULL,NULL,'{}'),
+        (3,'Soukromý import','Popis','draft','now',NULL,FALSE,FALSE,NULL,NULL,'{}'),
+        (4,'Importovaný záznam','Interní původní popis','published','now','archived',TRUE,TRUE,'Importovaný záznam','9999-12-31',
         '{\"archive_title\":\"Importovaný záznam\",\"archive_basis\":\"Local preview\",\"archive_until\":\"9999-12-31\"}'),
-        (2,'Nový záznam','2020-01-01','published',FALSE,'{}');
+        (5,'Nový záznam','','published','now','published',FALSE,FALSE,NULL,NULL,'{}');
+        UPDATE documents SET published_on='2020-01-01',lock_state='locked',locked_at=now() WHERE id=4;
+        UPDATE documents SET published_on='2020-01-01',lock_state='locked',locked_at=now() WHERE id=5;
+        INSERT INTO document_postings(document_id,origin,certainty,started_on,removed_on,after_action,snapshot_sha256) VALUES
+        (4,'migration','documented','2020-01-01','2020-02-01','retain',document_fingerprint(4)),
+        (5,'migration','documented','2020-01-01',NULL,'hide',document_fingerprint(5));
         INSERT INTO legacy_sources(source_key,source_url,fingerprint,captured_at,imported_at,metadata,document_id,notice_id,destination) VALUES
         ('doc','https://vysker.cz/assets/File.ashx?id_dokumenty=1','hash','now','now','{}',1,NULL,'/dokumenty/1'),
         ('draft','https://vysker.cz/assets/File.ashx?id_dokumenty=3','hash','now','now','{}',3,NULL,'/dokumenty/3'),
-        ('notice','https://vysker.cz/assets/File.ashx?id_dokumenty=2','hash','now','now','{}',NULL,1,'/uredni-deska/1')")
+        ('notice','https://vysker.cz/assets/File.ashx?id_dokumenty=2','hash','now','now','{}',4,4,'/dokumenty/4')")
         .execute(&app.state.pool).await.unwrap();
     let imported = obecni_web::catalog::document_from_pool(&app.state.pool, 1)
         .await
@@ -204,7 +208,7 @@ async fn document_details_identify_imports_without_exposing_hidden_archive_sourc
             .unwrap()
             .is_none()
     );
-    let imported = obecni_web::content::notice_from_pool(&app.state.pool, 1)
+    let imported = obecni_web::content::notice_from_pool(&app.state.pool, 4)
         .await
         .unwrap()
         .unwrap();
@@ -214,16 +218,16 @@ async fn document_details_identify_imports_without_exposing_hidden_archive_sourc
         imported.import_origin.unwrap().source_url.as_deref(),
         Some("https://vysker.cz/assets/File.ashx?id_dokumenty=2")
     );
-    let native = obecni_web::content::notice_from_pool(&app.state.pool, 2)
+    let native = obecni_web::content::notice_from_pool(&app.state.pool, 5)
         .await
         .unwrap()
         .unwrap();
     assert!(native.import_origin.is_none());
-    sqlx::query("UPDATE notices SET review_json='{\"archive_until\":\"2020-01-01\"}' WHERE id=1")
+    sqlx::query("UPDATE documents SET posting_public_until='2020-01-01' WHERE id=4")
         .execute(&app.state.pool)
         .await
         .unwrap();
-    let expired = obecni_web::content::notice_from_pool(&app.state.pool, 1)
+    let expired = obecni_web::content::notice_from_pool(&app.state.pool, 4)
         .await
         .unwrap()
         .unwrap();
@@ -234,13 +238,15 @@ async fn document_details_identify_imports_without_exposing_hidden_archive_sourc
 #[tokio::test]
 async fn local_notice_preview_preserves_attachments_but_cannot_launch_in_production() {
     let app = common::App::new().await;
-    sqlx::raw_sql("INSERT INTO documents(id,title,status,created_at) VALUES (1,'Source','published','now');
-        INSERT INTO legacy_sources(source_key,source_url,fingerprint,captured_at,imported_at,metadata,document_id,destination)
-        VALUES ('test-file','https://vysker.cz/assets/File.ashx','hash','now','now','{}',1,'/dokumenty/1');
-        INSERT INTO notices(id,title,published_on,withdraw_on,status,retain_attachments,review_json)
-        VALUES (1,'Original title','2020-01-01','2020-02-01','archived',TRUE,
+    sqlx::raw_sql("INSERT INTO documents(id,title,status,created_at,board_status,published_on,source_published_on,withdraw_on,retain_attachments,metadata_restricted,public_title,posting_after_action,posting_public_until,review_json)
+        VALUES (1,'Original title','published','now','archived','2020-01-01','2020-01-01','2020-02-01',TRUE,TRUE,'Original title','retain','9999-12-31',
         '{\"archive_title\":\"Original title\",\"archive_basis\":\"Local preview\",\"archive_until\":\"9999-12-31\"}');
-        INSERT INTO attachments(notice_id,name,content_type,size_bytes,data) VALUES (1,'file.pdf','application/pdf',4,'data');
+        INSERT INTO attachments(document_id,notice_id,name,content_type,size_bytes,data) VALUES (1,1,'file.pdf','application/pdf',4,'data');
+        UPDATE documents SET lock_state='locked',locked_at=now() WHERE id=1;
+        INSERT INTO document_postings(document_id,origin,certainty,started_on,removed_on,after_action,public_until,snapshot_sha256,source_url)
+        VALUES (1,'source','documented','2020-01-01','2020-02-01','retain','9999-12-31',document_fingerprint(1),'https://vysker.cz/assets/File.ashx');
+        INSERT INTO legacy_sources(source_key,source_url,fingerprint,captured_at,imported_at,metadata,document_id,notice_id,destination)
+        VALUES ('test-file','https://vysker.cz/assets/File.ashx','hash','now','now','{}',1,1,'/dokumenty/1');
         INSERT INTO legacy_notice_imports(source_key,notice_id,imported_at,preview_published,metadata)
         VALUES ('test-file',1,'now',TRUE,'{}')")
         .execute(&app.state.pool).await.unwrap();

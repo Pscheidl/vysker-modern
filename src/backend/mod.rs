@@ -16,6 +16,7 @@ pub mod pages;
 pub mod power_outages;
 pub mod privacy;
 pub mod recovery;
+pub mod registry;
 pub mod report_abuse;
 pub mod report_addresses;
 pub mod report_comments;
@@ -74,6 +75,14 @@ impl From<sqlx::Error> for Error {
             .is_some_and(|e| e.is_unique_violation())
         {
             return conflict("Záznam s touto hodnotou už existuje.");
+        }
+        if error.as_database_error().is_some_and(|e| {
+            e.code().as_deref() == Some("23514")
+                && e.constraint() == Some("document_lifecycle_guard")
+        }) {
+            return conflict(
+                "Operace porušuje ochranu dokumentu nebo stav evidence. Načtěte aktuální záznam.",
+            );
         }
         tracing::error!(%error, "databázová operace selhala");
         Self(
@@ -414,6 +423,49 @@ pub fn router(state: Backend) -> Router {
             post(documents::upload_document)
                 .layer(DefaultBodyLimit::max(MAX_FILE_BYTES + 64 * 1024)),
         )
+        .route("/api/v1/admin/import-revisions", get(registry::revisions))
+        .route(
+            "/api/v1/admin/import-revisions/{id}/decision",
+            post(registry::decide),
+        )
+        .route(
+            "/api/v1/admin/import-revisions/{id}/files/{position}",
+            get(registry::revision_file),
+        )
+        .route(
+            "/api/v1/admin/documents/{id}/preview",
+            get(registry::preview),
+        )
+        .route(
+            "/api/v1/admin/documents/{id}/postings",
+            post(registry::post),
+        )
+        .route(
+            "/api/v1/admin/documents/{id}/relations",
+            post(registry::link),
+        )
+        .route(
+            "/api/v1/admin/documents/{id}/event-corrections",
+            post(registry::evidence_correction),
+        )
+        .route(
+            "/api/v1/admin/documents/{id}/corrections",
+            post(registry::correction),
+        )
+        .route(
+            "/api/v1/admin/documents/{id}/visibility",
+            post(registry::visibility),
+        )
+        .route("/api/v1/admin/documents/{id}/topics", post(registry::topic))
+        .route(
+            "/api/v1/admin/documents/{id}/history",
+            get(registry::history),
+        )
+        .route(
+            "/api/v1/admin/postings/{id}/withdraw",
+            post(registry::withdraw),
+        )
+        .route("/api/v1/admin/postings/{id}/plan", post(registry::plan))
         .route("/api/v1/documents", get(documents::public_list))
         .route("/api/v1/documents/{id}", get(documents::detail))
         .route("/api/v1/attachments/{id}", get(documents::download))

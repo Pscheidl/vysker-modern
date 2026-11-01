@@ -421,10 +421,9 @@ class Capture:
                         self._save_response(self.cache_root, result, body)
                         cached = result, body
                         self.stats['assets_seeded'] += 1
-            if asset and cached is not None:
-                self._save_response(self.root, *cached)
-                self.stats['assets_reused'] += 1
-                return cached
+            # A stable URL is not immutable content. Revalidate cached assets on
+            # every fresh crawl, just like pages. Without validators this is a
+            # full GET, and --refresh-assets also bypasses conditional requests.
         headers = {'User-Agent': USER_AGENT}
         if cached is not None:
             for key, header in [('etag', 'If-None-Match'), ('last_modified', 'If-Modified-Since')]:
@@ -454,7 +453,7 @@ class Capture:
                     self.stats['assets_downloaded' if asset else 'pages_downloaded'] += 1
                     return result, body
             except HTTPError as e:
-                if e.code == 304 and cached is not None and not asset and len(headers) > 1:
+                if e.code == 304 and cached is not None and len(headers) > 1:
                     # Conditional success reuses verified bytes. Other HTTP/network failures
                     # must remain visible and may never silently serve old HTML.
                     result, body = cached
@@ -464,7 +463,7 @@ class Capture:
                             result[key] = value
                     self._save_response(self.cache_root, result, body)
                     self._save_response(self.root, result, body)
-                    self.stats['pages_not_modified'] += 1
+                    self.stats['assets_reused' if asset else 'pages_not_modified'] += 1
                     e.close()
                     return result, body
                 if e.code < 500 and e.code != 429:

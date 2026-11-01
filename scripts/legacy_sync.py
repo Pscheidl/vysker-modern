@@ -14,6 +14,7 @@ from psycopg.rows import dict_row
 
 from legacy import Capture, canonical, digest, file_type, now
 from legacy_import import import_bundle
+from legacy_documents import configure_source, decide_revision, source_policy
 from postgres import connect
 
 SYNC_LOCK = "hashtextextended(current_schema() || ':vysker-legacy-sync', 0)"
@@ -49,10 +50,11 @@ def export_reviews(conn, output, base_url=''):
     with conn.transaction(), conn.cursor(name='legacy_review_export', row_factory=dict_row) as cursor:
         cursor.itersize = 1
         cursor.execute('''SELECT r.source_key,r.fingerprint,r.proposal,r.source_data,
-            r.first_seen_at,r.last_seen_at,s.destination,
+            r.first_seen_at,coalesce(o.last_observed_at::text,r.last_seen_at) AS last_seen_at,s.destination,
             COALESCE(p.title,e.title,d.title,n.title) AS current_title,
             COALESCE(p.content,e.description,d.description,n.description) AS current_content
             FROM legacy_sync_reviews r JOIN legacy_sources s USING (source_key)
+            LEFT JOIN document_source_observations o USING (source_key)
             LEFT JOIN pages p ON p.id=s.page_id LEFT JOIN events e ON e.id=s.event_id
             LEFT JOIN documents d ON d.id=s.document_id LEFT JOIN notices n ON n.id=s.notice_id
             WHERE r.reviewed_at IS NULL ORDER BY r.first_seen_at,r.source_key''')
@@ -99,6 +101,9 @@ Seznam uchovává nevyřízené návrhy i po zmizení zdrojové položky.</p>'''
 
 
 def acknowledge(conn, key, fingerprint):
+    revision = conn.execute("SELECT id FROM document_import_revisions WHERE source_key=%s AND fingerprint=%s AND state='pending'", (key, fingerprint)).fetchone()
+    if revision:
+        return decide_revision(conn, revision[0], 'reject', 'Operator acknowledged this exact source observation without accepting content')
     result = conn.execute('''UPDATE legacy_sync_reviews SET reviewed_at=%s
         WHERE source_key=%s AND fingerprint=%s AND reviewed_at IS NULL''', (now(), key, fingerprint))
     if result.rowcount != 1:
@@ -151,8 +156,12 @@ def run_sync(conn, state, *, delay=.4, max_pages=1500, max_assets=5000,
              publish_content=False, allow_incomplete=False, page_map=None, notice_map=None,
              base_url='', archive_notices=False, skip_pages=False, refresh_assets=False):
     """Use an autocommit connection so the crawl never holds a DB transaction open."""
+    if urlsplit(base_url).hostname in ('vysker.cz', 'www.vysker.cz'):
+        raise ValueError('Legacy source is the configured local website. Disable the old source before domain handover to prevent an import loop.')
     if not conn.autocommit:
         raise ValueError('run_sync requires an autocommit connection')
+    if source_policy(conn)['mode'] == 'one_time':
+        raise ValueError('Periodic synchronization requires mirror or proposals mode, not one_time migration')
     if not conn.execute(f'SELECT pg_try_advisory_lock({SYNC_LOCK})').fetchone()[0]:
         return {'status': 'skipped', 'reason': 'Another synchronization is running'}
     state = Path(state)
@@ -210,7 +219,7 @@ def main():
     run.add_argument('--max-assets', type=int, default=5000)
     run.add_argument('--allow-incomplete', action='store_true')
     run.add_argument('--publish-content', action='store_true', help='Publish ordinary content. Notice visibility is controlled separately.')
-    run.add_argument('--archive-notices', action='store_true', help='Import historical notices directly into the public archive and notify current subscribers about new records.')
+    run.add_argument('--archive-notices', action='store_true', help='Request historical archive availability under the configured source policy, without historical notifications.')
     run.add_argument('--skip-pages', action='store_true', help='Import documents, notices and calendar entries, excluding content pages, galleries and unrelated images.')
     run.add_argument('--refresh-assets', action='store_true', help='Download known attachments again to detect files replaced at the same source URL.')
     run.add_argument('--page-map')
@@ -222,6 +231,14 @@ def main():
     done = commands.add_parser('acknowledge', help='Mark the exact proposal reviewed, without changing live content')
     done.add_argument('--source-key', required=True)
     done.add_argument('--fingerprint', required=True)
+    decision = commands.add_parser('decide', help='Accept as a new private document or reject an exact immutable source revision')
+    decision.add_argument('--revision-id', required=True, type=int)
+    decision.add_argument('--decision', required=True, choices=['accept', 'reject'])
+    decision.add_argument('--reason', required=True)
+    config = commands.add_parser('configure', help='Record an explicit source authority change')
+    config.add_argument('--mode', required=True, choices=['one_time','mirror','proposals','disabled'])
+    config.add_argument('--allow-publication', action='store_true')
+    config.add_argument('--reason', required=True)
     args = parser.parse_args()
     if args.command == 'run' and (args.delay < .1 or args.max_pages < 1 or args.max_assets < 1):
         parser.error('Use delay >= 0.1 and positive resource limits')
@@ -240,8 +257,16 @@ def main():
             print(json.dumps(summary, ensure_ascii=False), flush=True)
         elif args.command == 'reviews':
             print(json.dumps({'pending_reviews': export_reviews(conn, args.output, args.base_url)}))
+        elif args.command == 'decide':
+            with conn.transaction():
+                print(json.dumps(decide_revision(conn, args.revision_id, args.decision, args.reason)))
+        elif args.command == 'configure':
+            with conn.transaction():
+                configure_source(conn, args.mode, args.allow_publication, reason=args.reason)
+            print('Source policy recorded.')
         else:
-            acknowledge(conn, args.source_key, args.fingerprint)
+            with conn.transaction():
+                acknowledge(conn, args.source_key, args.fingerprint)
             print('Proposal marked reviewed. Live content unchanged.')
 
 

@@ -47,7 +47,25 @@ pub struct Entry {
     pub content: String,
     pub published: Option<bool>,
     pub version: i64,
+    pub content_version: i64,
+    pub lock_state: String,
+    pub public_access: bool,
+    pub attachments_public: Option<bool>,
+    pub access_blocked: bool,
+    pub public_until: Option<String>,
+    #[serde(deserialize_with = "nullable_string")]
+    pub board_status: String,
+    pub document_date: Option<String>,
+    pub source_published_on: Option<String>,
+    pub postings: Vec<Posting>,
+    pub origin: Option<serde_json::Value>,
 }
+fn nullable_string<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 impl Entry {
     pub fn status(&self) -> &str {
         match self.published {
@@ -64,7 +82,36 @@ pub struct File {
     pub size_bytes: i64,
     pub available: bool,
     pub removed_at: Option<String>,
+    #[serde(default, deserialize_with = "nullable_string")]
+    pub sha256: String,
 }
+#[derive(Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Posting {
+    pub id: i64,
+    pub origin: String,
+    pub status: String,
+    #[serde(alias = "started_on")]
+    pub published_on: Option<String>,
+    #[serde(alias = "started_at")]
+    pub published_at: Option<String>,
+    #[serde(alias = "planned_removal_on")]
+    pub withdraw_on: Option<String>,
+    #[serde(alias = "removed_on")]
+    pub withdrawn_on: Option<String>,
+    #[serde(alias = "removed_at")]
+    pub withdrawn_at: Option<String>,
+    pub after_action: String,
+    pub certainty: String,
+}
+
+#[derive(Clone, Deserialize)]
+pub struct PublicationPreview {
+    pub token: String,
+    pub document: Entry,
+    pub attachments: Vec<File>,
+}
+
 #[derive(Clone, Deserialize)]
 pub struct Category {
     pub id: i64,
@@ -155,7 +202,13 @@ async fn decode<T: DeserializeOwned>(response: gloo_net::http::Response) -> Resu
     if status == 204 {
         return serde_json::from_value(Value::Null).map_err(|_| Failure::network());
     }
-    response.json().await.map_err(|_| Failure {
+    let body = response.text().await.map_err(|_| Failure::network())?;
+    let parsed = if body.trim().is_empty() {
+        serde_json::from_value(Value::Null)
+    } else {
+        serde_json::from_str(&body)
+    };
+    parsed.map_err(|_| Failure {
         status: 0,
         message: "Server vrátil neočekávanou odpověď.".into(),
     })

@@ -54,7 +54,8 @@ TEST_DATABASE_URL=postgresql://vysker:vysker@127.0.0.1:5432/postgres pnpm test:e
 
 The runner starts `scripts/e2e-server.py` on `127.0.0.1:3107` and refuses to reuse
 an existing server. It creates its own temporary PostgreSQL database, synthetic
-administrator, privacy configuration and 25 notice records. It does not read
+administrator, privacy configuration and 25 canonical documents with explicit
+posting records and attachment access choices. It does not read
 `.env`, reuse the developer database, or send real email. Test links are read from
 the fixture's local mail queue. The server and temporary database are removed on
 shutdown. Shared fixtures reset rate-limit counters in that disposable database
@@ -63,6 +64,14 @@ exhaust one another's limits. Throttling remains active within each test.
 Import `test` from `tests/browser/fixtures.ts` in every browser spec.
 Do not point the test suite at a deployed website.
 
+The unified-document scenarios support a different local port when another
+worktree is already testing on 3107. Leave the other worktree's server running:
+
+```sh
+E2E_PORT=3117 TEST_DATABASE_URL=postgresql://vysker:vysker@127.0.0.1:5432/postgres \
+  pnpm exec playwright test tests/browser/document-catalog.spec.ts tests/browser/workflows.spec.ts
+```
+
 Covered workflows:
 
 - Keyboard skip link, pagination and Czech search without diacritics
@@ -70,6 +79,14 @@ Covered workflows:
   draft privacy, publishing and anonymous download of every attachment
 - Subscription request, confirmation, notification and unsubscribe
 - Account settings and viewport overflow on mobile
+- Shared catalogue and board identity, search scope, deduplication and migration privacy
+- Mandatory attachment access choice, permanent posting lock and private retained downloads
+- Scheduled cancellation with a stale editor and a separate corrective draft
+- Separate anonymized preview, immutable derived copy and release without invented posting history
+
+The subscription form enables its email input only after hydration, matching
+the submit button's existing readiness guard. This prevents fast input from
+being erased while the browser initializes the form.
 
 The Rust account tests cover password changes, operator recovery, session
 revocation and final-administrator protection. Browser tests do not alter the
@@ -118,6 +135,8 @@ Run Rust tests before building the full web for browser tests. `cargo test --bin
 can replace the SSR binary with a build lacking cargo-leptos's compile-time asset
 settings. Rebuild with `cargo leptos build` before testing hydration. Do not run
 Cargo builds that share the same target directory concurrently with browser tests.
+If preserving a tested executable separately, copy its sibling `hash.txt` too
+and serve the assets from that same Leptos build.
 
 ## Legacy migration coverage
 
