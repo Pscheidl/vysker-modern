@@ -13,7 +13,7 @@ from legacy import digest
 from legacy_import import import_bundle, prepare
 from legacy_documents import configure_source, decide_revision, refuse_destructive_reimport
 from postgres import connect, temporary_database
-from test_legacy import bundle, FILE, subscription_fixture
+from test_legacy import bundle, FILE, LOCAL_PREVIEW_ENV, subscription_fixture
 from legacy_notifications import queue_publication
 
 
@@ -225,7 +225,7 @@ class UnifiedImportTests(unittest.TestCase):
                     data['pages'][0]['capture'].update(sha256=sha,size=len(content))
                 (Path(directory) / 'manifest.json').write_text(json.dumps(data))
                 configure_source(conn, 'one_time', allow_publication=True, reason='Synthetic source plan review')
-                with patch.dict(os.environ, {'OBEC_VEREJNA_URL': 'http://127.0.0.1:3000', 'OBEC_DATABAZE': database, 'OBEC_PRODUCTION': 'false'}):
+                with patch.dict(os.environ, LOCAL_PREVIEW_ENV):
                     import_bundle(conn, directory, archive_notices=archive, preview_notices=not archive, classify_navigation=not archive)
                 actual = conn.execute('SELECT planned_removal_on,removed_on,removed_at FROM document_postings').fetchone()
                 self.assertEqual(tuple(str(v) if v else None for v in actual), ('2030-03-20',None,None))
