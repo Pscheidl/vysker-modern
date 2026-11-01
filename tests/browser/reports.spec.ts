@@ -949,7 +949,11 @@ test('status filtering and pagination work without JavaScript', async ({ browser
     await page.goForward()
     await expect(status).toHaveValue('in_progress')
     await expect(page.locator('.report-card')).toHaveCount(1)
-    await page.getByRole('link', { name: 'Zrušit hledání', exact: true }).click()
+    // Expanded no-JS navigation must scroll away even on a short mobile screen.
+    await page.setViewportSize({ width: 390, height: 568 })
+    const clearSearch = page.getByRole('link', { name: 'Zrušit hledání', exact: true })
+    await clearSearch.scrollIntoViewIfNeeded()
+    await clearSearch.click()
     await expect(page).toHaveURL(/\/hlaseni-zavad\?status=in_progress$/)
     await expect(status).toHaveValue('in_progress')
     await expect(page.getByRole('searchbox', { name: 'Hledat v hlášeních', exact: true })).toHaveValue('')

@@ -147,7 +147,7 @@ pub fn Header() -> impl IntoView {
 fn NoScriptNavigation() -> impl IntoView {
     #[cfg(not(feature = "demo"))]
     return view! {<noscript><style>
-        ".nav-submenu[hidden]{display:block!important;position:static;box-shadow:none}.nav-submenu-toggle,.menu-toggle{display:none!important}.desktop-nav .nav-list{align-items:flex-start}.header-inner{height:auto;min-height:76px}@media(max-width:1050px){.site-header .mobile-nav[hidden]{display:block!important}}"
+        ".nav-submenu[hidden]{display:block!important;position:static;box-shadow:none}.nav-submenu-toggle,.menu-toggle{display:none!important}.desktop-nav .nav-list{align-items:flex-start}.header-inner{height:auto;min-height:76px}@media(max-width:1050px){.site-header{position:static}.site-header .mobile-nav[hidden]{display:block!important}}"
     </style></noscript>};
 
     #[cfg(feature = "demo")]

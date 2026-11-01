@@ -37,7 +37,7 @@ test('saving another asset keeps drafts and leaving asks before discarding them'
   await expect(block.getByLabel('Do včetně', { exact: true })).toHaveValue('2031-01-14')
 
   const rejectedDialog = page.waitForEvent('dialog')
-  const stay = page.getByRole('link', { name: 'Úřední deska', exact: true }).click()
+  const stay = page.getByRole('navigation', { name: 'Administrace', exact: true }).getByRole('link', { name: 'Dokumenty', exact: true }).click()
   const rejected = await rejectedDialog
   expect(rejected.type()).toBe('confirm')
   expect(rejected.message()).toContain('neuložené změny')
@@ -48,12 +48,12 @@ test('saving another asset keeps drafts and leaving asks before discarding them'
   await expect(block.getByLabel('Od', { exact: true })).toHaveValue('2031-01-13')
 
   const acceptedDialog = page.waitForEvent('dialog')
-  const leave = page.getByRole('link', { name: 'Úřední deska', exact: true }).click()
+  const leave = page.getByRole('navigation', { name: 'Administrace', exact: true }).getByRole('link', { name: 'Dokumenty', exact: true }).click()
   const accepted = await acceptedDialog
   expect(accepted.type()).toBe('confirm')
   await accepted.accept()
   await leave
-  await expect(page).toHaveURL(/\/admin\/uredni-deska$/)
+  await expect(page).toHaveURL(/\/admin\/dokumenty$/)
 })
 
 for (const operation of ['create', 'invoice'] as const) {
@@ -132,7 +132,7 @@ for (const operation of ['create', 'invoice'] as const) {
       await expect(editor.getByLabel('Popis', { exact: true })).toHaveValue('Nová rozpracovaná změna musí zůstat chráněná.')
 
       const warning = page.waitForEvent('dialog', { timeout: 3_000 })
-      const navigate = page.getByRole('link', { name: 'Úřední deska', exact: true }).click()
+      const navigate = page.getByRole('navigation', { name: 'Administrace', exact: true }).getByRole('link', { name: 'Dokumenty', exact: true }).click()
       const dialog = await warning
       expect(dialog.message()).toContain('neuložené změny')
       await dialog.dismiss()
