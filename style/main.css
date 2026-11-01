@@ -706,8 +706,8 @@
 .document-state-facts { display: flex; flex-wrap: wrap; gap: 1rem 2rem; margin: 1rem 0 2rem; }
 .document-state-facts dt { font-size: .8rem; opacity: .7; }
 .document-state-facts dd { margin: .25rem 0 0; font-weight: 600; }
-.document-operations details, .posting-history > li { padding: 1rem 0; border-bottom: 1px solid var(--border); }
-.document-operations summary, .posting-history summary { cursor: pointer; font-weight: 600; padding: .5rem 0; }
+.posting-history > li { padding: 1rem 0; border-bottom: 1px solid var(--border); }
+.posting-history summary { cursor: pointer; font-weight: 600; padding: .5rem 0; }
 .publication-preview { margin-top: 1.5rem; padding: 1rem; border: 1px solid var(--border); border-radius: .75rem; }
 .publication-preview li { margin: .75rem 0; overflow-wrap: anywhere; }
 .publication-preview li small, .file-fingerprint { display: block; }

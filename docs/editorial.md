@@ -26,7 +26,7 @@ and posting state. **Koncept** has never been posted. **Uzamčeno po vyvěšení
 cannot be edited again, including after withdrawal, hiding, importing again or
 posting again. **Obsah blokován k ověření** means the imported history is
 uncertain, not that a posting has been proved. Published ordinary records are
-read-only in the editor and can be followed by a new concept.
+read-only in the editor.
 
 The form asks for a title and description. **Číslo jednací (nepovinné)** and
 **Datum vytvoření dokumentu (nepovinné)** may stay empty. An unknown creation date
@@ -51,7 +51,11 @@ which legal period applies.
 
 Save the draft and upload its attachments. **Potvrzení vyvěšení** displays the
 saved date, duration and policy before the final preview. It does not ask for the
-same settings twice. Merely saving the document does not publish or post it.
+same settings twice. After changing a saved draft, including its board checkbox,
+the editor shows **Nejdříve uložte změny** instead of a disabled publication
+button. Save again to display the appropriate publication or posting confirmation.
+Every edit discards the previous preview and its confirmation. Merely saving the
+document does not publish or post it.
 An already public ordinary document or an unchanged locked document can start
 another posting under **Nové vyvěšení na úřední desce**, using the same controls.
 Do not substitute a historical source date for a new local posting date.
@@ -63,7 +67,7 @@ Every posting requires an explicit attachment-access choice:
   while retaining the original bytes for authorized administration.
 
 Under **Další možnosti vyvěšení**, **Po sejmutí zpřístupnit samostatné
-anonymizované znění** selects a separately prepared linked document. It never
+anonymizované znění** selects an existing separately prepared linked document. It never
 replaces the original. Its title, text and files appear in a second final
 preview. Confirmation freezes that exact derived copy without claiming that it
 was originally posted. Concurrent changes require a new preview.
@@ -83,17 +87,13 @@ A future date schedules this reviewed content. **Zrušit plánované vyvěšení
 records a reason and refuses a stale cancellation if actual posting happened
 meanwhile. It never removes a permanent content lock from an earlier posting.
 
-## Corrections, access and operational history
+## Posting and operational history
 
-Under **Další úkony s dokumentem**, create an **Oprava**, **Doplnění**, **Nahrazení** or
-**Veřejné anonymizované znění** as a new linked concept with a new ID and its
-own attachment records. The original content and fingerprints remain intact.
-The new record is private and is not automatically posted. A correction does
-not itself start a new legal period.
-
-**Připojit existující doplnění nebo opravu** links a separately prepared document
-by its ID and relation type. It records an internal reason without changing
-either document's publication or posting state.
+The simplified editor has no **Další úkony s dokumentem** panel. It does not
+create or attach corrections, manually change whole-record availability, move
+ordinary records to the archive or assign topics. Existing relations, import
+review and audit evidence remain preserved. These are separate from the required
+attachment-access decision made before posting.
 
 **Historie vyvěšení** separates planned removal from actual removal. An
 operator can record removal or change a future plan with an internal reason.
@@ -106,26 +106,19 @@ an internal explanation. Leaving the corrected date empty explicitly records it
 as unknown. Public history shows the date correction separately, without the
 private explanation, and preserves the originally recorded event.
 
-**Přesunout do archivu** moves an ordinary document to the shared archive without
-changing its public availability or files and without inventing a board posting
-or removal. Documents with an active posting are removed through their posting
-history instead. There is one public archive at `/dokumenty?state=archive`, shared
-by ordinary archived records and actually removed postings. Current or scheduled
+There is one public archive at `/dokumenty?state=archive`, shared by existing
+ordinary archived records and actually removed postings. Current or scheduled
 postings and uncertain source history are excluded. The catalogue without this
 filter still contains all currently public documents. Old board archive URLs
 lead to this same archive and retain the query.
 
-**Ukončit veřejné zpřístupnění** immediately hides the whole record and its
-files, including direct and legacy links, from anonymous visitors. It records
-an internal reason and does not unlock or destroy the content. This is separate
-from the selected file-access policy after ordinary board removal. Importers
-must preserve a local access block. Public history never exposes the private
-reason or a pending source revision.
-
-**Tematické zařazení** is an audited catalogue operation available independently
-of the content lock. It does not alter the originally published content or
-establish that a document was posted. **Zobrazit historii a interní audit**
-shows the operational evidence available only to administrators.
+**Zobrazit historii a interní audit** shows operational evidence only to
+administrators. Local access blocks remain enforced for public detail, search,
+APIs and direct attachment links. Imports cannot reverse these decisions. The
+simplified editor has no whole-record withdrawal control. If the title or text
+must also be withdrawn, an authorized technical administrator must use the
+existing authenticated visibility operation with an internal reason. Choosing
+admin-only attachments after removal does not hide the title or description.
 
 ## Import changes for review
 
@@ -261,8 +254,9 @@ Only one submenu opens at a time. The current section and page are highlighted.
 Without JavaScript the navigation links remain expanded and usable.
 
 **Kategorie** manages catalogue topics and their order. Used categories
-cannot be deleted because document records still refer to them. Topic assignment
-is separate from posting and remains an audited operation after content locking.
+cannot be deleted because document records still refer to them. Existing topic
+assignments remain separate from posting. The simplified document editor does
+not offer a topic-assignment operation.
 Names and order remain editable. Edits use version checks and all mutations are
 audited. Navigation supports up to 20 main entries and 60 entries in total.
 Keep the main menu concise, ideally five to seven main entries.

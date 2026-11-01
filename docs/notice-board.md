@@ -85,7 +85,7 @@ legal period by itself.
 
 There is no preselected post-removal access policy. The operator must explicitly
 choose **Po sejmutí ponechat přílohy veřejné** or **Po sejmutí přílohy pouze pro
-administrátory**. A separately linked anonymized version can be selected in
+administrátory**. An existing separately linked anonymized version can be selected in
 **Další možnosti vyvěšení**. The saved choice is shown again in the final review,
 without a second policy form. Ordinary documents without a posting do not need
 this decision.
@@ -94,9 +94,11 @@ Admin-only access after removal hides filenames and downloads from the public
 detail and all public file routes. The immutable original bytes remain available
 to authenticated administrators. Public access to the whole document is a
 separate operation. Archiving an ordinary document preserves its public access
-and files. **Ukončit veřejné zpřístupnění** hides the detail, search
-result, public APIs and every direct or legacy attachment link and records an
-internal reason. Importers cannot reverse that local decision.
+and files. The authenticated whole-record visibility operation hides the detail,
+search result, public APIs and every direct or legacy attachment link and records
+an internal reason. This operation remains available to authorized technical
+administrators through the API, but is absent from the simplified document
+editor. Importers cannot reverse that local decision.
 
 This access choice is independent of content locking. Routine removal does not
 delete posted bytes. Retention and disposal remain separate controlled processes

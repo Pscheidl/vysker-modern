@@ -84,10 +84,18 @@ Covered workflows:
 - Shared catalogue and board identity, search scope, deduplication and migration privacy
 - Worker-recorded expiration into the single shared archive, permanent content
   lock, private retained downloads and old direct-file denial
-- Ordinary archival preserves public metadata and files without inventing a
-  posting, and old board archive URLs lead to the shared catalogue archive
-- Scheduled cancellation with a stale editor and a separate corrective draft
-- Separate anonymized preview, immutable derived copy and release without invented posting history
+- Existing ordinary archive records preserve public metadata and files without
+  inventing a posting, and old board archive URLs lead to the shared archive
+- Scheduled cancellation with a stale editor
+- Separate anonymized preview, immutable derived copy and release without invented
+  posting history, using an existing linked copy prepared through the API
+- Absence of the removed additional-actions panel and a saved ordinary draft
+  switched to the board and back, including invalidation of a confirmed preview
+  when the content changes
+
+Archive records and linked copies are prepared through the authenticated API.
+Their former creation controls are intentionally absent from the simplified
+editor.
 
 The subscription form enables its email input only after hydration, matching
 the submit button's existing readiness guard. This prevents fast input from

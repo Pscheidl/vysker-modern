@@ -5,7 +5,6 @@ use super::{
 };
 use crate::app::components::Icon;
 use leptos::prelude::*;
-use leptos_router::hooks::use_navigate;
 use serde_json::json;
 
 #[component]
@@ -18,60 +17,16 @@ pub(super) fn DocumentHelp(label: &'static str, text: &'static str) -> impl Into
 }
 
 #[component]
-pub fn DocumentActions(entry: Entry, busy: Signal<bool>, reload: RwSignal<u64>) -> impl IntoView {
+pub fn DocumentActions(
+    entry: Entry,
+    board_enabled: RwSignal<bool>,
+    publishing: RwSignal<bool>,
+    busy: Signal<bool>,
+    reload: RwSignal<u64>,
+) -> impl IntoView {
     let id = entry.id;
     let ctx = expect_context::<AdminContext>();
-    let error = RwSignal::new(None);
-    let reason = RwSignal::new(String::new());
-    let correction_kind = RwSignal::new("correction".to_string());
-    let navigate = use_navigate();
-    let correction = Action::new_local(move |_: &()| {
-        let navigate = navigate.clone();
-        let payload =
-            json!({"kind":correction_kind.get_untracked(),"reason":reason.get_untracked()});
-        async move {
-            error.set(None);
-            match api::save(
-                "POST",
-                &format!("/api/v1/admin/documents/{id}/corrections"),
-                Some(payload),
-            )
-            .await
-            {
-                Ok(value) => {
-                    if let Some(new_id) = value["id"].as_i64() {
-                        ctx.dirty.set(false);
-                        ctx.changed("Nový navazující koncept je připraven. Jeho zveřejnění ani vyvěšení zatím neproběhlo.");
-                        navigate(&format!("/admin/dokumenty/{new_id}"), Default::default());
-                    }
-                }
-                Err(failure) => error.set(Some(failure)),
-            }
-        }
-    });
-    let visibility_reason = RwSignal::new(String::new());
-    let visibility = Action::new_local(move |public: &bool| {
-        let payload = json!({"public_access":public,"reason":visibility_reason.get_untracked()});
-        async move {
-            error.set(None);
-            match api::save(
-                "POST",
-                &format!("/api/v1/admin/documents/{id}/visibility"),
-                Some(payload),
-            )
-            .await
-            {
-                Ok(_) => {
-                    ctx.changed("Veřejná dostupnost byla změněna. Obsah a historie dokumentu zůstávají zachované.");
-                    reload.update(|v| *v += 1);
-                }
-                Err(failure) => error.set(Some(failure)),
-            }
-        }
-    });
-    let disabled = Signal::derive(move || {
-        busy.get() || ctx.dirty.get() || correction.pending().get() || visibility.pending().get()
-    });
+    let disabled = Signal::derive(move || busy.get() || ctx.dirty.get());
     let can_post = !matches!(entry.board_status.as_str(), "published" | "scheduled")
         && entry.lock_state != "review"
         && !entry.access_blocked;
@@ -80,32 +35,18 @@ pub fn DocumentActions(entry: Entry, busy: Signal<bool>, reload: RwSignal<u64>) 
     let editable_draft = entry.lock_state == "draft" && entry.status() == "draft";
     let prepared = editable_draft && entry.board_enabled;
     let can_publish = editable_draft && !entry.board_enabled && !public && !entry.access_blocked;
-    let can_archive = entry.board_status.is_empty() && entry.status() == "published";
-    let posting_entry = entry.clone();
-    let new_posting_entry = entry.clone();
+    let posting_entry = StoredValue::new(entry.clone());
     view! {
-        {can_publish.then(move||view!{<PublishDocument id busy=disabled reload/>})}
-        {(can_post&&prepared).then(move||view!{<section class="admin-panel admin-form-section"><h2>"Potvrzení vyvěšení"</h2><PostingForm entry=posting_entry.clone() saved=true busy=disabled reload/></section>})}
-        {(can_post&&!editable_draft).then(move||view!{<details class="admin-panel admin-form-section"><summary>"Nové vyvěšení na úřední desce"</summary><p>"Vznikne nový záznam vyvěšení. Obsah, který už je uzamčený, zůstane stejný."</p><PostingForm entry=new_posting_entry.clone() saved=false busy=disabled reload/></details>})}
-        <details class="admin-panel admin-form-section document-operations"><summary>"Další úkony s dokumentem"</summary><ErrorMessage error/>
-            <p>"Tyto úkony nemění uložený obsah ani přílohy dokumentu."</p>
-            <details><summary>"Vytvořit opravu nebo navazující dokument"</summary>
-                <form on:submit=move |ev| {ev.prevent_default();if !disabled.get_untracked(){correction.dispatch(());}}>
-                    <label class="admin-field" for="correction-kind"><span>"Vazba nového záznamu"</span><select id="correction-kind" prop:value=move ||correction_kind.get() on:change=move |ev| correction_kind.set(event_target_value(&ev))><option value="correction">"Oprava"</option><option value="supplement">"Doplnění"</option><option value="replacement">"Nahrazení"</option><option value="anonymized">"Veřejné anonymizované znění"</option></select></label>
-                    <label class="admin-field" for="correction-reason"><span>"Interní důvod"</span><textarea id="correction-reason" required maxlength="2000" prop:value=move ||reason.get() on:input=move |ev| reason.set(event_target_value(&ev))></textarea></label>
-                    <p class="field-note">"Vznikne nový koncept s vlastním ID a vlastními přílohami. Původní dokument zůstane zachován. Nový záznam není automaticky vyvěšen a sám nezahajuje novou lhůtu."</p>
-                    <button type="submit" class="button secondary" disabled=move ||disabled.get()>"Vytvořit navazující koncept"</button>
-                </form>
-            </details>
-            <details><summary>{if public {"Ukončit veřejné zpřístupnění"} else {"Veřejná dostupnost"}}</summary>
-                <label class="admin-field" for="visibility-reason"><span>"Interní důvod změny dostupnosti"</span><textarea id="visibility-reason" maxlength="2000" prop:value=move ||visibility_reason.get() on:input=move |ev|visibility_reason.set(event_target_value(&ev))></textarea></label>
-                <p class="field-note">"Důvod zůstane v interním auditu. Stažení znepřístupní detail i přímé odkazy na přílohy a neodemkne obsah."</p>
-                <ConfirmButton label=if public {"Ukončit veřejné zpřístupnění"} else {"Zpřístupnit v katalogu"} title=if public {"Ukončit veřejné zpřístupnění?"} else {"Zpřístupnit dokument v katalogu?"} description=if public {"Dokument nebude veřejně dostupný. Jeho obsah, vyvěšení a audit zůstanou zachovány."} else {"Zveřejní se tento dokument a jeho dostupné přílohy. Tento úkon není vyvěšením na úřední desce."} danger=public disabled=Signal::derive(move ||disabled.get() ||visibility_reason.get().trim().is_empty()) on_confirm=Callback::new(move |()| {visibility.dispatch(!public);})/>
-            </details>
-            {can_archive.then(move||view!{<ArchiveDocument id busy=disabled reload/>})}
-            <AttachRelation id busy=disabled reload/>
-            <TopicForm id selected=entry.category_id busy=disabled reload/>
-        </details>
+        <Show when=move||!ctx.dirty.get() fallback=move||view!{
+            <section class="admin-panel admin-form-section" role="status">
+                <h2>"Nejdříve uložte změny"</h2>
+                <p>{move||if board_enabled.get(){"Uložte změny v panelu Uložení a zveřejnění. Potom se zobrazí potvrzení vyvěšení s aktuálním obsahem a nastavením."}else{"Uložte změny v panelu Uložení a zveřejnění. Potom můžete dokument zveřejnit."}}</p>
+            </section>
+        }>
+            {can_publish.then(move||view!{<PublishDocument id publishing busy=disabled reload/>})}
+            {(can_post&&prepared).then(move||view!{<section class="admin-panel admin-form-section"><h2>"Potvrzení vyvěšení"</h2><PostingForm entry=posting_entry.get_value() saved=true publishing busy=disabled reload/></section>})}
+            {(can_post&&!editable_draft).then(move||view!{<details class="admin-panel admin-form-section"><summary>"Nové vyvěšení na úřední desce"</summary><p>"Vznikne nový záznam vyvěšení. Obsah, který už je uzamčený, zůstane stejný."</p><PostingForm entry=posting_entry.get_value() saved=false publishing busy=disabled reload/></details>})}
+        </Show>
         {scheduled.then(move ||view!{<CancelSchedule id busy=disabled reload/>})}
         <PostingHistory document_id=id postings=entry.postings busy=disabled reload/>
         <DocumentHistory id/>
@@ -113,23 +54,36 @@ pub fn DocumentActions(entry: Entry, busy: Signal<bool>, reload: RwSignal<u64>) 
 }
 
 #[component]
-fn PublishDocument(id: i64, busy: Signal<bool>, reload: RwSignal<u64>) -> impl IntoView {
+fn PublishDocument(
+    id: i64,
+    publishing: RwSignal<bool>,
+    busy: Signal<bool>,
+    reload: RwSignal<u64>,
+) -> impl IntoView {
     let ctx = expect_context::<AdminContext>();
     let error = RwSignal::new(None);
-    let publish = Action::new_local(move |_: &()| async move {
-        error.set(None);
-        match api::save(
-            "POST",
-            &format!("/api/v1/admin/documents/{id}/publish"),
-            None,
-        )
-        .await
-        {
-            Ok(_) => {
-                ctx.changed("Dokument je zveřejněný v katalogu Dokumenty.");
-                reload.update(|value| *value += 1);
+    let publish = Action::new_local(move |_: &()| {
+        publishing.set(true);
+        async move {
+            error.set(None);
+            let result = api::save(
+                "POST",
+                &format!("/api/v1/admin/documents/{id}/publish"),
+                None,
+            )
+            .await;
+            publishing.try_set(false);
+            match result {
+                Ok(_) if !reload.is_disposed() => {
+                    ctx.dirty.set(false);
+                    ctx.changed("Dokument je zveřejněný v katalogu Dokumenty.");
+                    reload.update(|value| *value += 1);
+                }
+                Err(failure) => {
+                    error.try_set(Some(failure));
+                }
+                _ => {}
             }
-            Err(failure) => error.set(Some(failure)),
         }
     });
     view! {<section class="admin-panel admin-form-section"><h2>"Zveřejnění dokumentu"</h2><ErrorMessage error/>
@@ -174,6 +128,7 @@ pub(super) fn BoardSettings(
 fn PostingForm(
     entry: Entry,
     saved: bool,
+    publishing: RwSignal<bool>,
     busy: Signal<bool>,
     reload: RwSignal<u64>,
 ) -> impl IntoView {
@@ -204,6 +159,7 @@ fn PostingForm(
     let anonymized = RwSignal::new(false);
     let redacted_id = RwSignal::new(String::new());
     let reason = RwSignal::new(String::new());
+    let preview_generation = RwSignal::new(0u64);
     Effect::new(move |_| {
         let _ = (
             published_on.get(),
@@ -211,48 +167,73 @@ fn PostingForm(
             retention.get(),
             anonymized.get(),
             redacted_id.get(),
+            ctx.dirty.get(),
         );
+        preview_generation.update(|generation| *generation = generation.wrapping_add(1));
         preview.set(None);
         redacted_preview.set(None);
         checked.set(false);
     });
-    let prepare = Action::new_local(move |_: &()| async move {
-        error.set(None);
-        preview.set(None);
-        redacted_preview.set(None);
-        checked.set(false);
-        match api::get::<api::PublicationPreview>(&format!("/api/v1/admin/documents/{id}/preview"))
-            .await
-        {
-            Ok(value) => {
-                if anonymized.get_untracked() {
-                    let Some(derived_id) = redacted_id
-                        .get_untracked()
-                        .parse::<i64>()
-                        .ok()
-                        .filter(|value| *value > 0 && *value != id)
-                    else {
-                        error.set(Some(api::Failure {
-                            status: 400,
-                            message: "Vyberte ID samostatného anonymizovaného dokumentu.".into(),
-                        }));
-                        return;
-                    };
-                    match api::get::<api::PublicationPreview>(&format!(
-                        "/api/v1/admin/documents/{derived_id}/preview"
-                    ))
-                    .await
-                    {
-                        Ok(derived) => redacted_preview.set(Some(derived)),
-                        Err(failure) => {
-                            error.set(Some(failure));
+    let prepare = Action::new_local(move |_: &()| {
+        let requested_generation = preview_generation.get_untracked();
+        let derived = anonymized.get_untracked();
+        let derived_id = redacted_id
+            .get_untracked()
+            .parse::<i64>()
+            .ok()
+            .filter(|value| *value > 0 && *value != id);
+        async move {
+            if preview.is_disposed() {
+                return;
+            }
+            error.set(None);
+            preview.set(None);
+            redacted_preview.set(None);
+            checked.set(false);
+            let result = api::get::<api::PublicationPreview>(&format!(
+                "/api/v1/admin/documents/{id}/preview"
+            ))
+            .await;
+            // Editing can replace this form while the request is in flight.
+            if preview.is_disposed()
+                || preview_generation.try_get_untracked() != Some(requested_generation)
+                || ctx.dirty.try_get_untracked() != Some(false)
+            {
+                return;
+            }
+            match result {
+                Ok(value) => {
+                    if derived {
+                        let Some(derived_id) = derived_id else {
+                            error.set(Some(api::Failure {
+                                status: 400,
+                                message: "Vyberte ID samostatného anonymizovaného dokumentu."
+                                    .into(),
+                            }));
+                            return;
+                        };
+                        let result = api::get::<api::PublicationPreview>(&format!(
+                            "/api/v1/admin/documents/{derived_id}/preview"
+                        ))
+                        .await;
+                        if preview.is_disposed()
+                            || preview_generation.try_get_untracked() != Some(requested_generation)
+                            || ctx.dirty.try_get_untracked() != Some(false)
+                        {
                             return;
                         }
+                        match result {
+                            Ok(derived) => redacted_preview.set(Some(derived)),
+                            Err(failure) => {
+                                error.set(Some(failure));
+                                return;
+                            }
+                        }
                     }
+                    preview.set(Some(value));
                 }
-                preview.set(Some(value));
+                Err(failure) => error.set(Some(failure)),
             }
-            Err(failure) => error.set(Some(failure)),
         }
     });
     let publish = Action::new_local(move |_: &()| {
@@ -269,29 +250,34 @@ fn PostingForm(
             "redacted_token":if derived{redacted_preview.get_untracked().map(|value|value.token)}else{None},
             "reason":if explanation.trim().is_empty(){"Vyvěšení schválené obsluhou po kontrole finálního náhledu.".to_string()}else{explanation}
         });
+        publishing.set(true);
         async move {
             error.set(None);
-            match api::save(
+            let result = api::save(
                 "POST",
                 &format!("/api/v1/admin/documents/{id}/postings"),
                 Some(payload),
             )
-            .await
-            {
-                Ok(_) => {
-                    preview.set(None);
-                    redacted_preview.set(None);
+            .await;
+            publishing.try_set(false);
+            match result {
+                Ok(_) if !reload.is_disposed() => {
+                    preview.try_set(None);
+                    redacted_preview.try_set(None);
+                    checked.try_set(false);
+                    ctx.dirty.set(false);
                     ctx.changed(
                         "Vyvěšení je potvrzené. Po skutečném vyvěšení je obsah nevratně uzamčen.",
                     );
                     reload.update(|value| *value += 1);
                 }
                 Err(failure) => {
-                    preview.set(None);
-                    redacted_preview.set(None);
-                    checked.set(false);
-                    error.set(Some(failure));
+                    preview.try_set(None);
+                    redacted_preview.try_set(None);
+                    checked.try_set(false);
+                    error.try_set(Some(failure));
                 }
+                _ => {}
             }
         }
     });
@@ -316,7 +302,7 @@ fn PostingForm(
             <button class="button secondary" type="button" disabled=move||!complete.get() on:click=move |_|{prepare.dispatch(());}>"Zkontrolovat finální náhled"</button>
             {move||preview.get().map(|value|view!{<section class="publication-preview" aria-label="Finální náhled dokumentu"><SnapshotContent preview=value/>
                 {move||redacted_preview.get().map(|derived|view!{<section class="publication-preview" aria-label="Finální náhled anonymizovaného znění"><h3>"Samostatné anonymizované znění"</h3><SnapshotContent preview=derived/><p class="info-banner">"Anonymizované znění se při potvrzení také nevratně uzamkne. Jde o samostatnou veřejnou kopii, jejíž bajty tím nejsou označeny za původně vyvěšené."</p></section>})}
-                <div class="document-field-label"><p class="info-banner"><Icon name="lock"/>"Po vyvěšení již obsah dokumentu nelze upravit."</p><DocumentHelp label="Uzamčení po vyvěšení" text="Uzamkne se název, text i všechny přílohy této podoby. Opravu vytvoříte jako nový propojený dokument. Veřejnou dostupnost lze ukončit i později, uzamčení se tím nezruší."/></div>
+                <div class="document-field-label"><p class="info-banner"><Icon name="lock"/>"Po vyvěšení již obsah dokumentu nelze upravit."</p><DocumentHelp label="Uzamčení po vyvěšení" text="Uzamkne se název, text i všechny přílohy této podoby. Sejmutí dokumentu ani změna dostupnosti příloh podle zvoleného režimu obsah znovu neodemknou."/></div>
                 <label class="admin-check"><input type="checkbox" prop:checked=move||checked.get() on:change=move|ev|checked.set(event_target_checked(&ev))/><span>"Zkontroloval/a jsem uvedený obsah a všechny přílohy."</span></label>
                 <button class="button primary" type="submit" disabled=move||!checked.get()||disabled.get()>"Potvrdit vyvěšení této podoby"</button>
             </section>})}
@@ -364,76 +350,6 @@ fn CancelSchedule(id: i64, busy: Signal<bool>, reload: RwSignal<u64>) -> impl In
         <label class="admin-field" for="cancel-schedule-reason"><span>"Důvod zrušení plánovaného vyvěšení"</span><textarea id="cancel-schedule-reason" maxlength="2000" prop:value=move ||reason.get() on:input=move |ev|reason.set(event_target_value(&ev))></textarea></label>
         <ConfirmButton label="Zrušit plánované vyvěšení" title="Zrušit plánované vyvěšení?" description="Přílohy zůstanou zachované. Pokud se dokument mezitím skutečně vyvěsil, zrušení plánu se neprovede." disabled danger=true on_confirm=Callback::new(move |()|{cancel.dispatch(());})/>
     </section>}
-}
-
-#[component]
-fn ArchiveDocument(id: i64, busy: Signal<bool>, reload: RwSignal<u64>) -> impl IntoView {
-    let ctx = expect_context::<AdminContext>();
-    let reason = RwSignal::new(String::new());
-    let error = RwSignal::new(None);
-    let archive = Action::new_local(move |_: &()| {
-        let payload = json!({"reason":reason.get_untracked()});
-        async move {
-            error.set(None);
-            match api::save(
-                "POST",
-                &format!("/api/v1/admin/documents/{id}/archive"),
-                Some(payload),
-            )
-            .await
-            {
-                Ok(_) => {
-                    ctx.changed("Dokument je přesunutý do společného archivu. Jeho veřejná dostupnost a uchované přílohy zůstávají beze změny.");
-                    reload.update(|value| *value += 1);
-                }
-                Err(failure) => error.set(Some(failure)),
-            }
-        }
-    });
-    view! {<details><summary>"Přesunout do archivu"</summary><ErrorMessage error/>
-        <p>"Dokument bude ve společném archivu. Archivace nezmění jeho veřejnou dostupnost ani přílohy."</p>
-        <label class="admin-field" for="archive-reason"><span>"Důvod archivace *"</span><textarea id="archive-reason" required maxlength="2000" prop:value=move||reason.get() on:input=move|ev|reason.set(event_target_value(&ev))></textarea></label>
-        <ConfirmButton label="Přesunout do archivu" title="Přesunout dokument do archivu?" description="Obsah, přílohy a jejich veřejná dostupnost zůstanou zachované." disabled=Signal::derive(move||busy.get()||archive.pending().get()||reason.get().trim().is_empty()) on_confirm=Callback::new(move|()|{archive.dispatch(());})/>
-    </details>}
-}
-
-#[component]
-fn TopicForm(
-    id: i64,
-    selected: Option<i64>,
-    busy: Signal<bool>,
-    reload: RwSignal<u64>,
-) -> impl IntoView {
-    let ctx = expect_context::<AdminContext>();
-    let categories = LocalResource::new(|| api::get::<Vec<api::Category>>("/api/v1/categories"));
-    let category = RwSignal::new(selected.map(|v| v.to_string()).unwrap_or_default());
-    let reason = RwSignal::new(String::new());
-    let error = RwSignal::new(None);
-    let update = Action::new_local(move |_: &()| {
-        let payload = json!({"category_id":category.get_untracked().parse::<i64>().ok(),"reason":reason.get_untracked()});
-        async move {
-            error.set(None);
-            match api::save(
-                "POST",
-                &format!("/api/v1/admin/documents/{id}/topics"),
-                Some(payload),
-            )
-            .await
-            {
-                Ok(_) => {
-                    ctx.changed("Tematické zařazení bylo uloženo do auditu.");
-                    reload.update(|v| *v += 1);
-                }
-                Err(failure) => error.set(Some(failure)),
-            }
-        }
-    });
-    view! {<details><summary>"Tematické zařazení"</summary><form on:submit=move |ev|{ev.prevent_default();if !busy.get_untracked() && !update.pending().get_untracked(){update.dispatch(());}}><ErrorMessage error/>
-        <p>"Téma slouží katalogu. Jeho změna není změnou původního publikovaného obsahu ani úkonem vyvěšení."</p>
-        <label class="admin-field" for="document-topic"><span>"Téma"</span><select id="document-topic" prop:value=move ||category.get() on:change=move |ev|category.set(event_target_value(&ev))><option value="">"Bez tématu"</option><Suspense fallback=||()>{move ||categories.get().and_then(Result::ok).map(|items|items.into_iter().map(|item|view!{<option value=item.id.to_string()>{item.name}</option>}).collect_view())}</Suspense></select></label>
-        <label class="admin-field" for="topic-reason"><span>"Důvod zařazení *"</span><input id="topic-reason" required maxlength="2000" prop:value=move ||reason.get() on:input=move |ev|reason.set(event_target_value(&ev))/></label>
-        <button type="submit" class="button secondary" disabled=move ||busy.get() ||update.pending().get()>"Uložit zařazení"</button>
-    </form></details>}
 }
 
 #[component]
@@ -506,41 +422,6 @@ fn PostingRecord(
         </details>})}
         <EvidenceCorrection document_id posting_id=id busy reload/>
     </li>}
-}
-
-#[component]
-fn AttachRelation(id: i64, busy: Signal<bool>, reload: RwSignal<u64>) -> impl IntoView {
-    let ctx = expect_context::<AdminContext>();
-    let related_id = RwSignal::new(String::new());
-    let kind = RwSignal::new("supplement".to_string());
-    let reason = RwSignal::new(String::new());
-    let error = RwSignal::new(None);
-    let link = Action::new_local(move |_: &()| {
-        let payload = json!({"related_id":related_id.get_untracked().parse::<i64>().ok(),"kind":kind.get_untracked(),"reason":reason.get_untracked()});
-        async move {
-            error.set(None);
-            match api::save(
-                "POST",
-                &format!("/api/v1/admin/documents/{id}/relations"),
-                Some(payload),
-            )
-            .await
-            {
-                Ok(_) => {
-                    ctx.changed("Vazba na navazující dokument byla zaznamenána.");
-                    reload.update(|v| *v += 1);
-                }
-                Err(failure) => error.set(Some(failure)),
-            }
-        }
-    });
-    view! {<details><summary>"Připojit existující doplnění nebo opravu"</summary><form on:submit=move |ev|{ev.prevent_default();if !busy.get_untracked()&&!link.pending().get_untracked(){link.dispatch(());}}><ErrorMessage error/>
-        <p>"Vyberte samostatný navazující záznam. Připojení nezmění jeho veřejnou dostupnost ani nezaloží vyvěšení."</p>
-        <label class="admin-field" for="relation-document"><span>"ID navazujícího dokumentu *"</span><input id="relation-document" type="number" min="1" required prop:value=move ||related_id.get() on:input=move |ev|related_id.set(event_target_value(&ev))/></label>
-        <label class="admin-field" for="relation-kind"><span>"Druh vazby"</span><select id="relation-kind" prop:value=move ||kind.get() on:change=move |ev|kind.set(event_target_value(&ev))><option value="supplement">"Doplnění"</option><option value="correction">"Oprava"</option><option value="replacement">"Nahrazení"</option><option value="anonymized">"Anonymizované znění"</option></select></label>
-        <label class="admin-field" for="relation-reason"><span>"Interní důvod *"</span><textarea id="relation-reason" required maxlength="2000" prop:value=move ||reason.get() on:input=move |ev|reason.set(event_target_value(&ev))></textarea></label>
-        <button class="button secondary" type="submit" disabled=move ||busy.get()||link.pending().get()>"Připojit vazbu"</button>
-    </form></details>}
 }
 
 #[component]

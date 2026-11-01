@@ -27,15 +27,50 @@ async function login(page: Page) {
   await expect(page.getByRole('navigation', { name: 'Administrace' })).toBeVisible()
 }
 
-async function operations(page: Page) {
-  if (await page.locator('details.document-operations').getAttribute('open') === null) {
-    await page.getByText('Další úkony s dokumentem', { exact: true }).click()
+// Prepare existing records through the authenticated API when their creation
+// controls intentionally are not part of the simplified editor.
+async function prepareDocument(page: Page, path: string, data: object) {
+  const session = await page.request.get(`${baseURL}/api/v1/admin/session`)
+  expect(session.ok()).toBe(true)
+  const { csrf_token } = await session.json()
+  const response = await page.request.post(`${baseURL}${path}`, {
+    headers: { 'x-csrf-token': csrf_token, Origin: baseURL }, data,
+  })
+  expect(response.ok()).toBe(true)
+  return response.status() === 204 ? null : response.json()
+}
+
+async function completePublication(page: Page, path: string, submit: () => Promise<void>) {
+  let release!: () => void
+  let ready!: () => void
+  const responseGate = new Promise<void>(resolve => { release = resolve })
+  const received = new Promise<void>(resolve => { ready = resolve })
+  const url = `${baseURL}${path}`
+  await page.route(url, async route => {
+    const response = await route.fetch()
+    ready()
+    await responseGate
+    await route.fulfill({ response })
+  }, { times: 1 })
+  try {
+    await submit()
+    await received
+    // A submitted publication must finish before more content can be edited.
+    await expect(page.locator('#entry-name')).toBeDisabled()
+    await expect(page.getByLabel('Popis', { exact: true })).toBeDisabled()
+    const completion = page.waitForResponse(url)
+    release()
+    expect((await completion).ok()).toBe(true)
+  } finally {
+    release()
   }
 }
 
 async function publishDocument(page: Page) {
   await page.getByRole('button', { name: 'Zveřejnit dokument', exact: true }).click()
-  await page.getByRole('dialog').getByRole('button', { name: 'Zveřejnit dokument', exact: true }).click()
+  const id = page.url().split('/').pop()!
+  await completePublication(page, `/api/v1/admin/documents/${id}/publish`, () =>
+    page.getByRole('dialog').getByRole('button', { name: 'Zveřejnit dokument', exact: true }).click())
   await expect(page.locator('.document-state-facts')).toContainText('Veřejně dostupný')
 }
 
@@ -66,8 +101,9 @@ async function publishPosting(page: Page, date: string, action = 'hide', redacte
   await expect(page.getByRole('region', { name: 'Finální náhled dokumentu' })).toContainText('Po vyvěšení již obsah dokumentu nelze upravit.')
   if (redactedId) await expect(page.getByRole('region', { name: 'Finální náhled anonymizovaného znění', exact: true })).toContainText('jejíž bajty tím nejsou označeny za původně vyvěšené')
   await page.getByLabel('Zkontroloval/a jsem uvedený obsah a všechny přílohy.', { exact: true }).check()
-  await page.getByRole('button', { name: 'Potvrdit vyvěšení této podoby', exact: true }).click()
   const id = Number(page.url().split('/').pop())
+  await completePublication(page, `/api/v1/admin/documents/${id}/postings`, () =>
+    page.getByRole('button', { name: 'Potvrdit vyvěšení této podoby', exact: true }).click())
   await expect.poll(() => fixtureQuery('SELECT withdraw_on=published_on+21 FROM documents WHERE id=%s', [id])[0][0]).toBe(true)
 }
 
@@ -324,7 +360,7 @@ test('cancelling a scheduled notice preserves private files and rejects a stale 
   expect(await preservedFile.body()).toEqual(contents)
 })
 
-test('an ordinary catalogue document can be posted with the same identity and corrected as a new draft', async ({ page, browser }) => {
+test('an ordinary catalogue document can be posted with the same identity without extra document actions', async ({ page, browser }) => {
   await login(page)
   await page.getByRole('navigation', { name: 'Administrace' }).getByRole('link', { name: 'Dokumenty', exact: true }).click()
   await page.getByRole('link', { name: 'Nový dokument', exact: true }).click()
@@ -356,16 +392,8 @@ test('an ordinary catalogue document can be posted with the same identity and co
     await page.setViewportSize({ width: 390, height: 844 })
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
     await page.screenshot({ path: 'target/admin-document-mobile.png', fullPage: true })
-    await operations(page)
-    await page.getByText('Vytvořit opravu nebo navazující dokument', { exact: true }).click()
-    await page.locator('#correction-reason').fill('Oprava syntetického textu.')
-    await page.getByRole('button', { name: 'Vytvořit navazující koncept', exact: true }).click()
-    await expect(page).toHaveURL(/\/admin\/dokumenty\/\d+$/)
-    await expect.poll(() => page.url().split('/').pop()).not.toBe(id)
-    await expect(page.locator('.document-state-facts')).toContainText('Koncept')
-    await expect(page.locator('#entry-name')).toBeEnabled()
-    await expect(page.locator('#document-board-enabled')).not.toBeChecked()
-    await expect(page.locator('#document-attachment-access')).toHaveCount(0)
+    await expect(page.getByText('Další úkony s dokumentem', { exact: true })).toHaveCount(0)
+    await expect(page.locator('#correction-reason,#visibility-reason,#relation-document,#document-topic')).toHaveCount(0)
   } finally {
     await visitor.close()
   }
@@ -379,13 +407,11 @@ test('an anonymized copy is previewed and frozen without claiming the original p
   await page.getByRole('button', { name: 'Uložit koncept', exact: true }).click()
   await expect(page).toHaveURL(/\/admin\/dokumenty\/\d+$/)
   const original = page.url().split('/').pop()!
-  await operations(page)
-  await page.getByText('Vytvořit opravu nebo navazující dokument', { exact: true }).click()
-  await page.locator('#correction-kind').selectOption('anonymized')
-  await page.locator('#correction-reason').fill('Syntetická oddělená veřejná kopie.')
-  await page.getByRole('button', { name: 'Vytvořit navazující koncept', exact: true }).click()
-  await expect.poll(() => page.url().split('/').pop()).not.toBe(original)
-  const derived = page.url().split('/').pop()!
+  const copy = await prepareDocument(page, `/api/v1/admin/documents/${original}/corrections`, {
+    kind: 'anonymized', reason: 'Syntetická oddělená veřejná kopie připravená mimo editor.',
+  })
+  const derived = String(copy.id)
+  await page.goto(`/admin/dokumenty/${derived}`)
   await page.getByLabel('Název', { exact: false }).fill('Samostatné anonymizované znění')
   await page.getByLabel('Popis', { exact: true }).fill('Veřejné samostatné znění bez osobních údajů.')
   await page.getByRole('button', { name: 'Uložit změny', exact: true }).click()
@@ -432,12 +458,10 @@ test('ordinary document archive preserves public metadata and files in the same 
   await expect(page.locator('.admin-files li')).toHaveCount(1)
   const file = (await page.locator('.admin-files a').getAttribute('href'))!.replace('/admin', '')
   await publishDocument(page)
-  await operations(page)
-  await page.getByText('Přesunout do archivu', { exact: true }).first().click()
-  await page.getByLabel('Důvod archivace *', { exact: true }).fill('Ukončení aktuálnosti běžného syntetického dokumentu.')
-  await page.getByRole('button', { name: 'Přesunout do archivu', exact: true }).click()
-  await page.getByRole('dialog').getByRole('button', { name: 'Přesunout do archivu', exact: true }).click()
-  await expect(page.locator('.admin-flash')).toContainText('společného archivu')
+  await expect(page.getByText('Další úkony s dokumentem', { exact: true })).toHaveCount(0)
+  await prepareDocument(page, `/api/v1/admin/documents/${id}/archive`, {
+    reason: 'Příprava již archivovaného syntetického záznamu pro veřejný přehled.',
+  })
   expect(fixtureQuery('SELECT status,public_access,board_status,has_removed_posting FROM documents WHERE id=%s', [Number(id)])[0]).toEqual(['archived', true, null, false])
   const visitor = await browser.newContext()
   try {
@@ -458,4 +482,80 @@ test('ordinary document archive preserves public metadata and files in the same 
   } finally {
     await visitor.close()
   }
+})
+
+
+test('switching a saved draft to the board requires saving before a fresh final preview', async ({ page }) => {
+  const pageErrors: string[] = []
+  page.on('pageerror', error => pageErrors.push(error.message))
+  await login(page)
+  await page.goto('/admin/dokumenty/nove')
+  await page.getByLabel('Název', { exact: false }).fill('Přepnutí konceptu na desku')
+  await page.getByRole('button', { name: 'Uložit koncept', exact: true }).click()
+  await expect(page).toHaveURL(/\/admin\/dokumenty\/\d+$/)
+  const id = page.url().split('/').pop()!
+  await expect(page.getByRole('button', { name: 'Zveřejnit dokument', exact: true })).toBeEnabled()
+  await page.locator('#document-board-enabled').check()
+  await expect(page.getByRole('button', { name: 'Zveřejnit dokument', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'Nejdříve uložte změny', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Potvrzení vyvěšení', exact: true })).toHaveCount(0)
+  await page.locator('#document-posted').fill(fixtureQuery("SELECT to_char((CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Prague')::date, 'YYYY-MM-DD')")[0][0])
+  await page.locator('#document-days').fill('7')
+  await page.locator('#document-attachment-access').selectOption('private')
+  await page.getByRole('button', { name: 'Uložit změny', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Potvrzení vyvěšení', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Nejdříve uložte změny', exact: true })).toHaveCount(0)
+
+  // A response received after editing must not touch an unmounted preview.
+  let releasePreview!: () => void
+  let previewReady!: () => void
+  const responseGate = new Promise<void>(resolve => { releasePreview = resolve })
+  const ready = new Promise<void>(resolve => { previewReady = resolve })
+  const previewUrl = `${baseURL}/api/v1/admin/documents/${id}/preview`
+  await page.route(previewUrl, async route => {
+    const response = await route.fetch()
+    previewReady()
+    await responseGate
+    await route.fulfill({ response })
+  }, { times: 1 })
+  try {
+    await page.getByRole('button', { name: 'Zkontrolovat finální náhled', exact: true }).click()
+    await ready
+    await page.getByLabel('Popis', { exact: true }).fill('Upraveno během načítání náhledu.')
+    await expect(page.getByRole('heading', { name: 'Nejdříve uložte změny', exact: true })).toBeVisible()
+    const lateResponse = page.waitForResponse(previewUrl)
+    releasePreview()
+    await (await lateResponse).finished()
+    await page.getByRole('button', { name: 'Uložit změny', exact: true }).click()
+    await expect(page.getByRole('heading', { name: 'Potvrzení vyvěšení', exact: true })).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Finální náhled dokumentu', exact: true })).toHaveCount(0)
+    expect(pageErrors).toEqual([])
+  } finally {
+    releasePreview()
+  }
+
+  // Unsaved changes cannot leave a previously approved preview actionable.
+  await page.getByRole('button', { name: 'Zkontrolovat finální náhled', exact: true }).click()
+  await expect(page.getByRole('region', { name: 'Finální náhled dokumentu', exact: true })).toBeVisible()
+  await page.getByLabel('Zkontroloval/a jsem uvedený obsah a všechny přílohy.', { exact: true }).check()
+  await page.getByLabel('Popis', { exact: true }).fill('Nová podoba po načtení náhledu.')
+  await expect(page.getByRole('button', { name: 'Potvrdit vyvěšení této podoby', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'Nejdříve uložte změny', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Uložit změny', exact: true }).click()
+  await page.getByRole('button', { name: 'Zkontrolovat finální náhled', exact: true }).click()
+  await expect(page.getByRole('region', { name: 'Finální náhled dokumentu', exact: true })).toContainText('Nová podoba po načtení náhledu.')
+  await expect(page.getByLabel('Zkontroloval/a jsem uvedený obsah a všechny přílohy.', { exact: true })).not.toBeChecked()
+
+  // Switching back also requires a save before the ordinary publication action.
+  await page.locator('#document-board-enabled').uncheck()
+  await expect(page.getByRole('button', { name: 'Zveřejnit dokument', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Potvrdit vyvěšení této podoby', exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Uložit změny', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Zveřejnit dokument', exact: true })).toBeEnabled()
+  await expect(page.getByRole('heading', { name: 'Potvrzení vyvěšení', exact: true })).toHaveCount(0)
+  expect(pageErrors).toEqual([])
+  expect(fixtureQuery('SELECT board_status,(SELECT count(*) FROM document_postings WHERE document_id=%s) FROM documents WHERE id=%s', [Number(id), Number(id)])[0]).toEqual([null, 0])
+  await publishDocument(page)
+  await expect(page.getByRole('heading', { name: 'Nejdříve uložte změny', exact: true })).toHaveCount(0)
+  expect(pageErrors).toEqual([])
 })

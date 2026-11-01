@@ -75,19 +75,21 @@ Publication rules, pre-publication review, public archive minimization and
 publication evidence are implemented. See [notice-board.md](notice-board.md)
 for behavior and municipal responsibilities.
 
-The 15-day default is not a universal legal rule. Select the appropriate profile
-for each document, including its date calculation and restrictions on early
-withdrawal. Municipal property intentions and council meeting announcements have
-different minimum intervals. See [Ministry guidance](https://mv.gov.cz/povinnosti-pri-nakladani-s-majetkem-obce).
+No publication interval is preselected. The operator enters the number of complete
+calendar days after the posting day. Planned removal is the posting date plus the
+entered number plus one.
+The editor does not select a legal profile or determine the applicable legal
+period. See [the documented calculation and legal review](document-legal-review.md)
+and [Ministry guidance](https://mv.gov.cz/povinnosti-pri-nakladani-s-majetkem-obce).
 Agree on outage handling and evidence of actual publication with the municipality.
 
-After withdrawal, a minimal record remains. Its public form must respect the
+After removal, the stored record remains. Its public form must respect the
 purpose and permitted duration of personal data publication. Titles, descriptions
 and attachment names can contain personal data. Selecting archive retention does
 not justify publishing those data indefinitely. See [ÚOOÚ on notice boards](https://uoou.gov.cz/poznatek-z-dozorove-cinnosti-k-dorucovani-pisemnosti-na-uredni-desce).
 
-The public archive does not replace official records management. Removing a web
-attachment must be separated from retaining the official original and evidence.
+The public archive does not replace official records management. Ending public
+access to a web attachment is separate from retaining the original and evidence.
 Agree on this workflow with the responsible records officer. See [Ministry
 records management materials](https://mv.gov.cz/archivnictvi-a-spisova-sluzba-2).
 

@@ -62,9 +62,12 @@ Znalost původního odkazu nepřekoná aktuální kontrolu přístupu na serveru
 
 Volba **přílohy pouze pro administrátory** po sejmutí skryje soubory a jejich
 názvy. Název a popis dokumentu mohou zůstat veřejné. Vysvětlivka na to výslovně
-upozorňuje. Jestliže i tyto údaje vyžadují znepřístupnění, úředník ukončí veřejnou
-dostupnost celého záznamu. Pro další zveřejnění upravené podoby slouží nový
-propojený anonymizovaný dokument, který nepřepíše původní bajty.
+upozorňuje. Zjednodušený editor nenabízí ruční ukončení veřejnosti celého
+záznamu ani vytvoření propojené kopie. Jestliže i název nebo popis vyžadují
+znepřístupnění, musí oprávněný technický správce použít zachované chráněné API
+pro změnu veřejné dostupnosti s uvedením důvodu. Samotná volba skrytých příloh
+tuto potřebu neřeší. Existující propojené anonymizované znění zůstává samostatným
+dokumentem a nepřepisuje původní bajty.
 
 Oprávněný správce může originál dál stáhnout v administraci. Interní uchování
 má vlastní účel a retenční režim. Nejde o povolení uchovávat osobní údaje navždy.

@@ -551,3 +551,50 @@ credentials are intentionally excluded from this repository.
 The final SSR/WASM and administrator builds passed. The separate demo WASM
 configuration also passed `cargo check --no-default-features --features demo
 --lib --target wasm32-unknown-unknown`. Formatting and whitespace checks passed.
+
+## Editor follow-up: save before final publication
+
+The editor no longer exposes the additional-actions panel for corrections,
+relations, whole-record visibility, manual ordinary archival or topic assignment.
+Its unused frontend handlers, transfer fields and CSS selectors were removed.
+Existing backend operations, import review, history and access controls remain
+intact. The editorial and legal-review documentation distinguishes the simplified
+UI from technical operations that remain available through the protected API.
+
+Selecting the board checkbox in an existing ordinary draft now replaces the
+publication action with an explicit save instruction. Saving displays the final
+posting confirmation using the persisted settings. Editing again removes the
+old preview and approval. The sidebar explains this order for new unsaved
+records as well. Switching back to an ordinary document also requires saving.
+
+Self-review and a separate security review found a delayed-response problem:
+a preview request could finish after editing had removed its form and then read
+disposed reactive state. Preview inputs are now captured before the request,
+and the response is checked against the live form and preview generation.
+Actual publication blocks content edits until the request finishes. Successful
+publication refreshes the live parent editor even if a child was replaced, while
+responses from an abandoned editor do not revive its state.
+
+Browser regression coverage now holds GET preview and both publication POST
+responses while checking these states. It also verifies that an already approved
+preview is discarded after an edit, the next preview contains the saved changes,
+and the removed controls are absent. Existing ordinary archived records and
+linked anonymized copies are prepared through authenticated APIs for their
+remaining public-view and posting tests.
+
+This follow-up changes no database schema, migration, import, notification logic
+or query. The existing migration and performance results above remain applicable.
+The local preview is updated using the same isolated database and credentials,
+without seeding it again or resetting the operator's test records.
+
+Final validation for this editor follow-up: SSR and WASM builds passed, and all
+13 affected browser scenarios passed in 1.6 minutes. The delayed POST checks use
+the response status and the refreshed UI rather than waiting for a routed
+HTTP 204 body. Formatting and whitespace checks passed. The unchanged backend
+and import suites were not rerun for this UI-only follow-up.
+
+The updated local instance on `http://127.0.0.1:3015` accepted the existing
+administrator login and served the current assets. A previously retained private
+file returned 404 through its original public link, 401 through its administrator
+link without login, and 200 to the authenticated administrator. A retained public
+archive file still returned 200. The database and credentials were preserved.

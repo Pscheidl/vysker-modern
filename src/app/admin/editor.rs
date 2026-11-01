@@ -64,6 +64,7 @@ fn EditorForm(kind: Kind, entry: Entry, reload: RwSignal<u64>) -> impl IntoView 
     let content = RwSignal::new(entry.content.clone());
     let published = RwSignal::new(entry.published.unwrap_or(false));
     let file_busy = RwSignal::new(false);
+    let publishing = RwSignal::new(false);
     let error = RwSignal::new(None);
     let navigate = use_navigate();
     let save = Action::new_local(move |_: &()| {
@@ -109,7 +110,7 @@ fn EditorForm(kind: Kind, entry: Entry, reload: RwSignal<u64>) -> impl IntoView 
             }
         }
     });
-    let busy = Signal::derive(move || save.pending().get() || file_busy.get());
+    let busy = Signal::derive(move || save.pending().get() || file_busy.get() || publishing.get());
     let heading = if id == 0 {
         kind.create_label().to_string()
     } else {
@@ -183,11 +184,11 @@ fn EditorForm(kind: Kind, entry: Entry, reload: RwSignal<u64>) -> impl IntoView 
             {(kind==Kind::Page&&id>0).then(move||view!{<PageHistory id name content busy/>})}
             {(kind==Kind::Document&&has_postings).then(move||view!{<IncidentForm id/>})}
             {(kind==Kind::Document).then(move||view!{<Files kind id files=entry.attachments editable=!locked busy working=file_busy reload/>})}
-            {(kind==Kind::Document&&id>0).then(move||view!{<super::document_actions::DocumentActions entry=operational_entry busy reload/>})}
+            {(kind==Kind::Document&&id>0).then(move||view!{<super::document_actions::DocumentActions entry=operational_entry board_enabled publishing busy reload/>})}
         </div>
         <aside class="admin-editor-sidebar"><section class="admin-panel admin-save-panel"><h2>"Uložení a zveřejnění"</h2>
-            {if locked{view!{<div class="admin-note"><Icon name="lock"/><p>{if scheduled{"Dokument čeká na plánované vyvěšení. Obsah této podoby nelze během čekání měnit."}else if immutable{"Obsah a přílohy nelze měnit. Opravu nebo doplnění založte jako nový propojený koncept."}else{"Zveřejněný dokument upravíte vytvořením nového navazujícího konceptu."}}</p></div>}.into_any()}else{view!{
-                <p>{if id==0&&kind==Kind::Document{"Nejdříve uložte koncept. Potom přidejte přílohy a dokument zveřejněte."}else{"Uložte změny před dalšími kroky."}}</p>
+            {if locked{view!{<div class="admin-note"><Icon name="lock"/><p>{if scheduled{"Dokument čeká na plánované vyvěšení. Obsah této podoby nelze během čekání měnit."}else if immutable{"Obsah a přílohy této vyvěšené podoby nelze měnit."}else{"Obsah a přílohy zveřejněného dokumentu nelze v tomto editoru měnit."}}</p></div>}.into_any()}else{view!{
+                <p>{move||if kind==Kind::Document&&board_enabled.get(){if id==0{"Nejdříve uložte koncept. Potom přidejte přílohy a potvrďte finální náhled vyvěšení."}else{"Nejdříve uložte změny. Potom se zobrazí potvrzení vyvěšení."}}else if id==0&&kind==Kind::Document{"Nejdříve uložte koncept. Potom přidejte přílohy a dokument zveřejněte."}else{"Uložte změny před dalšími kroky."}}</p>
                 <button class="button primary" type="submit" form="content-editor" disabled=move||busy.get()>{move||if save.pending().get(){"Ukládám…"}else if id==0&&kind==Kind::Document{"Uložit koncept"}else{"Uložit změny"}}</button>
                 <span class="admin-save-state" role="status">{move||if ctx.dirty.get(){"Máte neuložené změny"}else if id==0{"Nový koncept"}else{"Všechny změny jsou uložené"}}</span>
             }.into_any()}}

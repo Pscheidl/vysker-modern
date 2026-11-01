@@ -74,9 +74,9 @@ docker compose --profile test run --build --rm tests
 You can also use `nix develop -c ./scripts/test.sh`. The SMTP test reads
 `TEST_SMTP_HOST` and `TEST_SMTP_PORT`, defaulting to `127.0.0.1:1025`.
 
-Tests cover authentication, CSRF, document states, the default 15-day interval,
-minimum publication dates, permanent archive records, attachment removal and
-retention, missed schedules, Europe/Prague dates, repeated maintenance, legacy
+Tests cover authentication, CSRF, document states, explicitly chosen posting intervals,
+permanent content locks, archive records, private retained attachments and separate
+retention disposal, missed schedules, Europe/Prague dates, repeated maintenance, legacy
 migrations, subscription verification and withdrawal, the mail queue, audit
 protection, privacy retention, proxy trust, readiness and database recovery.
 
@@ -191,7 +191,7 @@ than a partial patch.
 | `GET /admin/documents`, `POST /admin/documents` | Manage general documents |
 | `PUT /admin/documents/{id}` | Edit a document draft |
 | `POST /admin/documents/{id}/publish` | Publish and notify subscribers |
-| `POST /admin/documents/{id}/archive` | Hide a general document |
+| `POST /admin/documents/{id}/archive` | Archive a general document without changing its public access or files |
 | `POST /admin/documents/{id}/attachments` | Upload a document attachment |
 | `GET /admin/pages`, `POST /admin/pages` | List or create content pages |
 | `PUT /admin/pages/{id}` | Edit a page and its publication state |
@@ -212,28 +212,32 @@ Draft input includes `title`, `description`, `reference_number`, `category_id`,
 `src/notice_policy.rs`.
 
 - The default publication date is today in Europe/Prague.
-- The default interval is 15 days. `duration_days` accepts 1 to 3650, subject
-  to the minimum for the chosen publication rule.
+- There is no default interval. `duration_days` accepts 1 to 3650 complete
+  calendar days after the posting day. Planned removal is the posting date plus
+  the entered number plus one.
 - `withdraw_on` specifies a date instead of an interval.
-- `unlimited=true` disables automatic withdrawal and cannot be combined with an interval.
-- `retain_attachments` defaults to `false`.
-- The withdrawal date is the first day the notice is no longer displayed.
-  Dates use `YYYY-MM-DD`.
-- Withdrawal always preserves a minimal archive record and attachment metadata.
-- Without archive retention, file contents are removed in the same transaction.
+- `unlimited=true` is rejected. A duration or explicit removal date is required.
+- `retain_attachments` is required and has no default.
+- The withdrawal date is the planned first day outside the posting interval.
+  Actual removal is recorded separately. Dates use `YYYY-MM-DD`.
+- Removal preserves the stored document and attachment bytes. Archive metadata
+  is public only while the document's access rules allow it.
+- Without public attachment retention, files become private and remain available
+  through authenticated administration. Disposal is a separate controlled operation.
 - Only drafts can be edited. Published, scheduled and archived notices are immutable.
   Correcting published content requires a new notice.
 
-The maintenance task runs on startup and on a 30-second schedule. Public queries
-apply visibility rules immediately at expiry, even before cleanup runs. A missed
-scheduled publication is returned to draft if its interval is still valid, or
-archived without a notification if the entire interval has expired. See
+The maintenance task runs on startup and on a 30-second schedule. Public file
+access rules apply at expiry, even before the worker records removal. A missed
+scheduled publication is recorded for review without inventing a past posting,
+a new public archive entry or a notification. See
 [notice-board.md](notice-board.md) for review rules, evidence and incident handling.
 
 ### General documents and content pages
 
 A document accepts `title` and `description`. Edit and attach files while it is
-a draft, then publish. Archived general documents are hidden from public access.
+a draft, then publish. Archiving a general document preserves its separate public
+access decision and files. Hiding the whole document is a distinct visibility operation.
 Public document URLs are `/dokumenty/{id}`.
 
 A page accepts `slug`, `title`, `content` and `published`. Updates also require
@@ -342,9 +346,10 @@ Configure the public HTTPS origin and a real SMTP service for production.
 If switching from localhost to 127.0.0.1, update `OBEC_VEREJNA_URL` too. It is
 used for email links and administrative origin checks.
 
-The homepage fetches only three active and three archived notices, with a separate
-active count. Public notice and document lists and site-wide search use server
-pagination with 20 results per page. A notice detail loads directly by ID.
+The homepage fetches only three active notices, with a separate active count and
+a link to the shared document archive. Public notice and document lists and
+site-wide search use server pagination with 20 results per page. A notice detail
+loads directly by ID.
 `GET /api/v1/search` accepts `q`, `kind` (`all`, `notice`, `document`, `page`),
 `state` (`current`, `archive`, `all`), `category`, `sort` (`newest`, `oldest`,
 `title`) and a one-based `page`. Empty filters use current records and newest

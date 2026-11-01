@@ -38,7 +38,6 @@ pub struct Entry {
     pub withdrawn_at: Option<String>,
     pub reference_number: Option<String>,
     pub issuer: Option<String>,
-    pub category_id: Option<i64>,
     pub retain_attachments: Option<bool>,
     pub board_enabled: bool,
     pub duration_days: Option<i64>,
@@ -115,11 +114,6 @@ pub struct PublicationPreview {
     pub attachments: Vec<File>,
 }
 
-#[derive(Clone, Deserialize)]
-pub struct Category {
-    pub id: i64,
-    pub name: String,
-}
 #[derive(Clone, Default, Deserialize)]
 pub struct Overview {
     pub published: i64,

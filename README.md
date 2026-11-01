@@ -174,9 +174,10 @@ Basic environment settings:
 
 ## Product requirements
 
-- Official notice board with a default withdrawal interval of 15 days and a
-  manual override, subject to the selected publication rule.
-- The public archive contains documented removed postings whose documents remain public.
+- Official notice board with an explicitly entered number of complete calendar
+  days after the posting day, without a preselected interval.
+- The shared public archive contains ordinary archived documents and documented
+  removed postings whose documents remain public, excluding current or scheduled postings.
 - Attachment availability after removal is an explicit mandatory choice with no default. Private attachments remain downloadable by administrators until separate retention disposal.
 - A single document catalogue and administration, with separate posting history.
 - Notifications about new documents, including official notices, activated
