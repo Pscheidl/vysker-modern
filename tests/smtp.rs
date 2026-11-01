@@ -336,19 +336,28 @@ async fn run_archive_import(app: &App, directory: &std::path::Path) {
         .env("TEST_IMPORT_SCHEMA", schema)
         .arg("-c")
         .arg(r#"
-import os, sys
+import json, os, sys
 from pathlib import Path
 sys.path.insert(0, 'tests')
 from test_legacy import navigation_bundle
+from legacy_documents import configure_source
 from legacy_import import import_bundle
 from postgres import connect
 from psycopg import sql
 root = Path(sys.argv[1])
 if not (root / 'manifest.json').exists():
-    navigation_bundle(root)
+    data = navigation_bundle(root)
+    # Explicit historical evidence makes the archive public, so suppression is
+    # exercised for publishable content rather than a private proposal.
+    data['assets'][0]['dates'] = dict(published_on='2020-03-02',
+        withdraw_on='2020-03-20', removed_on='2020-03-20')
+    (root / 'manifest.json').write_text(json.dumps(data))
 with connect(os.environ['TEST_DATABASE_URL']) as conn:
     conn.execute(sql.SQL('SET search_path TO {}').format(sql.Identifier(os.environ['TEST_IMPORT_SCHEMA'])))
-    import_bundle(conn, root, publish_content=True, classify_navigation=True, archive_notices=True)
+    configure_source(conn, 'mirror', allow_publication=True,
+        reason='Synthetic SMTP fixture mirrors public historical content')
+    import_bundle(conn, root, publish_content=True, classify_navigation=True,
+        archive_notices=True, sync=True)
 "#)
         .arg(directory)
         .output().unwrap();
@@ -361,17 +370,50 @@ with connect(os.environ['TEST_DATABASE_URL']) as conn:
 
 #[tokio::test]
 #[ignore = "vyžaduje Mailpit a Python závislosti, spusťte scripts/test.sh --smtp"]
-async fn web_worker_delivers_real_python_archive_import_to_mailpit() {
+async fn web_worker_skips_historical_python_import_and_delivers_native_publications_to_mailpit() {
     let app = App::new().await;
-    confirmed_subscriber(&app, "archive-import@example.test").await;
+    let original = confirmed_subscriber(&app, "archive-import@example.test").await;
     let directory = tempfile::tempdir().unwrap();
     run_archive_import(&app, directory.path()).await;
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM documents WHERE document_is_public(documents,(now() AT TIME ZONE 'Europe/Prague')::date)"
+        )
+        .fetch_one(&app.state.pool)
+        .await
+        .unwrap(),
+        2
+    );
+    let imported: Vec<(i64, String)> =
+        sqlx::query_as("SELECT id,document_fingerprint(id) FROM documents ORDER BY id")
+            .fetch_all(&app.state.pool)
+            .await
+            .unwrap();
+    assert_eq!(imported.len(), 2);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM document_announcements WHERE origin='historical_import'"
+        )
+        .fetch_one(&app.state.pool)
+        .await
+        .unwrap(),
+        2
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM attachments WHERE data IS NOT NULL")
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM document_postings WHERE origin='source' AND initial_state='historical' AND certainty='documented' AND removed_on='2020-03-20'")
+        .fetch_one(&app.state.pool).await.unwrap(), 1);
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM publication_outbox")
             .fetch_one(&app.state.pool)
             .await
             .unwrap(),
-        2
+        0
     );
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM mail_queue WHERE purpose='document'")
@@ -390,6 +432,67 @@ async fn web_worker_delivers_real_python_archive_import_to_mailpit() {
         .unwrap();
     let state = Backend::new(app.state.pool.clone(), config);
     let mut worker = mail::Worker::new(&state).unwrap();
+    assert!(!worker.deliver_one(&state, digest_time()).await.unwrap());
+    // A later subscriber and a repeated mirror run must not announce history.
+    let later = confirmed_subscriber(&app, "archive-import-later@example.test").await;
+    run_archive_import(&app, directory.path()).await;
+    assert!(!worker.deliver_one(&state, digest_time()).await.unwrap());
+    assert_eq!(
+        sqlx::query_as::<_, (i64, String)>(
+            "SELECT id,document_fingerprint(id) FROM documents ORDER BY id"
+        )
+        .fetch_all(&state.pool)
+        .await
+        .unwrap(),
+        imported
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM attachments")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM document_postings")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM publication_outbox")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM mail_queue WHERE purpose='document'")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM notice_events")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(sqlx::query_scalar::<_, bool>("SELECT status='archived' AND published_at IS NULL AND withdrawn_at IS NULL FROM notices").fetch_one(&state.pool).await.unwrap());
+
+    // New local publications still reach both confirmed recipients via SMTP.
+    let (notice, document) = native_publications(&app).await;
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM publication_outbox")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap(),
+        4
+    );
+    assert!(worker.deliver_one(&state, digest_time()).await.unwrap());
     assert!(worker.deliver_one(&state, digest_time()).await.unwrap());
     assert!(!worker.deliver_one(&state, digest_time()).await.unwrap());
     assert_eq!(
@@ -399,15 +502,19 @@ async fn web_worker_delivers_real_python_archive_import_to_mailpit() {
             .unwrap(),
         0
     );
-    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM mail_queue WHERE purpose='document' AND sent_at IS NOT NULL AND body IS NULL AND attempts=1").fetch_one(&state.pool).await.unwrap(), 1);
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM notice_events")
-            .fetch_one(&state.pool)
-            .await
-            .unwrap(),
-        0
-    );
-    assert!(sqlx::query_scalar::<_, bool>("SELECT status='archived' AND published_at IS NULL AND withdrawn_at IS NULL FROM notices").fetch_one(&state.pool).await.unwrap());
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM mail_queue WHERE purpose='document' AND sent_at IS NOT NULL AND body IS NULL AND attempts=1")
+        .fetch_one(&state.pool).await.unwrap(), 2);
+    let delivered: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT coalesce(i.notice_id,i.document_id),i.subscriber_id FROM mail_publication_items i JOIN mail_queue m ON m.id=i.mail_id WHERE m.sent_at IS NOT NULL ORDER BY 1,2")
+        .fetch_all(&state.pool).await.unwrap();
+    let mut expected = vec![
+        (notice, original.0),
+        (notice, later.0),
+        (document, original.0),
+        (document, later.0),
+    ];
+    expected.sort();
+    assert_eq!(delivered, expected);
     run_archive_import(&app, directory.path()).await;
     assert!(!worker.deliver_one(&state, digest_time()).await.unwrap());
     assert_eq!(
@@ -415,7 +522,7 @@ async fn web_worker_delivers_real_python_archive_import_to_mailpit() {
             .fetch_one(&state.pool)
             .await
             .unwrap(),
-        1
+        2
     );
 }
 
