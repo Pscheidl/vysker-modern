@@ -58,7 +58,7 @@ fn build(q: &SearchQuery, day: time::Date, selection: &str) -> QueryBuilder<Post
         if documents {
             b.push(" UNION ALL ");
         }
-        b.push("SELECT id,'page',title,substr(content,1,400),'/stranky/'||slug,'',updated_at,updated_at::date,FALSE FROM pages WHERE published=TRUE");
+        b.push("SELECT id,'page',title,content,'/stranky/'||slug,'',updated_at,updated_at::date,FALSE FROM pages WHERE published=TRUE");
         for word in fold(&q.q).split_whitespace() {
             b.push(" AND document_fold(title||' '||content) LIKE ")
                 .push_bind(literal_pattern(word));
@@ -97,7 +97,7 @@ pub async fn query(pool: &PgPool, q: &SearchQuery) -> Result<SearchPage> {
     let mut b = build(
         q,
         day,
-        "id,kind,title,substr(description,1,400) AS description,path,category,posted,archived",
+        "id,kind,title,description,path,category,posted,archived",
     );
     b.push(" ORDER BY ");
     match q.sort.as_str() {
@@ -115,8 +115,17 @@ pub async fn query(pool: &PgPool, q: &SearchQuery) -> Result<SearchPage> {
         .push_bind(PAGE_SIZE as i64)
         .push(" OFFSET ")
         .push_bind(((page - 1) * PAGE_SIZE) as i64);
-    let items: Vec<Hit> = b.build_query_as().fetch_all(&mut *tx).await?;
+    let mut items: Vec<Hit> = b.build_query_as().fetch_all(&mut *tx).await?;
     tx.commit().await?;
+    for hit in &mut items {
+        if hit.kind == "page" {
+            hit.preview_html = Some(crate::markdown::render_search_preview(&hit.description));
+        }
+        // Preserve the original plain/raw API excerpt without cutting Markdown before parsing.
+        if let Some((end, _)) = hit.description.char_indices().nth(400) {
+            hit.description.truncate(end);
+        }
+    }
     Ok(SearchPage {
         items,
         total: total as usize,

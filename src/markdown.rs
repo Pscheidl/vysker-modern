@@ -49,6 +49,73 @@ pub fn render_preview(source: &str) -> String {
     render_content(source, true)
 }
 
+/// Search rows link to the page as a whole, so their excerpts contain no nested links or images.
+/// Parse the complete source before shortening text to preserve Markdown and reference links.
+pub fn render_search_preview(source: &str) -> String {
+    let mut remaining = 1200usize;
+    let mut events = Vec::new();
+    let mut open = Vec::new();
+    let mut skipped_depth = 0usize;
+    for (event, range) in parser(source).into_offset_iter() {
+        // Empty blocks also need a bound, even when they consume no text budget.
+        if events.len() >= 256 {
+            break;
+        }
+        if skipped_depth > 0 {
+            match event {
+                Event::Start(_) => skipped_depth += 1,
+                Event::End(_) => skipped_depth -= 1,
+                _ => {}
+            }
+            continue;
+        }
+        if matches!(event, Event::Start(Tag::Image { .. }))
+            || (open.is_empty()
+                && matches!(event, Event::Start(Tag::Paragraph))
+                && source
+                    .get(range)
+                    .is_some_and(|text| text.trim() == "{{relief}}"))
+        {
+            skipped_depth = 1;
+            continue;
+        }
+        let event = match event {
+            Event::Start(Tag::Link { .. }) | Event::End(TagEnd::Link) => continue,
+            Event::Start(Tag::Heading { .. }) => Event::Start(Tag::Heading {
+                level: HeadingLevel::H3,
+                id: None,
+                classes: vec![],
+                attrs: vec![],
+            }),
+            Event::End(TagEnd::Heading(_)) => Event::End(TagEnd::Heading(HeadingLevel::H3)),
+            Event::Html(value) | Event::InlineHtml(value) => Event::Text(value),
+            other => other,
+        };
+        match &event {
+            Event::Start(tag) => open.push(tag.to_end()),
+            Event::End(_) => {
+                open.pop();
+            }
+            Event::Text(value) | Event::Code(value) => {
+                if let Some((end, _)) = value.char_indices().nth(remaining) {
+                    let shortened = format!("{}…", &value[..end]).into();
+                    events.push(if matches!(event, Event::Code(_)) {
+                        Event::Code(shortened)
+                    } else {
+                        Event::Text(shortened)
+                    });
+                    break;
+                }
+                remaining -= value.chars().count();
+            }
+            _ => {}
+        }
+        events.push(event);
+    }
+    events.extend(open.into_iter().rev().map(Event::End));
+    render_events(events.into_iter(), false)
+}
+
 /// Render a page body, recognizing one standalone relief marker at top level.
 /// Other Markdown uses, including code samples, remain literal text.
 #[derive(Debug, PartialEq, Eq)]
@@ -173,6 +240,56 @@ fn render_events<'a>(events: impl Iterator<Item = Event<'a>>, preview: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn search_previews_parse_complete_markdown_and_close_truncated_formatting() {
+        let text = "ž".repeat(600);
+        let html = render_search_preview(&format!(
+            "# Nadpis\n\n**{text}**\n\n[Kontakt][kontakt]\n\n[kontakt]: /obec"
+        ));
+        assert!(html.contains("<h3>Nadpis</h3>"));
+        assert!(html.contains(&format!("<strong>{text}</strong>")));
+        assert!(html.contains("<p>Kontakt</p>"));
+        assert!(!html.contains("[kontakt]"));
+        assert!(!html.contains("<a "));
+
+        let html = render_search_preview(&format!("**{}**", "ž".repeat(1400)));
+        assert_eq!(
+            html,
+            format!("<p><strong>{}…</strong></p>\n", "ž".repeat(1200))
+        );
+    }
+
+    #[test]
+    fn search_previews_bound_markup_without_text() {
+        let html = render_search_preview(&"-\n".repeat(1000));
+        assert!(html.len() < 4000);
+        assert!(html.ends_with("</ul>\n"));
+        assert_eq!(html.matches("<li>").count(), html.matches("</li>").count());
+        assert!(render_search_preview(&"---\n\n".repeat(1000)).len() < 4000);
+    }
+
+    #[test]
+    fn search_previews_omit_embeds_and_links_and_escape_raw_html() {
+        let html = render_search_preview(
+            "{{relief}}\n\n![Kaple](/api/v1/page-images/12)\n\n- **První**\n- *Druhá*\n\n`kód` [Kontakt](/obec) [x](javascript:alert)\n\n<script>alert(1)</script>",
+        );
+        assert!(html.contains("<li><strong>První</strong></li>"));
+        assert!(html.contains("<li><em>Druhá</em></li>"));
+        assert!(html.contains("<code>kód</code> Kontakt x"));
+        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        for forbidden in [
+            "{{relief}}",
+            "Kaple",
+            "<img",
+            "<a ",
+            "<script",
+            "javascript:",
+        ] {
+            assert!(!html.contains(forbidden), "{html}");
+        }
+        assert!(render_search_preview("`{{relief}}`").contains("<code>{{relief}}</code>"));
+    }
+
     #[test]
     fn relief_marker_is_a_standalone_page_block_only() {
         let blocks = render_page("# Nadpis\n\nÚvod.\n\n{{relief}}\n\n**Za modelem**", false);

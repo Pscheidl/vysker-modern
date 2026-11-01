@@ -172,7 +172,17 @@ fn ResultRow(hit: crate::search::Hit) -> impl IntoView {
     };
     let dated = hit.kind != "page";
     let date = crate::catalog::document_date(&hit.posted);
-    view! {<article class="site-result"><div><p class="eyebrow">{label}</p><h2><A href=site_url(&hit.path)>{hit.title}</A></h2><p>{hit.description}</p>
+    let preview = match hit.preview_html {
+        Some(html) => view! {
+            <div class="site-result-preview markdown-content" inner_html=html/>
+        }
+        .into_any(),
+        None => view! {
+            <p class="site-result-preview">{hit.description}</p>
+        }
+        .into_any(),
+    };
+    view! {<article class="site-result"><div><p class="eyebrow">{label}</p><h2><A href=site_url(&hit.path)>{hit.title}</A></h2>{preview}
         <div class="notice-meta">{(!hit.category.is_empty()).then(||view!{<span>{hit.category}</span>})}{dated.then(||view!{<time datetime=(!hit.posted.is_empty()).then_some(hit.posted)>{date}</time>})}</div>
     </div><Icon/></article>}
 }

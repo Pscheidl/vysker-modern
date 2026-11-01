@@ -20,6 +20,9 @@ pub struct Hit {
     pub kind: String,
     pub title: String,
     pub description: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "ssr", sqlx(skip))]
+    pub preview_html: Option<String>,
     pub path: String,
     pub category: String,
     pub posted: String,
@@ -116,6 +119,7 @@ pub async fn search(query: SearchQuery) -> Result<SearchPage, ServerFnError> {
                 kind: "notice".into(),
                 title: n.title,
                 description: n.description,
+                preview_html: None,
                 category: n.category,
                 posted: n.posted_iso,
                 archived: n.archived,

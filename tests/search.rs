@@ -26,6 +26,39 @@ fn scope(kind: &str, state: &str) -> SearchQuery {
 }
 
 #[tokio::test]
+async fn page_search_previews_format_complete_markdown_without_changing_plain_descriptions() {
+    let app = App::new().await;
+    let text = "ž".repeat(600);
+    let content = format!("**{text}**\n\n[Kontakt][kontakt]\n\n[kontakt]: /obec");
+    sqlx::query("INSERT INTO pages(slug,title,content,published,updated_at) VALUES ('nahled','Náhled',$1,TRUE,'2026-11-01')")
+        .bind(&content)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    let id = document(&app, "Popis", None, Some("2026-11-01")).await;
+    sqlx::query("UPDATE documents SET description='**Doslovný popis**' WHERE id=$1")
+        .bind(id)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    let response = app
+        .call("GET", "/api/v1/search?state=all", None, false)
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    let items = body["items"].as_array().unwrap();
+    let page = items.iter().find(|hit| hit["kind"] == "page").unwrap();
+    assert_eq!(page["description"].as_str().unwrap().chars().count(), 400);
+    let preview = page["preview_html"].as_str().unwrap();
+    assert!(preview.contains(&format!("<strong>{text}</strong>")));
+    assert!(preview.contains("<p>Kontakt</p>"));
+    assert!(!preview.contains("<a "));
+    let document = items.iter().find(|hit| hit["kind"] == "document").unwrap();
+    assert_eq!(document["description"], "**Doslovný popis**");
+    assert!(document["preview_html"].is_null());
+}
+
+#[tokio::test]
 async fn one_canonical_document_is_in_catalog_board_and_global_search_once() {
     let app = App::new().await;
     let ordinary = document(&app, "Běžný dokument", None, Some("2026-10-01")).await;
