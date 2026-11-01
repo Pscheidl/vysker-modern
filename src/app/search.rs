@@ -11,12 +11,16 @@ fn query(kind: &'static str) -> Memo<SearchQuery> {
         SearchQuery {
             q: p.get("q").unwrap_or_default(),
             kind: kind.into(),
-            state: if kind != "notice" {
+            state: if kind == "all" {
                 "all"
-            } else if p.get("stav").as_deref() == Some("archiv") {
+            } else if p.get("state").as_deref() == Some("archive")
+                || p.get("stav").as_deref() == Some("archiv")
+            {
                 "archive"
-            } else {
+            } else if kind == "notice" {
                 "current"
+            } else {
+                "all"
             }
             .into(),
             category: p.get("kategorie").unwrap_or_default(),
@@ -33,7 +37,7 @@ fn Filters(
 ) -> impl IntoView {
     let categories = Resource::new(|| (), |_| crate::catalog::load_subscription_categories());
     view! {<form class="filter-bar" method="get" action=site_url(path) role="search">
-        <input type="hidden" name="stav" value=move ||if query.get().state=="archive" {"archiv"} else {"aktualni"}/>
+        <input type="hidden" name="state" value=move ||query.get().state/>
         <div class="filter-search"><label class="sr-only" for="public-query">"Hledat v dokumentech"</label><Icon name="search"/><input id="public-query" type="search" name="q" maxlength="200" placeholder="Název, téma nebo číslo jednací…" prop:value=move ||query.get().q value=move ||query.get().q/></div>
         {topics.then(||view!{<div class="filter-control"><label for="public-category">"Téma"</label><select id="public-category" name="kategorie" prop:value=move ||query.get().category>
             <option value="">"Všechna témata"</option><Suspense fallback=|| ()>{move || categories.get().and_then(Result::ok).map(|items|items.into_iter().map(|category|{let name=category.name.clone();let selected_name=name.clone();view!{<option value=category.name selected=move ||query.get().category==selected_name>{name}</option>}}).collect_view())}</Suspense>
@@ -59,13 +63,9 @@ fn Pager(query: SearchQuery, page: usize, total: usize, path: &'static str) -> i
     let last = total.div_ceil(PAGE_SIZE).max(1);
     let link = |page| {
         site_url(&format!(
-            "{path}?q={}&stav={}&kategorie={}&razeni={}&strana={page}",
+            "{path}?q={}&state={}&kategorie={}&razeni={}&strana={page}",
             encode(&query.q),
-            if query.state == "archive" {
-                "archiv"
-            } else {
-                "aktualni"
-            },
+            query.state,
             encode(&query.category),
             encode(&query.sort)
         ))
@@ -74,19 +74,24 @@ fn Pager(query: SearchQuery, page: usize, total: usize, path: &'static str) -> i
 }
 #[component]
 pub fn NoticeListing() -> impl IntoView {
+    let selected = query("notice");
+    view! {<Show when=move ||selected.get().state=="archive" fallback=CurrentNoticeListing>
+        {move || {let q=selected.get();view!{<leptos_router::components::Redirect path=site_url(&format!("/dokumenty?state=archive&q={}&kategorie={}&razeni={}&strana={}",encode(&q.q),encode(&q.category),encode(&q.sort),q.page.max(1)))/>}}}
+    </Show>}
+}
+#[component]
+fn CurrentNoticeListing() -> impl IntoView {
     let query = query("notice");
     let result = Resource::new(move || query.get(), crate::search::search);
-    let tab = move |archive: bool| {
+    let archive = move || {
         site_url(&format!(
-            "/uredni-deska?q={}&stav={}&kategorie={}",
+            "/dokumenty?state=archive&q={}&kategorie={}",
             encode(&query.get().q),
-            if archive { "archiv" } else { "aktualni" },
             encode(&query.get().category)
         ))
     };
-    view! {<Title text="Úřední deska · Vyskeř"/><div class="page-width interior"><PageHeading title="Úřední deska" description="Aktuální vyvěšení a veřejně dostupné sejmuté písemnosti." eyebrow="DOKUMENTY OBCE"/>
-        <nav class="page-tabs" aria-label="Pohled úřední desky"><A href=move ||tab(false) attr:class=move ||if query.get().state=="current" {"selected"} else {""}>"Aktuálně vyvěšeno"</A><A href=move ||tab(true) attr:class=move ||if query.get().state=="archive" {"selected"} else {""}>"Veřejný archiv"</A></nav>
-        <p class="field-note" id="board-search-scope">{move ||if query.get().state=="archive" {"Hledáte pouze mezi sejmutými písemnostmi, které zůstávají veřejně dostupné."} else {"Hledáte pouze mezi aktuálně vyvěšenými písemnostmi."}}</p>
+    view! {<Title text="Úřední deska · Vyskeř"/><div class="page-width interior"><PageHeading title="Úřední deska" description="Aktuálně vyvěšené písemnosti obce." eyebrow="DOKUMENTY OBCE"/>
+        <p class="field-note" id="board-search-scope">"Hledáte pouze mezi aktuálně vyvěšenými písemnostmi. "<A href=archive>"Společný veřejný archiv dokumentů"</A></p>
         <Filters query path="/uredni-deska" topics=true/>
         <Suspense fallback=Loading>{move ||result.get().map(|r|match r {
             Ok(page)=>view!{<Pager query=query.get() page=page.page total=page.total path="/uredni-deska"/>{if page.items.is_empty() {view!{<NoResults query=query.get() limited=true/>}.into_any()} else {view!{<div class="document-list">{page.items.into_iter().map(|hit|view!{<ResultRow hit/>}).collect_view()}</div>}.into_any()}}}.into_any(),
@@ -96,11 +101,11 @@ pub fn NoticeListing() -> impl IntoView {
 }
 #[component]
 pub fn DocumentListing() -> impl IntoView {
-    view! {<Results kind="document" path="/dokumenty" title="Dokumenty a formuláře" description="Veřejné dokumenty obce včetně aktuální úřední desky a jejího veřejného archivu."/>}
+    view! {<Results kind="document" path="/dokumenty" title="Dokumenty a formuláře" description="Všechny veřejné dokumenty obce a jejich společný archiv."/>}
 }
 #[component]
 pub fn SearchListing() -> impl IntoView {
-    view! {<Results kind="all" path="/hledat" title="Co hledáte?" description="Prohledejte veřejné dokumenty, úřední desku, její veřejný archiv i stránky obce."/>}
+    view! {<Results kind="all" path="/hledat" title="Co hledáte?" description="Prohledejte veřejné dokumenty, společný archiv, aktuální úřední desku i stránky obce."/>}
 }
 #[component]
 fn Results(
@@ -111,7 +116,9 @@ fn Results(
 ) -> impl IntoView {
     let query = query(kind);
     let result = Resource::new(move || query.get(), crate::search::search);
-    view! {<Title text=format!("{title} · Vyskeř")/><div class="page-width interior"><PageHeading title description/><Filters query path topics=kind=="document"/>
+    view! {<Title text=format!("{title} · Vyskeř")/><div class="page-width interior"><PageHeading title description/>
+        {(kind=="document").then(||view!{<nav class="page-tabs" aria-label="Pohled dokumentů"><A href=move ||site_url(&format!("/dokumenty?q={}&kategorie={}",encode(&query.get().q),encode(&query.get().category))) attr:class=move ||if query.get().state=="archive" {""}else{"selected"}>"Všechny dokumenty"</A><A href=move ||site_url(&format!("/dokumenty?state=archive&q={}&kategorie={}",encode(&query.get().q),encode(&query.get().category))) attr:class=move ||if query.get().state=="archive" {"selected"}else{""}>"Veřejný archiv"</A></nav><p class="field-note">{move ||if query.get().state=="archive" {"Hledáte ve společném veřejném archivu dokumentů a sejmutých písemností. Aktuálně vyvěšené dokumenty zde nejsou."}else{"Hledáte ve všech veřejných dokumentech, včetně úřední desky a společného archivu."}}</p>})}
+        <Filters query path topics=kind=="document"/>
         <Suspense fallback=Loading>{move ||result.get().map(|r|match r {
             Ok(page)=>view!{<Pager query=query.get() page=page.page total=page.total path/>{if page.items.is_empty(){view!{<NoResults query=query.get() limited=kind!="all"/>}.into_any()} else {view!{<div class="document-list">{page.items.into_iter().map(|hit|view!{<ResultRow hit/>}).collect_view()}</div>}.into_any()}}}.into_any(),
             Err(e)=>view!{<LoadError message=e.to_string() on_retry=Callback::new(move|()|result.refetch())/>}.into_any(),
@@ -122,8 +129,9 @@ fn Results(
 #[component]
 fn ResultRow(hit: crate::search::Hit) -> impl IntoView {
     let label = match hit.kind.as_str() {
-        "notice" if hit.archived => "ÚŘEDNÍ DESKA · VEŘEJNÝ ARCHIV",
+        "notice" if hit.archived => "DOKUMENT · VEŘEJNÝ ARCHIV",
         "notice" => "ÚŘEDNÍ DESKA · VYVĚŠENO",
+        "document" if hit.archived => "DOKUMENT · VEŘEJNÝ ARCHIV",
         "document" => "DOKUMENT",
         _ => "STRÁNKA",
     };

@@ -129,7 +129,7 @@ async fn catalogue_and_board_share_identity_and_private_archive_files_remain_dow
         format!("/api/v1/admin/notices/{id}"),
     ] {
         let input = if path.contains("notices") {
-            json!({"title":"Změna","retain_attachments":false})
+            json!({"title":"Změna","retain_attachments":false,"duration_days":7})
         } else {
             json!({"title":"Změna"})
         };
@@ -427,49 +427,57 @@ async fn existing_import_is_never_reannounced_and_one_document_uses_one_announce
 }
 
 #[tokio::test]
-async fn changed_plan_and_removal_respect_reviewed_minimum_with_explicit_incident() {
+async fn duration_computes_dates_and_plan_changes_preserve_actual_history() {
     let app = App::new().await;
     let id = draft(&app).await;
     let day = obecni_web::backend::today(OffsetDateTime::now_utc());
     let p = preview(&app, id).await;
-    let r=app.call("POST",&format!("/api/v1/admin/documents/{id}/postings"),Some(json!({"token":p["token"],"published_on":day,"withdraw_on":day+Duration::days(20),"after_action":"hide","reason":"Schválené pravidlo","review":{"rule":"custom","not_before":day+Duration::days(10),"reviewed":true}})),true).await;
+    let r=app.call("POST",&format!("/api/v1/admin/documents/{id}/postings"),Some(json!({"token":p["token"],"published_on":day,"duration_days":7,"after_action":"hide","reason":"Výslovně zadaná doba"})),true).await;
     assert_eq!(r.status(), StatusCode::CREATED);
-    let posting: i64 = sqlx::query_scalar("SELECT id FROM document_postings WHERE document_id=$1")
-        .bind(id)
-        .fetch_one(&app.state.pool)
-        .await
-        .unwrap();
+    let (posting, start, planned): (i64, time::Date, time::Date) = sqlx::query_as(
+        "SELECT id,started_on,planned_removal_on FROM document_postings WHERE document_id=$1",
+    )
+    .bind(id)
+    .fetch_one(&app.state.pool)
+    .await
+    .unwrap();
+    assert_eq!(start, day);
+    assert_eq!(planned, day + Duration::days(8));
     assert_eq!(
         app.call(
             "POST",
             &format!("/api/v1/admin/postings/{posting}/plan"),
-            Some(json!({"withdraw_on":day+Duration::days(5),"reason":"Příliš krátká změna"})),
+            Some(json!({"withdraw_on":null,"reason":"Chybějící datum"})),
             true
         )
         .await
         .status(),
         StatusCode::BAD_REQUEST
     );
-    let path = format!("/api/v1/admin/postings/{posting}/withdraw");
-    assert_eq!(
-        app.call("POST", &path, Some(json!({"reason":"Běžné sejmutí"})), true)
-            .await
-            .status(),
-        StatusCode::CONFLICT
-    );
     assert_eq!(
         app.call(
             "POST",
-            &path,
-            Some(json!({"reason":"Výslovně řešený incident","emergency":true})),
+            &format!("/api/v1/admin/postings/{posting}/plan"),
+            Some(json!({"withdraw_on":day+Duration::days(5),"reason":"Změna počtu dní"})),
             true
         )
         .await
         .status(),
         StatusCode::NO_CONTENT
     );
-    let count:i64=sqlx::query_scalar("SELECT count(*) FROM document_events WHERE document_id=$1 AND kind='emergency_removal_requested'").bind(id).fetch_one(&app.state.pool).await.unwrap();
-    assert_eq!(count, 1);
+    assert_eq!(
+        app.call(
+            "POST",
+            &format!("/api/v1/admin/postings/{posting}/withdraw"),
+            Some(json!({"reason":"Sejmutí obsluhou"})),
+            true
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    let (start,removed,events):(time::Date,time::Date,i64)=sqlx::query_as("SELECT started_on,removed_on,(SELECT count(*) FROM document_events WHERE document_id=$1 AND kind='plan_changed') FROM document_postings WHERE id=$2").bind(id).bind(posting).fetch_one(&app.state.pool).await.unwrap();
+    assert_eq!((start, removed, events), (day, day, 1));
 }
 
 #[tokio::test]
@@ -548,7 +556,7 @@ async fn anonymized_rendition_requires_own_current_preview_and_freezes_without_p
     );
     let p = preview(&app, id).await;
     let day = obecni_web::backend::today(OffsetDateTime::now_utc());
-    let mut input = json!({"token":p["token"],"published_on":day,"after_action":"anonymized","redacted_document_id":derived,"redacted_token":stale["token"],"reason":"Schválení obou podob"});
+    let mut input = json!({"token":p["token"],"published_on":day,"duration_days":7,"after_action":"anonymized","redacted_document_id":derived,"redacted_token":stale["token"],"reason":"Schválení obou podob"});
     let path = format!("/api/v1/admin/documents/{id}/postings");
     assert_eq!(
         app.call("POST", &path, Some(input.clone()), true)
@@ -616,4 +624,215 @@ async fn anonymized_rendition_requires_own_current_preview_and_freezes_without_p
     assert_eq!(detail["postings"].as_array().unwrap().len(), 0);
     let (original_blocked,announcement):(bool,bool)=sqlx::query_as("SELECT access_blocked,EXISTS(SELECT 1 FROM document_announcements WHERE document_id=$2) FROM documents WHERE id=$1").bind(id).bind(derived).fetch_one(&app.state.pool).await.unwrap();
     assert!(original_blocked && announcement);
+}
+
+#[tokio::test]
+async fn unified_editor_requires_explicit_board_choices_and_keeps_one_archive() {
+    let app = App::new().await;
+    let day = obecni_web::backend::today(OffsetDateTime::now_utc());
+    for fields in [
+        json!({"title":"Bez doby","board_enabled":true,"published_on":day,"retain_attachments":false}),
+        json!({"title":"Bez přístupu","board_enabled":true,"published_on":day,"duration_days":7}),
+        json!({"title":"Nula dní","board_enabled":true,"published_on":day,"duration_days":0,"retain_attachments":true}),
+    ] {
+        assert_eq!(
+            app.call("POST", "/api/v1/admin/documents", Some(fields), true)
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM documents")
+        .fetch_one(&app.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+    let ordinary = draft(&app).await;
+    assert_eq!(
+        app.call(
+            "POST",
+            &format!("/api/v1/admin/documents/{ordinary}/publish"),
+            None,
+            true
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    let created=body_json(app.call("POST","/api/v1/admin/documents",Some(json!({"title":"Jednotný dokument","board_enabled":true,"published_on":day,"duration_days":7,"retain_attachments":false})),true).await).await;
+    let board = created["id"].as_i64().unwrap();
+    let attachment = file(&app, board).await;
+    let d = body_json(
+        app.call(
+            "GET",
+            &format!("/api/v1/admin/documents/{board}"),
+            None,
+            true,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(d["board_enabled"], true);
+    assert_eq!(d["duration_days"], 7);
+    assert_eq!(d["retain_attachments"], false);
+    assert!(d["reference_number"].is_null() && d["document_date"].is_null());
+    assert_eq!(
+        app.call(
+            "POST",
+            &format!("/api/v1/admin/documents/{board}/publish"),
+            None,
+            true
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    let p = preview(&app, board).await;
+    assert_eq!(app.call("POST",&format!("/api/v1/admin/documents/{board}/postings"),Some(json!({"token":p["token"],"published_on":day,"duration_days":7,"after_action":"hide","reason":"Potvrzený náhled"})),true).await.status(),StatusCode::CREATED);
+    let current = body_json(
+        app.call("GET", "/api/v1/admin/documents?state=current", None, true)
+            .await,
+    )
+    .await;
+    assert_eq!(current.as_array().unwrap().len(), 1);
+    assert_eq!(current[0]["id"], board);
+    assert_eq!(
+        app.call(
+            "POST",
+            &format!("/api/v1/admin/documents/{ordinary}/archive"),
+            Some(json!({"reason":"Přesun do společného archivu"})),
+            true
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        app.call("GET", &format!("/api/v1/documents/{ordinary}"), None, false)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    // The worker is run in the future. Keep this fixture's session alive too.
+    sqlx::query("UPDATE sessions SET expires_at=$1 WHERE administrator_id=$2")
+        .bind((OffsetDateTime::now_utc() + Duration::days(30)).unix_timestamp())
+        .bind(app.admin_id)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    obecni_web::backend::notices::maintenance(
+        &app.state,
+        OffsetDateTime::now_utc() + Duration::days(8),
+    )
+    .await
+    .unwrap();
+    let archived = body_json(
+        app.call("GET", "/api/v1/admin/documents?state=archive", None, true)
+            .await,
+    )
+    .await;
+    assert_eq!(
+        archived
+            .as_array()
+            .expect(&format!("archive response: {archived}"))
+            .len(),
+        2
+    );
+    assert!(
+        archived
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["id"] == ordinary)
+    );
+    assert!(
+        archived
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["id"] == board)
+    );
+    assert_eq!(
+        app.call(
+            "GET",
+            &format!("/api/v1/attachments/{attachment}"),
+            None,
+            false
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        app.call(
+            "GET",
+            &format!("/api/v1/admin/attachments/{attachment}"),
+            None,
+            true
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let empty = body_json(
+        app.call("GET", "/api/v1/admin/documents?state=current", None, true)
+            .await,
+    )
+    .await;
+    assert!(empty.as_array().unwrap().is_empty());
+    let page = body_json(
+        app.call(
+            "GET",
+            "/api/v1/admin/documents?state=archive&limit=1&offset=1",
+            None,
+            true,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(page.as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn old_admin_notice_ids_resolve_namespace_collisions_without_public_leak() {
+    let app = App::new().await;
+    let ordinary = draft(&app).await;
+    let board = app.notice(json!({"title":"Jiný původní model"})).await;
+    sqlx::query(
+        "INSERT INTO document_legacy_ids(old_model,old_id,document_id) VALUES ('notice',$1,$2)",
+    )
+    .bind(ordinary)
+    .bind(board)
+    .execute(&app.state.pool)
+    .await
+    .unwrap();
+    let url = format!("/api/v1/admin/legacy/notices/{ordinary}");
+    assert_eq!(
+        app.call("GET", &url, None, false).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let resolved = body_json(app.call("GET", &url, None, true).await).await;
+    assert_eq!(resolved["id"], board);
+    assert_ne!(resolved["id"], ordinary);
+}
+
+#[test]
+fn duration_leaves_every_requested_calendar_day_complete() {
+    use obecni_web::backend::registry::posting_end;
+    use time::macros::date;
+    assert_eq!(
+        posting_end(date!(2026 - 11 - 01), Some(15), None).unwrap(),
+        date!(2026 - 11 - 17)
+    );
+    assert_eq!(
+        posting_end(date!(2026 - 12 - 31), Some(1), None).unwrap(),
+        date!(2027 - 01 - 02)
+    );
+    // Exact dates remain explicit operational choices, never shifted by migration.
+    assert_eq!(
+        posting_end(date!(2026 - 11 - 01), None, Some(date!(2026 - 11 - 20))).unwrap(),
+        date!(2026 - 11 - 20)
+    );
+    assert!(posting_end(date!(2026 - 11 - 01), None, None).is_err());
+    assert!(posting_end(date!(2026 - 11 - 01), None, Some(date!(2026 - 11 - 02))).is_err());
 }

@@ -21,7 +21,7 @@ async fn publication_is_not_backdated_and_live_content_is_immutable() {
         app.call(
             "PUT",
             &format!("/api/v1/admin/notices/{id}"),
-            Some(json!({"title":"Dodatečná změna","retain_attachments":false})),
+            Some(json!({"title":"Dodatečná změna","published_on":backend::today(OffsetDateTime::now_utc()),"duration_days":20,"retain_attachments":false})),
             true
         )
         .await
@@ -60,31 +60,16 @@ async fn publication_is_not_backdated_and_live_content_is_immutable() {
 }
 
 #[tokio::test]
-async fn statutory_minimum_blocks_early_removal_except_documented_incident() {
+async fn withdrawal_records_the_decision_without_inventing_a_statutory_minimum() {
     let app = App::new().await;
-    let id = app.notice(json!({"review":{"rule":"public_notice"}})).await;
+    let id = app.notice(json!({"duration_days":7})).await;
     assert_eq!(app.publish(id).await.status(), StatusCode::NO_CONTENT);
     let path = format!("/api/v1/admin/notices/{id}/withdraw");
     assert_eq!(
-        app.call("POST", &path, None, true).await.status(),
-        StatusCode::CONFLICT
-    );
-    assert_eq!(
         app.call(
             "POST",
             &path,
-            Some(json!({"emergency":true,"reason":""})),
-            true
-        )
-        .await
-        .status(),
-        StatusCode::BAD_REQUEST
-    );
-    assert_eq!(
-        app.call(
-            "POST",
-            &path,
-            Some(json!({"emergency":true,"reason":"Chybně zveřejněná příloha"})),
+            Some(json!({"reason":"Rozhodnutí obsluhy před plánovaným termínem"})),
             true
         )
         .await
@@ -106,8 +91,9 @@ async fn statutory_minimum_blocks_early_removal_except_documented_incident() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|e| e["kind"] == "emergency_withdrawal")
+            .any(|event| event["kind"] == "withdrawn")
     );
+    assert_eq!(proof["notice"]["lock_state"], "locked");
 }
 
 #[tokio::test]
@@ -160,8 +146,8 @@ async fn visibility_revocation_hides_detail_and_files_but_preserves_admin_origin
     assert_eq!(
         app.call(
             "POST",
-            &format!("/api/v1/admin/documents/{id}/archive"),
-            Some(json!({"reason":"Okamžité ukončení veřejného přístupu"})),
+            &format!("/api/v1/admin/documents/{id}/visibility"),
+            Some(json!({"public_access":false,"reason":"Okamžité ukončení veřejného přístupu"})),
             true
         )
         .await
@@ -198,21 +184,9 @@ async fn visibility_revocation_hides_detail_and_files_but_preserves_admin_origin
 }
 
 #[tokio::test]
-async fn retained_files_require_justification_and_expire() {
+async fn explicit_file_retention_needs_no_legal_form_and_respects_existing_expiry() {
     let app = App::new().await;
-    assert_eq!(
-        app.call(
-            "POST",
-            "/api/v1/admin/notices",
-            Some(json!({"title":"Neomezený archiv","retain_attachments":true})),
-            true
-        )
-        .await
-        .status(),
-        StatusCode::BAD_REQUEST
-    );
-    let until = backend::today(OffsetDateTime::now_utc()) + Duration::days(60);
-    let id=app.notice(json!({"retain_attachments":true,"review":{"archive_basis":"Zveřejnění obecného dokumentu bez osobních údajů","archive_until":until}})).await;
+    let id = app.notice(json!({"retain_attachments":true})).await;
     let file = body_json(
         app.upload(
             &format!("/api/v1/admin/notices/{id}/attachments"),
@@ -453,7 +427,7 @@ async fn missing_the_entire_scheduled_period_keeps_the_notice_and_its_files_priv
     for retain in [false, true] {
         let id = app
             .notice(json!({
-                "published_on":today - Duration::days(2),
+                "published_on":today - Duration::days(3),
                 "withdraw_on":today - Duration::days(1),
                 "retain_attachments":retain,
                 "review":{
@@ -474,7 +448,7 @@ async fn missing_the_entire_scheduled_period_keeps_the_notice_and_its_files_priv
         .await["id"]
             .as_i64()
             .unwrap();
-        notices::publish_at(&app.state, id, app.admin_id, now - Duration::days(3))
+        notices::publish_at(&app.state, id, app.admin_id, now - Duration::days(4))
             .await
             .unwrap();
         notices::maintenance(&app.state, now).await.unwrap();
@@ -484,21 +458,20 @@ async fn missing_the_entire_scheduled_period_keeps_the_notice_and_its_files_priv
 }
 
 #[tokio::test]
-async fn production_requires_review_and_reference_to_original() {
+async fn production_accepts_explicit_dates_without_legal_review_or_reference_fields() {
     let app = App::new().await;
-    let id = app.notice(json!({})).await;
+    let id = app.notice(json!({"duration_days":7})).await;
     let mut config = (*app.state.config).clone();
     config.production = true;
     let prod = backend::Backend::new(app.state.pool.clone(), config);
-    assert_eq!(
-        notices::publish_at(&prod, id, app.admin_id, OffsetDateTime::now_utc())
-            .await
-            .unwrap_err()
-            .0,
-        StatusCode::BAD_REQUEST
-    );
-    let id=app.notice(json!({"review":{"rule":"informational","legal_basis":"Obecní informace","original_reference":"spis-2026-1","reviewed":true}})).await;
     notices::publish_at(&prod, id, app.admin_id, OffsetDateTime::now_utc())
         .await
         .unwrap();
+    let row: (String, Option<String>) =
+        sqlx::query_as("SELECT lock_state,reference_number FROM documents WHERE id=$1")
+            .bind(id)
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap();
+    assert_eq!(row, ("locked".into(), None));
 }

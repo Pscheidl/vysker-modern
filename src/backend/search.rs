@@ -10,6 +10,8 @@ use axum::{
 };
 use sqlx::{PgPool, Postgres, QueryBuilder};
 
+const ARCHIVED: &str = "((d.board_status IS NULL AND d.status='archived') OR d.has_removed_posting) AND NOT d.has_current_posting AND d.board_status IS DISTINCT FROM 'scheduled'";
+
 /// Escape LIKE metacharacters so user input keeps literal substring semantics.
 fn literal_pattern(word: &str) -> String {
     format!(
@@ -31,18 +33,18 @@ fn build(q: &SearchQuery, day: time::Date, selection: &str) -> QueryBuilder<Post
         } else {
             "d.catalog_date"
         };
-        b.push(format!("SELECT d.id,CASE WHEN d.board_status IS NULL THEN 'document' ELSE 'notice' END AS kind,CASE WHEN d.metadata_restricted THEN coalesce(d.public_title,'Záznam úřední desky #'||d.id) ELSE d.title END AS title,CASE WHEN d.metadata_restricted THEN '' ELSE substr(d.description,1,400) END AS description,'/dokumenty/'||d.id AS path,coalesce(c.name,'Ostatní') AS category,coalesce({date}::text,'') AS posted,{date} AS sort_date,coalesce(d.board_status IN ('withdrawn','archived'),FALSE) AS archived FROM documents d LEFT JOIN categories c ON c.id=d.category_id WHERE document_is_public(d,"))
+        b.push(format!("SELECT d.id,CASE WHEN (d.board_status='published' AND d.has_current_posting) OR (d.has_removed_posting AND NOT d.has_current_posting AND d.board_status IS DISTINCT FROM 'scheduled') THEN 'notice' ELSE 'document' END AS kind,CASE WHEN d.metadata_restricted THEN coalesce(d.public_title,'Záznam úřední desky #'||d.id) ELSE d.title END AS title,CASE WHEN d.metadata_restricted THEN '' ELSE substr(d.description,1,400) END AS description,'/dokumenty/'||d.id AS path,coalesce(c.name,'Ostatní') AS category,coalesce({date}::text,'') AS posted,{date} AS sort_date,({ARCHIVED}) AS archived FROM documents d LEFT JOIN categories c ON c.id=d.category_id WHERE document_is_public(d,"))
             .push_bind(day).push(")");
         if q.kind == "notice" {
             if q.state == "archive" {
-                b.push(" AND d.board_status IN ('withdrawn','archived') AND d.has_removed_posting");
+                b.push(" AND d.has_removed_posting AND NOT d.has_current_posting AND d.board_status IS DISTINCT FROM 'scheduled'");
             } else if q.state == "all" {
                 b.push(" AND d.board_status IN ('published','withdrawn','archived') AND (d.has_current_posting OR d.has_removed_posting)");
             } else {
                 b.push(" AND d.board_status='published' AND d.has_current_posting");
             }
         } else if q.state == "archive" {
-            b.push(" AND d.board_status IN ('withdrawn','archived') AND d.has_removed_posting");
+            b.push(" AND (").push(ARCHIVED).push(")");
         }
         if !q.category.is_empty() {
             b.push(" AND c.name=").push_bind(q.category.clone());

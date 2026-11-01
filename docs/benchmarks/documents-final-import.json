@@ -1,0 +1,55 @@
+{
+  "phase": "unified",
+  "source": "/tmp/vysker-unified-documents",
+  "fixture": "synthetic-v1",
+  "conditions": "Current importer once per phase over 10000 anonymous source items, final 0029 schema, local disposable database, own builds/tests paused, no HTTP or SMTP",
+  "sizes": {
+    "20000": {
+      "import": {
+        "initial": {
+          "elapsed_ms": 31793.09,
+          "sql_statements": 50052,
+          "peak_python_mib": 64.14,
+          "new": 10000,
+          "unchanged": 0,
+          "conflicts": 0,
+          "pending_reviews": 0
+        },
+        "unchanged": {
+          "elapsed_ms": 8744.41,
+          "sql_statements": 52,
+          "peak_python_mib": 64.13,
+          "new": 0,
+          "unchanged": 10000,
+          "conflicts": 0,
+          "pending_reviews": 0
+        },
+        "small_change": {
+          "elapsed_ms": 8922.78,
+          "sql_statements": 60,
+          "peak_python_mib": 64.13,
+          "new": 0,
+          "unchanged": 9999,
+          "conflicts": 1,
+          "pending_reviews": 1
+        },
+        "same_change": {
+          "elapsed_ms": 8957.21,
+          "sql_statements": 57,
+          "peak_python_mib": 64.13,
+          "new": 0,
+          "unchanged": 9999,
+          "conflicts": 1,
+          "pending_reviews": 1
+        }
+      }
+    }
+  },
+  "process_max_rss_mib": 155.3,
+  "recorded_baseline_reference": {
+    "file": "documents-after.json",
+    "size": "20000",
+    "field": "matched_baseline_import",
+    "rerun_for_this_report": false
+  }
+}

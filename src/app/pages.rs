@@ -1,17 +1,12 @@
 use super::{BoardResource, components::*};
 use crate::content::Notice;
-#[cfg(feature = "demo")]
-use crate::content::fold;
 use leptos::prelude::*;
 use leptos_meta::Title;
-#[cfg(feature = "demo")]
-use leptos_router::hooks::{use_navigate, use_query_map};
 use leptos_router::{components::A, hooks::use_params_map};
 
 #[component]
 pub fn Home() -> impl IntoView {
     let board = expect_context::<BoardResource>();
-    let archive = RwSignal::new(false);
     view! {
         <Title text="Vyskeř · Srdce Českého ráje"/>
         <div class="page-width">
@@ -25,15 +20,12 @@ pub fn Home() -> impl IntoView {
         <section class="home-board" aria-labelledby="home-board-title">
             <div class="page-width">
                 <div class="section-heading"><div class="section-title"><h2 id="home-board-title">"Úřední deska"</h2><Suspense fallback=|| ()>{move || board.get().and_then(Result::ok).map(|b| view!{<span class="count-badge">{posted_count(if cfg!(feature="demo") {b.notices.iter().filter(|n| !n.archived).count()} else {b.published_count})}</span>})}</Suspense></div>
-                    <div class="section-tools"><div class="segmented" role="group" aria-label="Zobrazit dokumenty">
-                        <button class:active=move || !archive.get() aria-pressed=move || (!archive.get()).to_string() on:click=move |_| archive.set(false)>"Aktuální"</button>
-                        <button class:active=move || archive.get() aria-pressed=move || archive.get().to_string() on:click=move |_| archive.set(true)>"Archiv"</button>
-                    </div></div>
+                    <div class="section-tools"><A href=super::site_url("/dokumenty?state=archive") attr:class="text-link">"Veřejný archiv"<Icon/></A></div>
                 </div>
                 <Suspense fallback=Loading>{move || board.get().map(|result| match result {
                     Ok(b) => {
-                        let selected: Vec<_> = b.notices.into_iter().filter(|n| n.archived == archive.get()).take(3).collect();
-                        if selected.is_empty() {view!{<p class="home-board-empty">{if archive.get(){"Ve veřejném archivu nyní není žádný dokument. "}else{"Na desce teď není žádný dokument. "}}<A href=super::site_url("/uredni-deska?stav=archiv")>"Veřejný archiv"</A></p>}.into_any()} else {
+                        let selected: Vec<_> = b.notices.into_iter().filter(|n| !n.archived).take(3).collect();
+                        if selected.is_empty() {view!{<p class="home-board-empty">"Na desce teď není žádný dokument. "<A href=super::site_url("/dokumenty?state=archive")>"Veřejný archiv"</A></p>}.into_any()} else {
                             view!{<div class="notice-grid">{selected.into_iter().map(|notice| view!{<NoticeCard notice/>}).collect_view()}</div>}.into_any()
                         }
                     },
@@ -161,93 +153,7 @@ pub fn NoticeBoard() -> impl IntoView {
 }
 #[component]
 pub fn Documents() -> impl IntoView {
-    #[cfg(feature = "demo")]
-    view! {<DemoDocumentListing library=true/>}
-    #[cfg(not(feature = "demo"))]
     view! {<super::catalog::DocumentLibrary/>}
-}
-
-#[cfg(feature = "demo")]
-#[component]
-fn DemoDocumentListing(#[prop(default = false)] library: bool) -> impl IntoView {
-    let board = expect_context::<BoardResource>();
-    let params = use_query_map();
-    let query = RwSignal::new(params.get_untracked().get("q").unwrap_or_default());
-    let category = RwSignal::new(params.get_untracked().get("kategorie").unwrap_or_default());
-    let sort = RwSignal::new(
-        params
-            .get_untracked()
-            .get("razeni")
-            .unwrap_or_else(|| "newest".into()),
-    );
-    let archived = Memo::new(move |_| params.get().get("stav").as_deref() == Some("archiv"));
-    Effect::new(move |_| {
-        query.set(params.get().get("q").unwrap_or_default());
-        category.set(params.get().get("kategorie").unwrap_or_default());
-        sort.set(
-            params
-                .get()
-                .get("razeni")
-                .unwrap_or_else(|| "newest".into()),
-        );
-    });
-    let title = if library {
-        "Dokumenty a formuláře"
-    } else {
-        "Úřední deska"
-    };
-    let description = if library {
-        "Zveřejněné dokumenty obce, přehledně podle témat."
-    } else {
-        "Vše, co obec právě zveřejňuje. Přehledně a na jednom místě."
-    };
-    let action = if library {
-        "/dokumenty"
-    } else {
-        "/uredni-deska"
-    };
-    let navigate = use_navigate();
-    let clear_filters = Callback::new(move |()| {
-        query.set(String::new());
-        category.set(String::new());
-        sort.set("newest".into());
-        let destination = if !library && archived.get() {
-            "/uredni-deska?stav=archiv"
-        } else {
-            action
-        };
-        navigate(destination, Default::default());
-    });
-    view! {
-        <Title text=format!("{title} · Vyskeř")/>
-        <div class="page-width interior">
-            <PageHeading title description eyebrow="DOKUMENTY OBCE"/>
-            <Show when=move || !library><nav class="page-tabs" aria-label="Stav dokumentů">
-                <A href=super::site_url("/uredni-deska") attr:class=move || if archived.get(){""}else{"selected"}>"Aktuálně vyvěšeno"</A>
-                <A href=super::site_url("/uredni-deska?stav=archiv") attr:class=move || if archived.get(){"selected"}else{""}>"Veřejný archiv"</A>
-            </nav></Show>
-            <Show when=move || archived.get() && !library><p class="info-banner"><Icon name="archive"/>"Veřejný archiv obsahuje sejmuté písemnosti, které zůstávají veřejně dostupné."</p></Show>
-            <form class="filter-bar" action=super::site_url(action) method="get" role="search">
-                <input type="hidden" name="stav" value=move || if archived.get(){"archiv"}else{"aktualni"}/>
-                <div class="filter-search"><label class="sr-only" for="filter-query">"Hledat v dokumentech"</label><Icon name="search"/><input id="filter-query" name="q" type="search" placeholder="Název, téma nebo číslo jednací…" value=move || query.get() prop:value=move || query.get() on:input=move |ev| query.set(event_target_value(&ev))/></div>
-                <div class="filter-control"><label for="category">"Kategorie"</label><select id="category" name="kategorie" prop:value=move || category.get() on:change=move |ev| category.set(event_target_value(&ev))><option value="">"Všechny kategorie"</option><option>"Veřejná vyhláška"</option><option>"Záměr obce"</option><option>"Zastupitelstvo"</option><option>"Rozpočet"</option><option>"Volby"</option><option>"Dražba"</option><option>"Ostatní"</option></select></div>
-                <div class="filter-control"><label for="sort">"Řazení"</label><select id="sort" name="razeni" prop:value=move || sort.get() on:change=move |ev| sort.set(event_target_value(&ev))><option value="newest" selected=move || sort.get()=="newest">"Od nejnovějších"</option><option value="oldest" selected=move || sort.get()=="oldest">"Od nejstarších"</option><option value="title" selected=move || sort.get()=="title">"Podle názvu"</option></select></div>
-                <button class="button secondary filter-submit" type="submit">"Hledat"</button>
-            </form>
-            <Suspense fallback=Loading>{move || board.get().map(|result| match result {
-                Ok(b) => {
-                    let mut selected:Vec<Notice> = b.notices.into_iter().filter(|n| if library {n.has_files()} else {n.archived==archived.get()}).filter(|n| n.matches(&query.get()) && (category.get().is_empty() || n.category==category.get())).collect();
-                    match sort.get().as_str() {"oldest" => selected.sort_by(|a,b| a.posted_iso.cmp(&b.posted_iso)), "title" => selected.sort_by_key(|n| fold(&n.title)), _ => selected.sort_by(|a,b| b.posted_iso.cmp(&a.posted_iso))};
-                    let count=selected.len();
-                    view!{
-                        <div class="results-meta"><p role="status">{format!("Počet dokumentů: {count}")}</p><button class="quiet-button" type="button" on:click=move |_| clear_filters.run(())>"Zrušit filtry"<Icon name="close"/></button></div>
-                        {if count==0 {view!{<EmptyState/>}.into_any()} else {view!{<div class="document-list">{selected.into_iter().map(|notice| view!{<NoticeRow notice/>}).collect_view()}</div>}.into_any()}}
-                    }.into_any()
-                }, Err(e) => view!{<LoadError message=e.to_string()/>}.into_any()
-            })}</Suspense>
-            <Newsletter/>
-        </div>
-    }
 }
 
 #[component]
@@ -284,9 +190,9 @@ fn DetailContent(notice: Notice) -> impl IntoView {
         <Title text=format!("{} · Vyskeř",title)/>
         <header class="page-heading detail-heading"><div class="detail-eyebrow"><p class="eyebrow">{notice.category}</p><span class=if archived {"status-badge"}else{"status-badge success"}>{if archived {"Archivováno"}else{"Vyvěšeno"}}</span></div><h1>{notice.title}</h1></header>
         {notice.import_origin.map(|_| view!{<ImportNote/>})}
-        <div class="detail-layout"><article class="detail-content"><h2>"Informace o dokumentu"</h2><p class="document-description">{notice.description}</p><dl class="document-facts"><div><dt>"Číslo jednací"</dt><dd>{notice.reference}</dd></div><div><dt>"Zveřejnil"</dt><dd>{notice.issuer}</dd></div></dl>
+        <div class="detail-layout"><article class="detail-content"><h2>"Informace o dokumentu"</h2><p class="document-description">{notice.description}</p><dl class="document-facts"><div><dt>"Číslo jednací"</dt><dd>{notice.reference}</dd></div></dl>
             <section class="attachments" aria-labelledby="attachments-title"><h2 id="attachments-title">"Přílohy dokumentu"</h2>
-                <Show when=move || archived && no_files><div class="info-banner"><Icon name="archive"/><div><strong>"Přílohy už nejsou k dispozici."</strong><p>"Po sejmutí byly odstraněny. Záznam o zveřejnění zůstává v archivu."</p></div></div></Show>
+                <Show when=move || archived && no_files><div class="info-banner"><Icon name="archive"/><div><strong>"Přílohy nejsou veřejně dostupné."</strong><p>"Záznam o zveřejnění zůstává ve společném archivu."</p></div></div></Show>
                 {notice.attachments.into_iter().map(|file|view!{<div class="attachment"><Icon name="paper"/><div><strong>{file.name}</strong><p>{if file.removed {"Příloha odstraněna".to_string()}else{file.size.clone()}}</p></div>{match file.url {Some(url)=>view!{<a class="text-link" href=url download>"Stáhnout"<Icon/></a>}.into_any(),None=>view!{<span class="attachment-state">{if file.removed {"Nedostupná"}else{"Není k dispozici"}}</span>}.into_any()}}</div>}).collect_view()}
                 <Show when=move || !no_files && cfg!(feature="demo")><p class="field-note">"U příloh jsou zatím uvedeny pouze názvy. Soubory ke stažení nejsou k dispozici."</p></Show>
             </section>

@@ -9,6 +9,15 @@ use leptos_router::hooks::use_navigate;
 use serde_json::json;
 
 #[component]
+pub(super) fn DocumentHelp(label: &'static str, text: &'static str) -> impl IntoView {
+    let details = NodeRef::<leptos::html::Details>::new();
+    view! {<details class="document-help" node_ref=details on:keydown=move|ev|{if ev.key()=="Escape"{if let Some(details)=details.get(){details.set_open(false);}}}>
+        <summary aria-label=format!("Nápověda: {label}")><Icon name="info"/></summary>
+        <p>{text}</p>
+    </details>}
+}
+
+#[component]
 pub fn DocumentActions(entry: Entry, busy: Signal<bool>, reload: RwSignal<u64>) -> impl IntoView {
     let id = entry.id;
     let ctx = expect_context::<AdminContext>();
@@ -68,8 +77,17 @@ pub fn DocumentActions(entry: Entry, busy: Signal<bool>, reload: RwSignal<u64>) 
         && !entry.access_blocked;
     let public = entry.public_access && !entry.access_blocked;
     let scheduled = entry.board_status == "scheduled";
+    let editable_draft = entry.lock_state == "draft" && entry.status() == "draft";
+    let prepared = editable_draft && entry.board_enabled;
+    let can_publish = editable_draft && !entry.board_enabled && !public && !entry.access_blocked;
+    let can_archive = entry.board_status.is_empty() && entry.status() == "published";
+    let posting_entry = entry.clone();
+    let new_posting_entry = entry.clone();
     view! {
-        <section class="admin-panel admin-form-section document-operations"><h2>"Provozní úkony"</h2><ErrorMessage error/>
+        {can_publish.then(move||view!{<PublishDocument id busy=disabled reload/>})}
+        {(can_post&&prepared).then(move||view!{<section class="admin-panel admin-form-section"><h2>"Potvrzení vyvěšení"</h2><PostingForm entry=posting_entry.clone() saved=true busy=disabled reload/></section>})}
+        {(can_post&&!editable_draft).then(move||view!{<details class="admin-panel admin-form-section"><summary>"Nové vyvěšení na úřední desce"</summary><p>"Vznikne nový záznam vyvěšení. Obsah, který už je uzamčený, zůstane stejný."</p><PostingForm entry=new_posting_entry.clone() saved=false busy=disabled reload/></details>})}
+        <details class="admin-panel admin-form-section document-operations"><summary>"Další úkony s dokumentem"</summary><ErrorMessage error/>
             <p>"Tyto úkony nemění uložený obsah ani přílohy dokumentu."</p>
             <details><summary>"Vytvořit opravu nebo navazující dokument"</summary>
                 <form on:submit=move |ev| {ev.prevent_default();if !disabled.get_untracked(){correction.dispatch(());}}>
@@ -84,10 +102,10 @@ pub fn DocumentActions(entry: Entry, busy: Signal<bool>, reload: RwSignal<u64>) 
                 <p class="field-note">"Důvod zůstane v interním auditu. Stažení znepřístupní detail i přímé odkazy na přílohy a neodemkne obsah."</p>
                 <ConfirmButton label=if public {"Ukončit veřejné zpřístupnění"} else {"Zpřístupnit v katalogu"} title=if public {"Ukončit veřejné zpřístupnění?"} else {"Zpřístupnit dokument v katalogu?"} description=if public {"Dokument nebude veřejně dostupný. Jeho obsah, vyvěšení a audit zůstanou zachovány."} else {"Zveřejní se tento dokument a jeho dostupné přílohy. Tento úkon není vyvěšením na úřední desce."} danger=public disabled=Signal::derive(move ||disabled.get() ||visibility_reason.get().trim().is_empty()) on_confirm=Callback::new(move |()| {visibility.dispatch(!public);})/>
             </details>
+            {can_archive.then(move||view!{<ArchiveDocument id busy=disabled reload/>})}
             <AttachRelation id busy=disabled reload/>
             <TopicForm id selected=entry.category_id busy=disabled reload/>
-        </section>
-        {can_post.then(move ||view!{<PostingForm id busy=disabled reload/>})}
+        </details>
         {scheduled.then(move ||view!{<CancelSchedule id busy=disabled reload/>})}
         <PostingHistory document_id=id postings=entry.postings busy=disabled reload/>
         <DocumentHistory id/>
@@ -95,24 +113,109 @@ pub fn DocumentActions(entry: Entry, busy: Signal<bool>, reload: RwSignal<u64>) 
 }
 
 #[component]
-fn PostingForm(id: i64, busy: Signal<bool>, reload: RwSignal<u64>) -> impl IntoView {
+fn PublishDocument(id: i64, busy: Signal<bool>, reload: RwSignal<u64>) -> impl IntoView {
+    let ctx = expect_context::<AdminContext>();
+    let error = RwSignal::new(None);
+    let publish = Action::new_local(move |_: &()| async move {
+        error.set(None);
+        match api::save(
+            "POST",
+            &format!("/api/v1/admin/documents/{id}/publish"),
+            None,
+        )
+        .await
+        {
+            Ok(_) => {
+                ctx.changed("Dokument je zveřejněný v katalogu Dokumenty.");
+                reload.update(|value| *value += 1);
+            }
+            Err(failure) => error.set(Some(failure)),
+        }
+    });
+    view! {<section class="admin-panel admin-form-section"><h2>"Zveřejnění dokumentu"</h2><ErrorMessage error/>
+        <p>"Dokument bude veřejně dostupný v katalogu Dokumenty."</p>
+        <ConfirmButton label="Zveřejnit dokument" title="Zveřejnit dokument?" description="Zveřejní se uložený obsah a dostupné přílohy." disabled=Signal::derive(move||busy.get()||publish.pending().get()) on_confirm=Callback::new(move|()|{publish.dispatch(());})/>
+    </section>}
+}
+
+#[component]
+pub(super) fn BoardSettings(
+    published_on: RwSignal<String>,
+    duration_days: RwSignal<String>,
+    retention: RwSignal<Option<bool>>,
+    #[prop(default = false)] mark_dirty: bool,
+) -> impl IntoView {
+    let ctx = expect_context::<AdminContext>();
+    let removal = Memo::new(move |_| {
+        let day = time::Date::parse(
+            &published_on.get(),
+            &time::format_description::well_known::Iso8601::DEFAULT,
+        )
+        .ok()?;
+        let days = duration_days
+            .get()
+            .parse::<i64>()
+            .ok()
+            .filter(|days| *days > 0 && *days <= 3650)?;
+        day.checked_add(time::Duration::days(days + 1))
+            .map(|date| api::date(&date.to_string()))
+    });
+    view! {<div class="document-board-settings">
+        <div class="admin-form-row">
+            <div class="admin-field"><div class="document-field-label"><label for="document-posted">"Datum vyvěšení *"</label><DocumentHelp label="Datum vyvěšení" text="Dnešní datum vyvěsí dokument po potvrzení náhledu. Budoucí datum naplánuje vyvěšení. Datum nahrání souboru ani původního zveřejnění tím nenahrazujte."/></div><input id="document-posted" type="date" required prop:value=move||published_on.get() on:input=move|ev|{published_on.set(event_target_value(&ev));if mark_dirty{ctx.dirty.set(true);}}/></div>
+            <div class="admin-field"><div class="document-field-label"><label for="document-days">"Počet celých dní vyvěšení *"</label><DocumentHelp label="Počet celých dní vyvěšení" text="Počet celých kalendářních dní po dni vyvěšení. Výpočet neurčuje zákonnou lhůtu. U doručování veřejnou vyhláškou zohledněte víkendy a svátky a případně počet dní prodlužte."/></div><input id="document-days" type="number" min="1" max="3650" required prop:value=move||duration_days.get() on:input=move|ev|{duration_days.set(event_target_value(&ev));if mark_dirty{ctx.dirty.set(true);}}/></div>
+        </div>
+        {move||removal.get().map(|date|view!{<p class="field-note">"Plánované sejmutí: "{date}". Automatické sejmutí proběhne nejdříve na začátku tohoto dne."</p>})}
+        <div class="admin-field"><div class="document-field-label"><label for="document-attachment-access">"Dostupnost příloh po sejmutí *"</label><DocumentHelp label="Dostupnost příloh po sejmutí" text="Veřejné přílohy zůstanou ke stažení i v archivu. Při volbě pouze pro administrátory je po sejmutí stáhnou jen správci. Název a popis mohou zůstat veřejné, proto nesmějí obsahovat údaje, které mají být skryté. Tato volba sama neopravňuje ke zveřejnění osobních údajů a nemění uzamčení obsahu."/></div><select id="document-attachment-access" required prop:value=move||match retention.get(){Some(true)=>"public",Some(false)=>"private",None=>""} on:change=move|ev|{retention.set(match event_target_value(&ev).as_str(){"public"=>Some(true),"private"=>Some(false),_=>None});if mark_dirty{ctx.dirty.set(true);}}><option value="">"Vyberte dostupnost příloh"</option><option value="public">"Po sejmutí ponechat přílohy veřejné"</option><option value="private">"Po sejmutí přílohy pouze pro administrátory"</option></select></div>
+    </div>}
+}
+
+#[component]
+fn PostingForm(
+    entry: Entry,
+    saved: bool,
+    busy: Signal<bool>,
+    reload: RwSignal<u64>,
+) -> impl IntoView {
+    let id = entry.id;
     let ctx = expect_context::<AdminContext>();
     let error = RwSignal::new(None);
     let preview = RwSignal::new(None::<api::PublicationPreview>);
     let redacted_preview = RwSignal::new(None::<api::PublicationPreview>);
     let checked = RwSignal::new(false);
-    let published_on = RwSignal::new(String::new());
-    let withdraw_on = RwSignal::new(String::new());
-    let after_action = RwSignal::new(String::new());
-    let public_until = RwSignal::new(String::new());
+    let published_on = RwSignal::new(if saved {
+        entry.published_on.unwrap_or_default()
+    } else {
+        String::new()
+    });
+    let duration_days = RwSignal::new(if saved {
+        entry
+            .duration_days
+            .map(|days| days.to_string())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    });
+    let retention = RwSignal::new(if saved {
+        entry.retain_attachments
+    } else {
+        None
+    });
+    let anonymized = RwSignal::new(false);
     let redacted_id = RwSignal::new(String::new());
     let reason = RwSignal::new(String::new());
-    let rule = RwSignal::new(String::new());
-    let legal_basis = RwSignal::new(String::new());
-    let original_reference = RwSignal::new(String::new());
-    let not_before = RwSignal::new(String::new());
-    let decision_on = RwSignal::new(String::new());
-    let reviewed = RwSignal::new(false);
+    Effect::new(move |_| {
+        let _ = (
+            published_on.get(),
+            duration_days.get(),
+            retention.get(),
+            anonymized.get(),
+            redacted_id.get(),
+        );
+        preview.set(None);
+        redacted_preview.set(None);
+        checked.set(false);
+    });
     let prepare = Action::new_local(move |_: &()| async move {
         error.set(None);
         preview.set(None);
@@ -122,7 +225,7 @@ fn PostingForm(id: i64, busy: Signal<bool>, reload: RwSignal<u64>) -> impl IntoV
             .await
         {
             Ok(value) => {
-                if after_action.get_untracked() == "anonymized" {
+                if anonymized.get_untracked() {
                     let Some(derived_id) = redacted_id
                         .get_untracked()
                         .parse::<i64>()
@@ -153,15 +256,19 @@ fn PostingForm(id: i64, busy: Signal<bool>, reload: RwSignal<u64>) -> impl IntoV
         }
     });
     let publish = Action::new_local(move |_: &()| {
-        let token = preview.get_untracked().map(|v| v.token).unwrap_or_default();
-        let anonymized = after_action.get_untracked() == "anonymized";
-        let redacted_token = anonymized
-            .then(|| redacted_preview.get_untracked().map(|v| v.token))
-            .flatten();
-        let redacted_document_id = anonymized
-            .then(|| redacted_id.get_untracked().parse::<i64>().ok())
-            .flatten();
-        let payload = json!({"token":token,"published_on":published_on.get_untracked(),"withdraw_on":optional(withdraw_on.get_untracked()),"after_action":after_action.get_untracked(),"public_until":optional(public_until.get_untracked()),"redacted_document_id":redacted_document_id,"redacted_token":redacted_token,"reason":reason.get_untracked(),"review":{"rule":rule.get_untracked(),"legal_basis":legal_basis.get_untracked(),"original_reference":original_reference.get_untracked(),"not_before":optional(not_before.get_untracked()),"decision_on":optional(decision_on.get_untracked()),"reviewed":reviewed.get_untracked()}});
+        let token = preview
+            .get_untracked()
+            .map(|value| value.token)
+            .unwrap_or_default();
+        let derived = anonymized.get_untracked();
+        let explanation = reason.get_untracked();
+        let payload = json!({
+            "token":token,"published_on":published_on.get_untracked(),"duration_days":duration_days.get_untracked().parse::<i64>().ok(),
+            "after_action":if derived{"anonymized"}else if retention.get_untracked()==Some(true){"retain"}else{"hide"},
+            "redacted_document_id":if derived{redacted_id.get_untracked().parse::<i64>().ok()}else{None},
+            "redacted_token":if derived{redacted_preview.get_untracked().map(|value|value.token)}else{None},
+            "reason":if explanation.trim().is_empty(){"Vyvěšení schválené obsluhou po kontrole finálního náhledu.".to_string()}else{explanation}
+        });
         async move {
             error.set(None);
             match api::save(
@@ -175,12 +282,11 @@ fn PostingForm(id: i64, busy: Signal<bool>, reload: RwSignal<u64>) -> impl IntoV
                     preview.set(None);
                     redacted_preview.set(None);
                     ctx.changed(
-                        "Úkon vyvěšení je uložen. Obsah je po skutečném vyvěšení nevratně uzamčen.",
+                        "Vyvěšení je potvrzené. Po skutečném vyvěšení je obsah nevratně uzamčen.",
                     );
-                    reload.update(|v| *v += 1);
+                    reload.update(|value| *value += 1);
                 }
                 Err(failure) => {
-                    // Every failed attempt requires another review of server state.
                     preview.set(None);
                     redacted_preview.set(None);
                     checked.set(false);
@@ -191,41 +297,38 @@ fn PostingForm(id: i64, busy: Signal<bool>, reload: RwSignal<u64>) -> impl IntoV
     });
     let disabled =
         Signal::derive(move || busy.get() || prepare.pending().get() || publish.pending().get());
-    view! {<section class="admin-panel admin-form-section"><h2>"Nové vyvěšení na úřední desce"</h2><ErrorMessage error/>
-        <p>"Vyvěšení se eviduje samostatně. Opětovné vyvěšení zachová stejný uzamčený obsah a přidá nový záznam historie."</p>
-        <form on:submit=move |ev|{ev.prevent_default();if !disabled.get_untracked() && checked.get_untracked() && preview.get_untracked().is_some(){publish.dispatch(());}}>
-            <fieldset disabled=move ||disabled.get()>
-                <div class="admin-form-row"><label class="admin-field" for="posting-date"><span>"Datum místního vyvěšení *"</span><input id="posting-date" type="date" required prop:value=move ||published_on.get() on:input=move |ev|published_on.set(event_target_value(&ev))/></label>
-                <label class="admin-field" for="posting-plan"><span>"Plánované sejmutí"</span><input id="posting-plan" type="date" prop:value=move ||withdraw_on.get() on:input=move |ev|withdraw_on.set(event_target_value(&ev))/><small>"Prázdné pole znamená bez předem určeného konce."</small></label></div>
-                <label class="admin-field" for="posting-after"><span>"Po sejmutí *"</span><select id="posting-after" required prop:value=move ||after_action.get() on:change=move |ev|{after_action.set(event_target_value(&ev));preview.set(None);redacted_preview.set(None);checked.set(false);}><option value="">"Vyberte způsob zpřístupnění"</option><option value="retain">"Po sejmutí ponechat přílohy veřejné"</option><option value="anonymized">"Zpřístupnit samostatné anonymizované znění"</option><option value="hide">"Po sejmutí přílohy pouze pro administrátory"</option></select></label>
-                <Show when=move ||after_action.get()=="retain"><label class="admin-field" for="posting-public-until"><span>"Konec veřejného zpřístupnění"</span><input id="posting-public-until" type="date" prop:value=move ||public_until.get() on:input=move |ev|public_until.set(event_target_value(&ev))/></label></Show>
-                <Show when=move ||after_action.get()=="anonymized"><label class="admin-field" for="posting-redacted"><span>"ID samostatného anonymizovaného dokumentu *"</span><input id="posting-redacted" type="number" min="1" required prop:value=move ||redacted_id.get() on:input=move |ev|{redacted_id.set(event_target_value(&ev));preview.set(None);redacted_preview.set(None);checked.set(false);}/><small>"Použijte již připravený odvozený záznam. Originál se jím nenahradí."</small></label></Show>
-                <label class="admin-field" for="posting-reason"><span>"Interní důvod a podklad vyvěšení *"</span><textarea id="posting-reason" required maxlength="2000" prop:value=move ||reason.get() on:input=move |ev|reason.set(event_target_value(&ev))></textarea></label>
-                <fieldset class="posting-review"><legend>"Kontrola tohoto vyvěšení"</legend>
-                    <label class="admin-field" for="posting-rule"><span>"Pravidlo zveřejnění *"</span><select id="posting-rule" required prop:value=move ||rule.get() on:change=move |ev|rule.set(event_target_value(&ev))><option value="">"Vyberte příslušné pravidlo"</option><option value="informational">"Informativní oznámení"</option><option value="public_notice">"Doručování veřejnou vyhláškou (§ 25)"</option><option value="property_intent">"Majetkový záměr obce"</option><option value="council_meeting">"Oznámení zasedání zastupitelstva"</option><option value="custom">"Jiný právní režim"</option></select></label>
-                    <label class="admin-field" for="posting-basis"><span>"Právní důvod a pravidlo lhůty *"</span><textarea id="posting-basis" required maxlength="2000" prop:value=move ||legal_basis.get() on:input=move |ev|legal_basis.set(event_target_value(&ev))></textarea></label>
-                    <label class="admin-field" for="posting-original"><span>"Uložení originálu ve spisové službě *"</span><input id="posting-original" required maxlength="2000" prop:value=move ||original_reference.get() on:input=move |ev|original_reference.set(event_target_value(&ev))/></label>
-                    <label class="admin-field" for="posting-minimum"><span>"Nejdřívější přípustné sejmutí"</span><input id="posting-minimum" type="date" required=move ||rule.get()=="custom" prop:value=move ||not_before.get() on:input=move |ev|not_before.set(event_target_value(&ev))/></label>
-                    <Show when=move ||matches!(rule.get().as_str(),"property_intent"|"council_meeting")><label class="admin-field" for="posting-decision"><span>"Datum projednání nebo zasedání *"</span><input id="posting-decision" type="date" required prop:value=move ||decision_on.get() on:input=move |ev|decision_on.set(event_target_value(&ev))/></label></Show>
-                    <label class="admin-check"><input type="checkbox" required prop:checked=move ||reviewed.get() on:change=move |ev|reviewed.set(event_target_checked(&ev))/><span>"Pro toto vyvěšení jsem ověřil/a právní režim, lhůtu, osobní údaje, přístupnost a uložení originálu."</span></label>
-                </fieldset>
-                <button class="button secondary" type="button" on:click=move |_|{prepare.dispatch(());}>"Zkontrolovat finální náhled"</button>
-                {move ||preview.get().map(|value|view!{<section class="publication-preview" aria-label="Finální náhled dokumentu"><SnapshotContent preview=value/>
-                    {move ||redacted_preview.get().map(|derived|view!{<section class="publication-preview" aria-label="Finální náhled anonymizovaného znění"><h3>"Samostatné anonymizované znění"</h3><SnapshotContent preview=derived/><p class="info-banner">"Anonymizované znění se při potvrzení také nevratně uzamkne. Jde o samostatnou veřejnou kopii, jejíž bajty tím nejsou označeny za původně vyvěšené."</p></section>})}
-                    <p class="info-banner"><Icon name="lock"/>"Po vyvěšení již obsah dokumentu nelze upravit."</p>
-                    <label class="admin-check"><input type="checkbox" prop:checked=move ||checked.get() on:change=move |ev|checked.set(event_target_checked(&ev))/><span>"Zkontroloval/a jsem uvedený obsah a všechny přílohy."</span></label>
-                    <button class="button primary" type="submit" disabled=move ||!checked.get() ||disabled.get()>"Potvrdit vyvěšení této podoby"</button>
-                </section>})}
-            </fieldset>
-        </form>
-    </section>}
+    let complete = Signal::derive(move || {
+        !published_on.get().is_empty()
+            && duration_days
+                .get()
+                .parse::<i64>()
+                .is_ok_and(|days| days > 0 && days <= 3650)
+            && retention.get().is_some()
+    });
+    view! {<form class="document-posting-confirmation" on:submit=move|ev|{ev.prevent_default();if !disabled.get_untracked()&&complete.get_untracked()&&checked.get_untracked()&&preview.get_untracked().is_some(){publish.dispatch(());}}><ErrorMessage error/>
+        <fieldset disabled=move||disabled.get()>
+            {if saved{view!{<p>"Náhled použije uložený obsah, přílohy a následující nastavení vyvěšení."</p><dl class="document-facts"><div><dt>"Datum vyvěšení"</dt><dd>{move||api::date(&published_on.get())}</dd></div><div><dt>"Počet celých dní vyvěšení"</dt><dd>{move||duration_days.get()}</dd></div><div><dt>"Přílohy po sejmutí"</dt><dd>{move||match retention.get(){Some(true)=>"Zůstanou veřejné",Some(false)=>"Pouze pro administrátory",None=>"Volba chybí"}}</dd></div></dl>}.into_any()}else{view!{<BoardSettings published_on duration_days retention/>}.into_any()}}
+            <details><summary>"Další možnosti vyvěšení"</summary>
+                <label class="admin-field" for="posting-reason"><span>"Interní poznámka k vyvěšení (nepovinné)"</span><textarea id="posting-reason" maxlength="2000" prop:value=move||reason.get() on:input=move|ev|reason.set(event_target_value(&ev))></textarea></label>
+                <label class="admin-check"><input type="checkbox" prop:checked=move||anonymized.get() on:change=move|ev|anonymized.set(event_target_checked(&ev))/><span>"Po sejmutí zpřístupnit samostatné anonymizované znění"</span></label>
+                <Show when=move||anonymized.get()><label class="admin-field" for="posting-redacted"><span>"ID propojeného anonymizovaného dokumentu *"</span><input id="posting-redacted" type="number" min="1" required prop:value=move||redacted_id.get() on:input=move|ev|redacted_id.set(event_target_value(&ev))/><small>"Tato volba ukončí veřejnou dostupnost originálu a použije samostatnou schválenou kopii."</small></label></Show>
+            </details>
+            <button class="button secondary" type="button" disabled=move||!complete.get() on:click=move |_|{prepare.dispatch(());}>"Zkontrolovat finální náhled"</button>
+            {move||preview.get().map(|value|view!{<section class="publication-preview" aria-label="Finální náhled dokumentu"><SnapshotContent preview=value/>
+                {move||redacted_preview.get().map(|derived|view!{<section class="publication-preview" aria-label="Finální náhled anonymizovaného znění"><h3>"Samostatné anonymizované znění"</h3><SnapshotContent preview=derived/><p class="info-banner">"Anonymizované znění se při potvrzení také nevratně uzamkne. Jde o samostatnou veřejnou kopii, jejíž bajty tím nejsou označeny za původně vyvěšené."</p></section>})}
+                <div class="document-field-label"><p class="info-banner"><Icon name="lock"/>"Po vyvěšení již obsah dokumentu nelze upravit."</p><DocumentHelp label="Uzamčení po vyvěšení" text="Uzamkne se název, text i všechny přílohy této podoby. Opravu vytvoříte jako nový propojený dokument. Veřejnou dostupnost lze ukončit i později, uzamčení se tím nezruší."/></div>
+                <label class="admin-check"><input type="checkbox" prop:checked=move||checked.get() on:change=move|ev|checked.set(event_target_checked(&ev))/><span>"Zkontroloval/a jsem uvedený obsah a všechny přílohy."</span></label>
+                <button class="button primary" type="submit" disabled=move||!checked.get()||disabled.get()>"Potvrdit vyvěšení této podoby"</button>
+            </section>})}
+        </fieldset>
+    </form>}
 }
 
 #[component]
 fn SnapshotContent(preview: api::PublicationPreview) -> impl IntoView {
     view! {
         <h3>{preview.document.title}</h3><p>{preview.document.description.unwrap_or_default()}</p>
-        <dl class="document-facts"><div><dt>"Číslo jednací"</dt><dd>{preview.document.reference_number.unwrap_or_else(||"Neuvedeno".into())}</dd></div><div><dt>"Původce"</dt><dd>{preview.document.issuer.unwrap_or_else(||"Neuvedeno".into())}</dd></div><div><dt>"Datum dokumentu"</dt><dd>{crate::catalog::document_date(preview.document.document_date.as_deref().unwrap_or_default())}</dd></div></dl>
+        <dl class="document-facts">{preview.document.reference_number.map(|value|view!{<div><dt>"Číslo jednací"</dt><dd>{value}</dd></div>})}{preview.document.issuer.filter(|value|!value.trim().is_empty()).map(|value|view!{<div><dt>"Původce převzatého dokumentu"</dt><dd>{value}</dd></div>})}<div><dt>"Datum vytvoření dokumentu"</dt><dd>{crate::catalog::document_date(preview.document.document_date.as_deref().unwrap_or_default())}</dd></div></dl>
         <h4>"Přílohy v uloženém pořadí"</h4><ol>{preview.attachments.into_iter().map(|file|view!{<li>{if file.available{view!{<a href=format!("/api/v1/admin/attachments/{}",file.id) target="_blank" rel="noopener">{file.name}</a>}.into_any()}else{view!{<strong>{file.name}</strong><span>"Soubor není dostupný. Před vyvěšením vyžaduje ověření."</span>}.into_any()}}<small>{format!("{} B",file.size_bytes)}</small>{(!file.sha256.is_empty()).then(||view!{<code class="file-fingerprint">{file.sha256}</code>})}</li>}).collect_view()}</ol>
     }
 }
@@ -261,6 +364,37 @@ fn CancelSchedule(id: i64, busy: Signal<bool>, reload: RwSignal<u64>) -> impl In
         <label class="admin-field" for="cancel-schedule-reason"><span>"Důvod zrušení plánovaného vyvěšení"</span><textarea id="cancel-schedule-reason" maxlength="2000" prop:value=move ||reason.get() on:input=move |ev|reason.set(event_target_value(&ev))></textarea></label>
         <ConfirmButton label="Zrušit plánované vyvěšení" title="Zrušit plánované vyvěšení?" description="Přílohy zůstanou zachované. Pokud se dokument mezitím skutečně vyvěsil, zrušení plánu se neprovede." disabled danger=true on_confirm=Callback::new(move |()|{cancel.dispatch(());})/>
     </section>}
+}
+
+#[component]
+fn ArchiveDocument(id: i64, busy: Signal<bool>, reload: RwSignal<u64>) -> impl IntoView {
+    let ctx = expect_context::<AdminContext>();
+    let reason = RwSignal::new(String::new());
+    let error = RwSignal::new(None);
+    let archive = Action::new_local(move |_: &()| {
+        let payload = json!({"reason":reason.get_untracked()});
+        async move {
+            error.set(None);
+            match api::save(
+                "POST",
+                &format!("/api/v1/admin/documents/{id}/archive"),
+                Some(payload),
+            )
+            .await
+            {
+                Ok(_) => {
+                    ctx.changed("Dokument je přesunutý do společného archivu. Jeho veřejná dostupnost a uchované přílohy zůstávají beze změny.");
+                    reload.update(|value| *value += 1);
+                }
+                Err(failure) => error.set(Some(failure)),
+            }
+        }
+    });
+    view! {<details><summary>"Přesunout do archivu"</summary><ErrorMessage error/>
+        <p>"Dokument bude ve společném archivu. Archivace nezmění jeho veřejnou dostupnost ani přílohy."</p>
+        <label class="admin-field" for="archive-reason"><span>"Důvod archivace *"</span><textarea id="archive-reason" required maxlength="2000" prop:value=move||reason.get() on:input=move|ev|reason.set(event_target_value(&ev))></textarea></label>
+        <ConfirmButton label="Přesunout do archivu" title="Přesunout dokument do archivu?" description="Obsah, přílohy a jejich veřejná dostupnost zůstanou zachované." disabled=Signal::derive(move||busy.get()||archive.pending().get()||reason.get().trim().is_empty()) on_confirm=Callback::new(move|()|{archive.dispatch(());})/>
+    </details>}
 }
 
 #[component]
@@ -367,8 +501,8 @@ fn PostingRecord(
         {active.then(move ||view!{<details><summary>"Zaznamenat sejmutí nebo změnit plán"</summary><ErrorMessage error/>
             <label class="admin-field" for=format!("posting-reason-{id}")><span>"Interní důvod *"</span><textarea id=format!("posting-reason-{id}") maxlength="2000" prop:value=move ||reason.get() on:input=move |ev|reason.set(event_target_value(&ev))></textarea></label>
             <label class="admin-check"><input type="checkbox" prop:checked=move ||emergency.get() on:change=move |ev|emergency.set(event_target_checked(&ev))/><span>"Předčasné sejmutí kvůli incidentu"</span></label>
-            <label class="admin-field" for=format!("posting-plan-{id}")><span>"Nový plánovaný termín"</span><input id=format!("posting-plan-{id}") type="date" prop:value=move ||plan.get() on:input=move |ev|plan.set(event_target_value(&ev))/><small>"Prázdné pole zruší budoucí plán. Skutečné události zůstanou zachované."</small></label>
-            <div class="admin-actions"><button class="button secondary" type="button" disabled=move ||disabled.get() on:click=move |_|{action.dispatch("plan".into());}>"Změnit plán"</button><ConfirmButton label="Zaznamenat sejmutí" title="Zaznamenat skutečné sejmutí?" description="Sejmutí se zapíše jako nová událost. Dostupnost příloh se upraví podle uložené výslovné volby. Správci si uchované přílohy mohou dál stáhnout a obsah zůstane uzamčený." disabled danger=true on_confirm=Callback::new(move |()|{action.dispatch("withdraw".into());})/></div>
+            <div class="admin-field"><div class="document-field-label"><label for=format!("posting-plan-{id}")>"Nový plánovaný termín"</label><DocumentHelp label="Změna plánovaného termínu" text="Vyberte datum, na jehož začátku lze dokument nejdříve sejmout. Musí zůstat zachována potřebná doba vyvěšení včetně případného posunu kvůli víkendu nebo svátku. Změna potřebuje důvod a zachová původní plán v historii."/></div><input id=format!("posting-plan-{id}") type="date" prop:value=move ||plan.get() on:input=move |ev|plan.set(event_target_value(&ev))/></div>
+            <div class="admin-actions"><button class="button secondary" type="button" disabled=move ||disabled.get()||plan.get().is_empty() on:click=move |_|{if !disabled.get_untracked()&&!plan.get_untracked().is_empty(){action.dispatch("plan".into());}}>"Změnit plán"</button><ConfirmButton label="Zaznamenat sejmutí" title="Zaznamenat skutečné sejmutí?" description="Sejmutí se zapíše jako nová událost. Dostupnost příloh se upraví podle uložené výslovné volby. Správci si uchované přílohy mohou dál stáhnout a obsah zůstane uzamčený." disabled danger=true on_confirm=Callback::new(move |()|{action.dispatch("withdraw".into());})/></div>
         </details>})}
         <EvidenceCorrection document_id posting_id=id busy reload/>
     </li>}

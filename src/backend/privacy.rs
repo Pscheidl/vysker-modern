@@ -237,6 +237,7 @@ pub async fn response_headers(
     use axum::http::header;
     let method = request.method().clone();
     let protect_documents = request.uri().path().starts_with("/uredni-deska")
+        || request.uri().path().starts_with("/dokumenty")
         || request.uri().path().starts_with("/api/")
         || request.uri().path() == "/"
         || request.uri().path() == "/hledat";

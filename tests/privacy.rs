@@ -344,8 +344,8 @@ async fn separate_retention_tombstones_private_content_without_unlocking() {
     assert_eq!(
         app.call(
             "POST",
-            &format!("/api/v1/admin/documents/{id}/archive"),
-            Some(json!({"reason":"Samostatné ukončení veřejného přístupu před retenční lhůtou"})),
+            &format!("/api/v1/admin/documents/{id}/visibility"),
+            Some(json!({"public_access":false,"reason":"Samostatné ukončení veřejného přístupu před retenční lhůtou"})),
             true
         )
         .await

@@ -75,12 +75,17 @@ E2E_PORT=3117 TEST_DATABASE_URL=postgresql://vysker:vysker@127.0.0.1:5432/postgr
 Covered workflows:
 
 - Keyboard skip link, pagination and Czech search without diacritics
-- Creating a notice, adding multiple attachments, preserving them after reload,
-  draft privacy, publishing and anonymous download of every attachment
+- One document administration section and editor, optional reference and creation
+  date, and posting controls shown only after selecting the board checkbox
+- Blank required posting duration and file policy, final confirmation, multiple
+  attachments preserved after reload and anonymous download after publication
 - Subscription request, confirmation, notification and unsubscribe
 - Account settings and viewport overflow on mobile
 - Shared catalogue and board identity, search scope, deduplication and migration privacy
-- Mandatory attachment access choice, permanent posting lock and private retained downloads
+- Worker-recorded expiration into the single shared archive, permanent content
+  lock, private retained downloads and old direct-file denial
+- Ordinary archival preserves public metadata and files without inventing a
+  posting, and old board archive URLs lead to the shared catalogue archive
 - Scheduled cancellation with a stale editor and a separate corrective draft
 - Separate anonymized preview, immutable derived copy and release without invented posting history
 

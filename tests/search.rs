@@ -344,3 +344,147 @@ async fn migrated_archive_search_never_reveals_previously_private_metadata() {
     assert!(compact.reference_number.is_none());
     assert!(compact.issuer.is_none());
 }
+
+#[tokio::test]
+async fn shared_archive_contains_ordinary_and_removed_documents_but_no_active_or_uncertain_posting()
+{
+    let app = App::new().await;
+    let ordinary = document(&app, "Archivovaný běžný dokument", None, Some("2020-01-01")).await;
+    sqlx::query("UPDATE documents SET status='archived' WHERE id=$1")
+        .bind(ordinary)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    let removed = document(
+        &app,
+        "Sejmutý dokument",
+        Some("archived"),
+        Some("2020-02-01"),
+    )
+    .await;
+    posting(&app, removed, true).await;
+    let current = document(
+        &app,
+        "Znovu vyvěšený dokument",
+        Some("published"),
+        Some("2020-03-01"),
+    )
+    .await;
+    posting(&app, current, true).await;
+    posting(&app, current, false).await;
+    let scheduled = document(
+        &app,
+        "Plánované opětovné vyvěšení",
+        Some("archived"),
+        Some("2020-04-01"),
+    )
+    .await;
+    posting(&app, scheduled, true).await;
+    sqlx::query("UPDATE documents SET board_status='scheduled' WHERE id=$1")
+        .bind(scheduled)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    let uncertain = document(
+        &app,
+        "Neověřené sejmutí",
+        Some("archived"),
+        Some("2020-05-01"),
+    )
+    .await;
+    sqlx::query("UPDATE documents SET status='archived',lock_state='review' WHERE id=$1")
+        .bind(uncertain)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    let private = document(&app, "Soukromý archiv", None, Some("2020-06-01")).await;
+    sqlx::query("UPDATE documents SET status='archived',public_access=FALSE,access_blocked=TRUE WHERE id=$1").bind(private).execute(&app.state.pool).await.unwrap();
+    let archive = search::query(&app.state.pool, &scope("document", "archive"))
+        .await
+        .unwrap();
+    assert_eq!(archive.total, 2);
+    assert_eq!(
+        archive.items.iter().map(|hit| hit.id).collect::<Vec<_>>(),
+        [removed, ordinary]
+    );
+    assert!(archive.items.iter().all(|hit| hit.archived));
+    let board_archive = search::query(&app.state.pool, &scope("notice", "archive"))
+        .await
+        .unwrap();
+    assert_eq!(
+        board_archive
+            .items
+            .iter()
+            .map(|hit| hit.id)
+            .collect::<Vec<_>>(),
+        [removed]
+    );
+    let catalogue = search::query(&app.state.pool, &scope("document", "all"))
+        .await
+        .unwrap();
+    assert_eq!(catalogue.total, 5);
+    assert_eq!(
+        catalogue
+            .items
+            .iter()
+            .filter(|hit| hit.id == current)
+            .count(),
+        1
+    );
+    assert!(
+        !catalogue
+            .items
+            .iter()
+            .find(|hit| hit.id == current)
+            .unwrap()
+            .archived
+    );
+    for id in [scheduled, uncertain] {
+        let hit = catalogue.items.iter().find(|hit| hit.id == id).unwrap();
+        assert_eq!(hit.kind, "document");
+        assert!(!hit.archived);
+    }
+}
+
+#[tokio::test]
+async fn detail_keeps_creation_date_distinct_from_source_publication_and_import() {
+    let app = App::new().await;
+    let id = document(&app, "Rozlišená data", None, Some("2020-03-04")).await;
+    sqlx::query("UPDATE documents SET document_date='2020-02-01' WHERE id=$1")
+        .bind(id)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    let detail = obecni_web::catalog::document_from_pool(&app.state.pool, id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(detail.document_date.as_deref(), Some("2020-02-01"));
+    assert_eq!(detail.source_published_on.as_deref(), Some("2020-03-04"));
+    let local = document(&app, "Místní zveřejnění před půlnocí UTC", None, None).await;
+    sqlx::query("UPDATE documents SET published_at='2020-03-04T23:30:00Z' WHERE id=$1")
+        .bind(local)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    let catalogue_day: String =
+        sqlx::query_scalar("SELECT catalog_date::text FROM documents WHERE id=$1")
+            .bind(local)
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap();
+    assert_eq!(catalogue_day, "2020-03-05");
+    let unknown = document(
+        &app,
+        "Datum vytvoření není doloženo",
+        None,
+        Some("2019-05-06"),
+    )
+    .await;
+    let detail = obecni_web::catalog::document_from_pool(&app.state.pool, unknown)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(detail.document_date.is_none());
+    assert_eq!(detail.source_published_on.as_deref(), Some("2019-05-06"));
+}

@@ -36,6 +36,8 @@ pub struct Document {
     #[serde(default)]
     pub document_date: Option<String>,
     #[serde(default)]
+    pub source_published_on: Option<String>,
+    #[serde(default)]
     pub topic: Option<String>,
     #[serde(default)]
     pub postings: Vec<DocumentPosting>,
@@ -130,6 +132,7 @@ pub async fn document_from_pool(
         reference_number: Option<String>,
         issuer: Option<String>,
         document_date: Option<String>,
+        source_published_on: Option<String>,
         topic: Option<String>,
         files_public: bool,
     }
@@ -138,7 +141,8 @@ pub async fn document_from_pool(
          CASE WHEN d.metadata_restricted THEN '' ELSE coalesce(d.description,'') END AS description,
          CASE WHEN d.metadata_restricted THEN NULL ELSE d.reference_number END AS reference_number,
          CASE WHEN d.metadata_restricted THEN NULL ELSE d.issuer END AS issuer,
-         d.catalog_date::text AS document_date,c.name AS topic,document_files_public(d,$2) AS files_public
+         d.document_date::text AS document_date,d.source_published_on::text AS source_published_on,
+         c.name AS topic,document_files_public(d,$2) AS files_public
          FROM documents d LEFT JOIN categories c ON c.id=d.category_id
          WHERE d.id=$1 AND document_is_public(d,$2)",
     )
@@ -251,6 +255,7 @@ pub async fn document_from_pool(
         reference_number: record.reference_number,
         issuer: record.issuer,
         document_date: record.document_date,
+        source_published_on: record.source_published_on,
         topic: record.topic,
         postings,
         relations,
@@ -382,7 +387,20 @@ pub async fn load_subscription_categories() -> Result<Vec<SubscriptionCategory>,
 
 #[cfg(feature = "demo")]
 pub async fn load_subscription_categories() -> Result<Vec<SubscriptionCategory>, ServerFnError> {
-    Ok(Vec::new())
+    let names: std::collections::BTreeSet<_> = crate::content::load_board()
+        .await?
+        .notices
+        .into_iter()
+        .map(|notice| notice.category)
+        .collect();
+    Ok(names
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| SubscriptionCategory {
+            id: index as i64 + 1,
+            name,
+        })
+        .collect())
 }
 
 #[cfg(not(feature = "demo"))]

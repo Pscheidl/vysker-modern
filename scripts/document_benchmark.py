@@ -128,18 +128,19 @@ def baseline_queries():
 
 def unified_queries():
     def search(scope, word=None):
-        stamp = 'd.published_on' if scope in ('current_board', 'public_archive') else 'd.catalog_date'
+        stamp = 'd.published_on' if scope == 'current_board' else 'd.catalog_date'
+        archived = "((d.board_status IS NULL AND d.status='archived') OR d.has_removed_posting) AND NOT d.has_current_posting AND d.board_status IS DISTINCT FROM 'scheduled'"
         prefix = f"""WITH public AS (SELECT d.id,
-            CASE WHEN d.board_status IS NULL THEN 'document' ELSE 'notice' END AS kind,
+            CASE WHEN (d.board_status='published' AND d.has_current_posting) OR (d.has_removed_posting AND NOT d.has_current_posting AND d.board_status IS DISTINCT FROM 'scheduled') THEN 'notice' ELSE 'document' END AS kind,
             CASE WHEN d.metadata_restricted THEN coalesce(d.public_title,'Záznam úřední desky #'||d.id) ELSE d.title END AS title,CASE WHEN d.metadata_restricted THEN '' ELSE substr(d.description,1,400) END AS description,'/dokumenty/'||d.id AS path,
             coalesce(c.name,'Ostatní') AS category,coalesce({stamp}::text,'') AS posted,
-            {stamp} AS sort_date,coalesce(d.board_status IN ('withdrawn','archived'),FALSE) AS archived
+            {stamp} AS sort_date,({archived}) AS archived
             FROM documents d LEFT JOIN categories c ON c.id=d.category_id
             WHERE document_is_public(d,DATE '2026-11-01')"""
         if scope == 'current_board':
             prefix += " AND d.board_status='published' AND d.has_current_posting"
         elif scope == 'public_archive':
-            prefix += " AND d.board_status IN ('withdrawn','archived') AND d.has_removed_posting"
+            prefix += f" AND ({archived})"
         for term in (word or '').split():
             prefix += f" AND d.search_text LIKE '%{term}%'"
         if scope in ('global_search', 'selective_search'):
@@ -154,7 +155,7 @@ def unified_queries():
         'public_archive': search('public_archive'),
         'global_search': search('global_search', 'rozpocet'),
         'selective_search': search('selective_search', 'anonymni 9999'),
-        'document_detail': ["SELECT CASE WHEN d.metadata_restricted THEN coalesce(d.public_title,'Dokument #'||d.id) ELSE d.title END AS title,CASE WHEN d.metadata_restricted THEN '' ELSE coalesce(d.description,'') END AS description,CASE WHEN d.metadata_restricted THEN NULL ELSE d.reference_number END AS reference_number,CASE WHEN d.metadata_restricted THEN NULL ELSE d.issuer END AS issuer,d.catalog_date::text AS document_date,c.name AS topic,document_files_public(d,DATE '2026-11-01') AS files_public FROM documents d LEFT JOIN categories c ON c.id=d.category_id WHERE d.id=1 AND document_is_public(d,DATE '2026-11-01')",
+        'document_detail': ["SELECT CASE WHEN d.metadata_restricted THEN coalesce(d.public_title,'Dokument #'||d.id) ELSE d.title END AS title,CASE WHEN d.metadata_restricted THEN '' ELSE coalesce(d.description,'') END AS description,CASE WHEN d.metadata_restricted THEN NULL ELSE d.reference_number END AS reference_number,CASE WHEN d.metadata_restricted THEN NULL ELSE d.issuer END AS issuer,d.document_date::text AS document_date,d.source_published_on::text AS source_published_on,c.name AS topic,document_files_public(d,DATE '2026-11-01') AS files_public FROM documents d LEFT JOIN categories c ON c.id=d.category_id WHERE d.id=1 AND document_is_public(d,DATE '2026-11-01')",
             "SELECT id,name,size_bytes FROM attachments WHERE document_id=1 AND is_public AND data IS NOT NULL AND removed_at IS NULL AND EXISTS(SELECT 1 FROM documents d WHERE d.id=1 AND document_files_public(d,DATE '2026-11-01')) ORDER BY sort_order,id",
             "SELECT id,origin,certainty,started_on,started_at,planned_removal_on,removed_on,removed_at FROM document_postings WHERE document_id=1 ORDER BY started_on DESC NULLS LAST,id DESC",
             "SELECT id,(payload->>'posting_id')::bigint,payload->>'field',payload->>'original',payload->>'corrected',occurred_at FROM document_events WHERE document_id=1 AND kind='evidence_corrected' ORDER BY id",

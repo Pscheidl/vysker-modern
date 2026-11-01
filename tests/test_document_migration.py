@@ -97,6 +97,8 @@ class DocumentMigrationTests(unittest.TestCase):
         import copy
         with temporary_database() as database, connect(database) as conn:
             baseline(conn)
+            conn.execute("INSERT INTO documents(id,title,status,created_at,published_at) VALUES (3,'Noční zveřejnění','published','2020-03-04T23:30:00Z','2020-03-04T23:30:00Z')")
+            conn.commit()
             before = snapshot(conn)
             for migration in sorted((ROOT / 'migrations').glob('*.sql')):
                 if int(migration.name.split('_', 1)[0]) >= 29:
@@ -105,7 +107,8 @@ class DocumentMigrationTests(unittest.TestCase):
             after = snapshot(conn, before['as_of_date'])
             report = compare(before, after)
             self.assertTrue(report['valid'], report)
-            self.assertEqual(report['counts']['after_canonical_documents'], 5)
+            self.assertEqual(report['counts']['after_canonical_documents'], 6)
+            self.assertEqual(conn.execute('SELECT catalog_date FROM documents WHERE id=3').fetchone()[0], date(2020, 3, 5))
             encoded = json.dumps(before)
             self.assertNotIn('Veřejný dokument', encoded)
             self.assertNotIn('anonymous@example.test', encoded)

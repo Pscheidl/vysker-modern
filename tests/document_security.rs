@@ -434,3 +434,30 @@ async fn deleted_draft_attachment_metadata_is_not_published_with_the_document() 
         .unwrap();
     assert_eq!(retained_name, "private-draft-only.pdf");
 }
+
+#[tokio::test]
+async fn unified_document_urls_keep_the_notice_board_crawler_and_cache_protection() {
+    let app = App::new().await;
+    for path in [
+        "/dokumenty",
+        "/dokumenty?state=archive",
+        "/dokumenty/123",
+        "/uredni-deska",
+        "/api/v1/documents",
+    ] {
+        // Headers are required for successful responses and missing/private IDs alike.
+        let response = app.call("GET", path, None, false).await;
+        assert_eq!(
+            response.headers()["x-robots-tag"],
+            "noindex, noarchive",
+            "{path}"
+        );
+        assert!(
+            response.headers()["cache-control"]
+                .to_str()
+                .unwrap()
+                .contains("no-store"),
+            "{path}"
+        );
+    }
+}

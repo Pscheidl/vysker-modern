@@ -8,7 +8,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sqlx::{PgConnection, PgPool};
-use time::{Date, OffsetDateTime};
+use time::{Date, Duration, OffsetDateTime};
 
 pub async fn event(
     conn: &mut PgConnection,
@@ -44,8 +44,32 @@ pub async fn preview(
     let token = fingerprint(&mut tx, id).await?;
     tx.commit().await?;
     Ok(Json(
-        json!({"token":token,"document":document,"attachments":attachments}),
+        json!({"token":token,"document":document.with_board_settings(),"attachments":attachments}),
     ))
+}
+/// N complete calendar days after the publication day, then removal at midnight.
+/// This is a technical schedule, not a calculation of the legal term or holidays.
+/// Explicit compatibility dates are already removal dates and remain unchanged.
+pub fn posting_end(start: Date, days: Option<i64>, end: Option<Date>) -> Result<Date> {
+    if days.is_some() && end.is_some() {
+        return Err(bad("Zadejte počet dní, nebo datum sejmutí."));
+    }
+    let end = if let Some(days) = days {
+        if !(1..=3650).contains(&days) {
+            return Err(bad("Doba vyvěšení musí být 1 až 3650 dní."));
+        }
+        start
+            .checked_add(Duration::days(days + 1))
+            .ok_or_else(|| bad("Datum sejmutí je mimo rozsah."))?
+    } else {
+        end.ok_or_else(|| bad("Vyplňte počet dní vyvěšení. Doba nemá výchozí hodnotu."))?
+    };
+    if (end - start).whole_days() < 2 {
+        return Err(bad(
+            "Před sejmutím musí uplynout alespoň jeden celý den po dni vyvěšení.",
+        ));
+    }
+    Ok(end)
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -53,20 +77,25 @@ pub struct PostingInput {
     pub token: String,
     pub published_on: Date,
     pub withdraw_on: Option<Date>,
+    pub duration_days: Option<i64>,
     pub after_action: String,
     pub public_until: Option<Date>,
     pub redacted_document_id: Option<i64>,
     pub redacted_token: Option<String>,
     pub reason: String,
-    pub review: Option<crate::notice_policy::NoticeReview>,
 }
 pub async fn post(
     State(s): State<Backend>,
     admin: Admin,
     Path(id): Path<i64>,
-    Json(input): Json<PostingInput>,
+    Json(mut input): Json<PostingInput>,
 ) -> Result<StatusCode> {
     let now = OffsetDateTime::now_utc();
+    input.withdraw_on = Some(posting_end(
+        input.published_on,
+        input.duration_days,
+        input.withdraw_on,
+    )?);
     text(&input.reason, 2000)?;
     if !["retain", "hide", "anonymized"].contains(&input.after_action.as_str()) {
         return Err(bad(
@@ -86,7 +115,13 @@ pub async fn post(
         ));
     }
     let mut tx = crate::db::begin_write(&s.pool).await?;
-    let (state,board,blocked,review):(String,Option<String>,bool,String)=sqlx::query_as("SELECT lock_state,board_status,access_blocked,review_json FROM documents WHERE id=$1 FOR UPDATE").bind(id).fetch_optional(&mut *tx).await?.ok_or_else(missing)?;
+    let (state, board, blocked): (String, Option<String>, bool) = sqlx::query_as(
+        "SELECT lock_state,board_status,access_blocked FROM documents WHERE id=$1 FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(missing)?;
     if state == "review" || blocked || matches!(board.as_deref(), Some("published" | "scheduled")) {
         return Err(conflict(
             "Dokument vyžaduje ověření, je místně stažený nebo už má probíhající vyvěšení.",
@@ -103,42 +138,6 @@ pub async fn post(
             "Některá příloha není úplně převzatá. Před vyvěšením doplňte chybějící soubory.",
         ));
     }
-    let review: crate::notice_policy::NoticeReview = input
-        .review
-        .unwrap_or(serde_json::from_str(&review).map_err(|_| bad("Neplatné údaje kontroly."))?);
-    let earliest = review.earliest(input.published_on).map_err(bad)?;
-    if input
-        .withdraw_on
-        .is_some_and(|d| earliest.is_some_and(|e| d < e))
-    {
-        return Err(bad(
-            "Plán je před nejdřívějším termínem zvoleného pravidla.",
-        ));
-    }
-    if s.config.production
-        && (!review.reviewed
-            || review.rule.is_empty()
-            || review.legal_basis.trim().is_empty()
-            || review.original_reference.trim().is_empty())
-    {
-        return Err(bad(
-            "Před vyvěšením vyplňte kontrolu obsahu, právní podklad a evidenci originálu.",
-        ));
-    }
-    sqlx::query("UPDATE documents SET review_json=$2 WHERE id=$1")
-        .bind(id)
-        .bind(serde_json::to_string(&review).unwrap())
-        .execute(&mut *tx)
-        .await?;
-    event(
-        &mut tx,
-        id,
-        Some(admin.id),
-        "posting_review",
-        &input.reason,
-        json!({"review":review}),
-    )
-    .await?;
     if input.after_action == "anonymized" {
         let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM document_relations r JOIN documents d ON d.id=r.related_id WHERE original_id=$1 AND related_id=$2 AND kind='anonymized' AND NOT d.access_blocked)").bind(id).bind(input.redacted_document_id).fetch_one(&mut *tx).await?;
         if !valid {
@@ -218,6 +217,10 @@ pub async fn start_posting(
             "Místní zákaz zveřejnění nebo skartace brání vyvěšení.",
         ));
     }
+    let incomplete:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM attachments WHERE document_id=$1 AND removed_at IS NULL AND data IS NULL)").bind(id).fetch_one(&mut *conn).await?;
+    if incomplete {
+        return Err(conflict("Před vyvěšením doplňte chybějící přílohy."));
+    }
     let hash = fingerprint(conn, id).await?;
     if approved.as_ref().is_some_and(|v| v != &hash) {
         return Err(conflict(
@@ -258,15 +261,6 @@ pub async fn withdraw(
 ) -> Result<StatusCode> {
     text(&input.reason, 2000)?;
     let mut tx = crate::db::begin_write(&s.pool).await?;
-    if posting_earliest(&mut tx, posting)
-        .await?
-        .is_some_and(|day| today(OffsetDateTime::now_utc()) < day)
-        && !input.emergency
-    {
-        return Err(conflict(
-            "Minimální termín zvoleného pravidla dosud neuplynul. Předčasné sejmutí vyžaduje výslovně označený incident s důvodem. Veřejný přístup lze okamžitě ukončit samostatným úkonem.",
-        ));
-    }
     if input.emergency {
         let id: i64 = sqlx::query_scalar("SELECT document_id FROM document_postings WHERE id=$1")
             .bind(posting)
@@ -310,7 +304,7 @@ pub async fn remove_posting(
     let remaining:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM document_postings WHERE document_id=$1 AND certainty='documented' AND removed_at IS NULL AND removed_on IS NULL)").bind(id).fetch_one(&mut *conn).await?;
     if !remaining {
         // Privacy is an access decision. Neither locked bytes nor filenames are changed.
-        sqlx::query("UPDATE documents SET board_status='archived',withdrawn_at=$2,attachments_public=$3,public_until=$4 WHERE id=$1").bind(id).bind(timestamp(now)).bind(action=="retain").bind(until).execute(&mut *conn).await?;
+        sqlx::query("UPDATE documents SET status='archived',board_status='archived',withdrawn_at=$2,attachments_public=$3,public_until=$4 WHERE id=$1").bind(id).bind(timestamp(now)).bind(action=="retain").bind(until).execute(&mut *conn).await?;
         if action == "anonymized" {
             sqlx::query("UPDATE documents SET public_access=FALSE,access_blocked=TRUE,status='archived' WHERE id=$1")
                 .bind(id)
@@ -360,6 +354,11 @@ pub async fn plan(
     Json(input): Json<Plan>,
 ) -> Result<StatusCode> {
     text(&input.reason, 2000)?;
+    if input.withdraw_on.is_none() {
+        return Err(bad(
+            "Vyplňte nové datum sejmutí. Plán nelze ponechat bez termínu.",
+        ));
+    }
     if input
         .withdraw_on
         .is_some_and(|d| d <= today(OffsetDateTime::now_utc()))
@@ -370,15 +369,6 @@ pub async fn plan(
     }
     let mut tx = crate::db::begin_write(&s.pool).await?;
     let (id,old):(i64,Option<Date>)=sqlx::query_as("SELECT document_id,planned_removal_on FROM document_postings WHERE id=$1 AND removed_on IS NULL AND removed_at IS NULL FOR UPDATE").bind(posting).fetch_optional(&mut *tx).await?.ok_or_else(missing)?;
-    let earliest = posting_earliest(&mut tx, posting).await?;
-    if input
-        .withdraw_on
-        .is_some_and(|day| earliest.is_some_and(|minimum| day < minimum))
-    {
-        return Err(bad(
-            "Plánované sejmutí je před minimálním termínem zvoleného pravidla.",
-        ));
-    }
     sqlx::query("UPDATE document_postings SET planned_removal_on=$2 WHERE id=$1")
         .bind(posting)
         .bind(input.withdraw_on)
@@ -426,7 +416,7 @@ pub async fn visibility(
             "Nejasnou historii nejprve ověřte. Tento stav nelze obejít zveřejněním.",
         ));
     }
-    sqlx::query("UPDATE documents SET public_access=$2,access_blocked=NOT $2,status=CASE WHEN $2 THEN 'published' ELSE 'archived' END,published_at=CASE WHEN $2 THEN coalesce(published_at,$3) ELSE published_at END WHERE id=$1").bind(id).bind(input.public_access).bind(timestamp(OffsetDateTime::now_utc())).execute(&mut *tx).await?;
+    sqlx::query("UPDATE documents SET public_access=$2,access_blocked=NOT $2,status=CASE WHEN $2 AND status<>'archived' THEN 'published' ELSE 'archived' END,published_at=CASE WHEN $2 THEN coalesce(published_at,$3) ELSE published_at END WHERE id=$1").bind(id).bind(input.public_access).bind(timestamp(OffsetDateTime::now_utc())).execute(&mut *tx).await?;
     event(
         &mut tx,
         id,
@@ -736,13 +726,4 @@ pub async fn origin(pool: &PgPool, id: i64) -> Result<Option<Value>> {
         prague_times(value);
     }
     Ok(result)
-}
-
-async fn posting_earliest(conn: &mut PgConnection, posting: i64) -> Result<Option<Date>> {
-    let (day,review):(Option<Date>,String)=sqlx::query_as("SELECT p.started_on,d.review_json FROM document_postings p JOIN documents d ON d.id=p.document_id WHERE p.id=$1").bind(posting).fetch_optional(conn).await?.ok_or_else(missing)?;
-    let review: crate::notice_policy::NoticeReview =
-        serde_json::from_str(&review).map_err(|_| bad("Poškozené nastavení pravidla."))?;
-    day.map(|d| review.earliest(d).map_err(bad))
-        .transpose()
-        .map(Option::flatten)
 }

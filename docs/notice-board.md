@@ -1,25 +1,26 @@
 # Official notice board
 
-## Publication rules
+## Creating a posting
 
-Categories help visitors navigate. The legal publication rule is selected separately.
+All documents are managed under **Dokumenty**. The ordinary editor contains an
+optional **Vyvěsit na úřední desce** checkbox. Selecting it reveals the posting
+date, a required blank number of days and a required blank post-removal file
+access choice. Without this checkbox, no posting duration or access decision is
+required. The reference number and creation date remain optional in either case.
+There is no separate notice editor or mandatory issuer, legal profile, legal
+basis or original-record code.
 
-| Rule | Application behavior |
-| --- | --- |
-| Informational notice | The operator supplies the intended interval or leaves the plan open, without a claimed statutory minimum |
-| Service by public notice under Section 25 | Publication day is day 0. The fifteenth day is included, with a weekend or Czech public holiday moved to the next working day. Withdrawal starts no earlier than the following day |
-| Municipal property disposal intention | Conservatively requires 15 complete calendar days after publication day before the decision |
-| Council meeting announcement | Conservatively requires seven complete calendar days after publication day before the meeting, with visibility through the meeting day |
-| Other legal rule | The responsible person supplies a legal basis and the earliest permitted withdrawal date |
+The entered duration counts complete calendar days after the posting day.
+`withdraw_on` is the posting date plus the entered number plus one, the planned
+first day outside the posting interval in Europe/Prague. The application supplies no universal
+number of days. The responsible operator determines the applicable interval.
+Actual removal is a separate recorded event. Historical imported rule metadata
+and evidence remain stored for audit, without adding fields to the simple form.
 
-These profiles do not determine which law applies to a particular document.
-Special rules or circumstances may require another profile, later withdrawal or
-publication without an end date. A manually entered date or interval cannot be
-shorter than the calculated minimum. `withdraw_on` is the planned first day outside the posting interval in the
-Europe/Prague time zone. Actual removal is recorded separately.
-
-References: [SÚKL on Section 25 and time limits](https://sukl.gov.cz/probihajici-a-planovana-rizeni/informace-o-dorucovani-verejnou-vyhlaskou/),
-[Ministry of the Interior on municipal property and meetings](https://mv.gov.cz/povinnosti-pri-nakladani-s-majetkem-obce).
+Save the concept, upload files, then review the saved date, duration and access
+choice in **Potvrzení vyvěšení**. These settings are not entered a second time.
+An already public or locked document can use **Nové vyvěšení na úřední desce**
+for a new posting of its current immutable content.
 
 ## One document and distinct posting events
 
@@ -30,9 +31,12 @@ The `notices` compatibility view is only an adapter over this same content table
 It is not a second content store.
 
 The public **Dokumenty** catalogue contains every currently public document.
-**Úřední deska → Aktuálně vyvěšeno** contains documents with an actual current
-posting. **Veřejný archiv** contains removed postings whose document metadata
-remains public. A retained record may have private attachments, according to the
+**Úřední deska** contains documents with an actual current posting and links to
+the shared **Veřejný archiv** at `/dokumenty?state=archive`. This single archive
+contains ordinary archived documents and actually removed postings whose
+metadata remains public. A current posting, scheduled reposting or uncertain
+source history does not qualify. Legacy board archive URLs lead to this same
+view, preserving the query. A retained record may have private attachments, according to the
 explicit decision made for that posting. A wholly hidden document is absent from
 both views and from public search. All views link to `/dokumenty/{id}`.
 
@@ -44,14 +48,13 @@ Actual event timestamps are stored consistently and presented in Europe/Prague.
 
 ## Review and permanent content locking
 
-In production, the administrator specifies the rule, legal basis and internal
-reference to the stored official original, and confirms review of content,
-personal data and attachment accessibility. These internal details are not part
-of the public document. The application cannot determine whether the underlying
-publication is legally sufficient.
+The same simple posting fields apply in development and production. Final
+approval reviews the saved content and its files. The application records the
+operation but cannot determine whether the underlying publication is legally
+sufficient.
 
 Choose **Zkontrolovat finální náhled** and review the exact saved title, text,
-reference number, issuer and ordered files. The warning is **Po vyvěšení již
+optional reference number and ordered files. The warning is **Po vyvěšení již
 obsah dokumentu nelze upravit.** The submitted token binds approval to these
 content bytes and metadata. Concurrent edits or uploads require a new preview.
 The shared write transaction and database guards prevent a publication/edit race.
@@ -82,13 +85,16 @@ legal period by itself.
 
 There is no preselected post-removal access policy. The operator must explicitly
 choose **Po sejmutí ponechat přílohy veřejné** or **Po sejmutí přílohy pouze pro
-administrátory**, or choose a separately linked anonymized version. The draft
-notice form and the final posting form require this choice.
+administrátory**. A separately linked anonymized version can be selected in
+**Další možnosti vyvěšení**. The saved choice is shown again in the final review,
+without a second policy form. Ordinary documents without a posting do not need
+this decision.
 
 Admin-only access after removal hides filenames and downloads from the public
 detail and all public file routes. The immutable original bytes remain available
 to authenticated administrators. Public access to the whole document is a
-separate operation. **Ukončit veřejné zpřístupnění** hides the detail, search
+separate operation. Archiving an ordinary document preserves its public access
+and files. **Ukončit veřejné zpřístupnění** hides the detail, search
 result, public APIs and every direct or legacy attachment link and records an
 internal reason. Importers cannot reverse that local decision.
 
@@ -136,3 +142,8 @@ its consequences using the municipal records and independent monitoring.
 Application events, hashes, successful imports and tests do not prove legally
 correct posting on the physical official notice board. They are technical
 records of the application's actions and the source evidence available to it.
+
+The legal review and limits of the automatic duration calculation are documented
+in [Právní kontrola evidence dokumentů](document-legal-review.md). Contextual
+`i` controls in the editor explain the fields without adding another required
+form. They support keyboard activation, Escape and touch.

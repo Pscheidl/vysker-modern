@@ -39,8 +39,9 @@ pub struct Entry {
     pub reference_number: Option<String>,
     pub issuer: Option<String>,
     pub category_id: Option<i64>,
-    pub retain_attachments: bool,
-    pub review_json: String,
+    pub retain_attachments: Option<bool>,
+    pub board_enabled: bool,
+    pub duration_days: Option<i64>,
     pub published_at: Option<String>,
     pub attachments: Vec<File>,
     pub slug: String,
@@ -50,6 +51,8 @@ pub struct Entry {
     pub content_version: i64,
     pub lock_state: String,
     pub public_access: bool,
+    pub is_public_now: Option<bool>,
+    pub files_public_now: Option<bool>,
     pub attachments_public: Option<bool>,
     pub access_blocked: bool,
     pub public_until: Option<String>,
@@ -240,35 +243,30 @@ pub async fn upload(path: &str, file: web_sys::File) -> Result<Value> {
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum Kind {
-    Notice,
     Document,
     Page,
 }
 impl Kind {
     pub fn api(self) -> &'static str {
         match self {
-            Self::Notice => "notices",
             Self::Document => "documents",
             Self::Page => "pages",
         }
     }
     pub fn path(self) -> &'static str {
         match self {
-            Self::Notice => "/admin/uredni-deska",
             Self::Document => "/admin/dokumenty",
             Self::Page => "/admin/stranky",
         }
     }
     pub fn title(self) -> &'static str {
         match self {
-            Self::Notice => "Úřední deska",
             Self::Document => "Dokumenty",
             Self::Page => "Stránky",
         }
     }
     pub fn create_label(self) -> &'static str {
         match self {
-            Self::Notice => "Nové vyvěšení",
             Self::Document => "Nový dokument",
             Self::Page => "Nová stránka",
         }

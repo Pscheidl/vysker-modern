@@ -114,8 +114,7 @@ pub async fn load_board() -> Result<Board, ServerFnError> {
         "listopadu",
         "prosince",
     ];
-    let mut records = notices::published(&pool, 3).await.map_err(public_error)?;
-    records.extend(notices::archived(&pool, 3).await.map_err(public_error)?);
+    let records = notices::published(&pool, 3).await.map_err(public_error)?;
     let mut notices = Vec::with_capacity(records.len());
     for record in records {
         notices.push(present_notice(&pool, record, false).await?);

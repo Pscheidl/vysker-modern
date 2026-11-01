@@ -70,9 +70,39 @@ async fn admin_requires_session_csrf_and_matching_origin() {
 }
 
 #[tokio::test]
-async fn default_is_fifteen_days_and_no_file_retention() {
+async fn publication_period_and_attachment_availability_require_explicit_choices() {
     let app = App::new().await;
-    let id = app.notice(json!({})).await;
+    let today = backend::today(OffsetDateTime::now_utc());
+    let valid = json!({"title":"Výslovně zadané vyvěšení","published_on":today,"duration_days":7,"retain_attachments":true});
+    for missing in ["duration_days", "retain_attachments"] {
+        let mut invalid = valid.clone();
+        invalid.as_object_mut().unwrap().remove(missing);
+        assert_eq!(
+            app.call("POST", "/api/v1/admin/notices", Some(invalid), true)
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    for days in [0, -1, 3651] {
+        let mut invalid = valid.clone();
+        invalid["duration_days"] = json!(days);
+        assert_eq!(
+            app.call("POST", "/api/v1/admin/notices", Some(invalid), true)
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let mut unlimited = valid.clone();
+    unlimited["unlimited"] = json!(true);
+    assert_eq!(
+        app.call("POST", "/api/v1/admin/notices", Some(unlimited), true)
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let id = app.notice(valid).await;
     let row: (time::Date, time::Date, bool, String) = sqlx::query_as(
         "SELECT published_on,withdraw_on,retain_attachments,status FROM notices WHERE id=$1",
     )
@@ -80,43 +110,14 @@ async fn default_is_fifteen_days_and_no_file_retention() {
     .fetch_one(&app.state.pool)
     .await
     .unwrap();
-    assert_eq!((row.1 - row.0).whole_days(), 15);
-    assert!(!row.2);
+    assert_eq!((row.1 - row.0).whole_days(), 8);
+    assert!(row.2);
     assert_eq!(row.3, "draft");
     assert_eq!(
         app.call("GET", &format!("/api/v1/notices/{id}"), None, false)
             .await
             .status(),
         StatusCode::NOT_FOUND
-    );
-    let unlimited = app.notice(json!({"unlimited":true})).await;
-    let end: Option<String> = sqlx::query_scalar("SELECT withdraw_on FROM notices WHERE id=$1")
-        .bind(unlimited)
-        .fetch_one(&app.state.pool)
-        .await
-        .unwrap();
-    assert_eq!(end, None);
-    assert_eq!(
-        app.call(
-            "POST",
-            "/api/v1/admin/notices",
-            Some(json!({"title":"Chybná lhůta","duration_days":0})),
-            true
-        )
-        .await
-        .status(),
-        StatusCode::BAD_REQUEST
-    );
-    assert_eq!(
-        app.call(
-            "POST",
-            "/api/v1/admin/notices",
-            Some(json!({"title":"Chybná lhůta","unlimited":true,"duration_days":15})),
-            true
-        )
-        .await
-        .status(),
-        StatusCode::BAD_REQUEST
     );
 }
 
@@ -296,10 +297,20 @@ async fn scheduled_publication_and_expiry_are_idempotent_in_prague_time() {
             .unwrap(),
         1
     );
+    // Posting day is excluded. Both October26 and27 remain fully posted.
     notices::maintenance(&app.state, datetime!(2026-10-26 23:01 UTC))
         .await
         .unwrap();
-    notices::maintenance(&app.state, datetime!(2026-10-26 23:02 UTC))
+    let still_posted: String = sqlx::query_scalar("SELECT status FROM notices WHERE id=$1")
+        .bind(id)
+        .fetch_one(&app.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(still_posted, "published");
+    notices::maintenance(&app.state, datetime!(2026-10-27 23:01 UTC))
+        .await
+        .unwrap();
+    notices::maintenance(&app.state, datetime!(2026-10-27 23:02 UTC))
         .await
         .unwrap();
     let count: i64 = sqlx::query_scalar(
@@ -317,7 +328,7 @@ async fn scheduled_publication_and_expiry_are_idempotent_in_prague_time() {
             .unwrap(),
         1
     );
-    backend::mail::prepare_publications(&app.state, datetime!(2026-10-26 23:02 UTC))
+    backend::mail::prepare_publications(&app.state, datetime!(2026-10-27 23:02 UTC))
         .await
         .unwrap();
     assert_eq!(
@@ -685,7 +696,29 @@ async fn generic_documents_and_pages_are_private_until_published() {
         app.call(
             "POST",
             &format!("/api/v1/admin/documents/{id}/archive"),
-            Some(json!({"reason":"Ukončení veřejného zpřístupnění v testu"})),
+            Some(json!({"reason":"Zařazení dokumentu do společného archivu"})),
+            true
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        app.call(
+            "GET",
+            &format!("/api/v1/attachments/{uploaded}"),
+            None,
+            false
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        app.call(
+            "POST",
+            &format!("/api/v1/admin/documents/{id}/visibility"),
+            Some(json!({"public_access":false,"reason":"Ukončení veřejného zpřístupnění"})),
             true
         )
         .await

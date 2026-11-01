@@ -8,8 +8,10 @@ networks by the reverse proxy.
 
 ## Shared document catalogue and attachments
 
-**Dokumenty** manages one common document record, including documents that also
-appear on the official notice board. The stable public detail is
+**Dokumenty** is the only document administration section. It manages ordinary
+documents and documents that also appear on the official notice board. The
+**Stav** filter offers all records, current postings, scheduled postings, the
+shared archive and drafts. There is no parallel notice editor. The stable public detail is
 `/dokumenty/{id}`. The notice-board view filters recorded postings and does not
 create a second document or a second upload. Search lists a document once.
 
@@ -26,38 +28,52 @@ posting again. **Obsah blokován k ověření** means the imported history is
 uncertain, not that a posting has been proved. Published ordinary records are
 read-only in the editor and can be followed by a new concept.
 
-Use **Veřejná dostupnost → Zpřístupnit v katalogu** to publish an ordinary
-record without posting it on the official notice board. The first eligible new
+The form asks for a title and description. **Číslo jednací (nepovinné)** and
+**Datum vytvoření dokumentu (nepovinné)** may stay empty. An unknown creation date
+is not replaced by an import timestamp or a source publication date. The editor
+does not require an issuer, legal profile, legal basis or original-record code.
+
+Use **Zveřejnit dokument** to publish a saved ordinary record in the catalogue
+without posting it on the official notice board. The first eligible new
 publication follows the existing subscriber preferences and hourly digest.
 Historical migration and unchanged imports do not send old documents as news.
 
 ## Final review and posting
 
-A saved document, including an ordinary catalogue document, can be posted using
-**Nové vyvěšení na úřední desce**. Enter the actual intended local date, an
-optional future removal plan, the publication rule and its grounds, and the
-internal original-record reference. Do not substitute a historical source date
-for a local posting date. The rule is independent of the catalogue topic.
+For a new document, check **Vyvěsit na úřední desce** in the same editor. Only
+then are the posting controls shown: **Datum vyvěšení**, **Počet celých dní vyvěšení**
+and **Dostupnost příloh po sejmutí**. Duration and access policy are required and
+start blank. The entered number is the count of complete calendar days after the posting
+day. Planned removal starts on the following day, so the calculated date is the
+posting date plus the entered number plus one.
+The application does not select a universal publication interval or determine
+which legal period applies.
 
-Every posting requires an explicit attachment-access choice. Neither option is
-preselected:
+Save the draft and upload its attachments. **Potvrzení vyvěšení** displays the
+saved date, duration and policy before the final preview. It does not ask for the
+same settings twice. Merely saving the document does not publish or post it.
+An already public ordinary document or an unchanged locked document can start
+another posting under **Nové vyvěšení na úřední desce**, using the same controls.
+Do not substitute a historical source date for a new local posting date.
+
+Every posting requires an explicit attachment-access choice:
 
 - **Po sejmutí ponechat přílohy veřejné** keeps the retained files public.
 - **Po sejmutí přílohy pouze pro administrátory** revokes anonymous file access
   while retaining the original bytes for authorized administration.
-- **Zpřístupnit samostatné anonymizované znění** requires a separate linked
-  anonymized document. It never overwrites the original. Its title, text and
-  attachments appear in a second final preview. Confirmation permanently
-  freezes that exact derived copy as well, without claiming it was the original
-  posted content. A concurrent change requires another preview.
 
-The notice draft form also requires this decision without a default. The final
-posting form requires it again for that specific posting. This choice controls
-file availability, not whether the document content is immutable. Administrators
-can download retained files even when visitors cannot.
+Under **Další možnosti vyvěšení**, **Po sejmutí zpřístupnit samostatné
+anonymizované znění** selects a separately prepared linked document. It never
+replaces the original. Its title, text and files appear in a second final
+preview. Confirmation freezes that exact derived copy without claiming that it
+was originally posted. Concurrent changes require a new preview.
 
-Choose **Zkontrolovat finální náhled**, inspect the title, text, reference,
-issuer, ordered attachments and their fingerprints, and confirm the review.
+The access choice controls file availability independently of the permanent
+content lock. Authorized administrators can download retained files after
+removal even when visitors cannot.
+
+Choose **Zkontrolovat finální náhled**, inspect the title, text, optional reference,
+ordered attachments and their fingerprints, and confirm the review.
 The warning is **Po vyvěšení již obsah dokumentu nelze upravit.** Publication
 submits the same content fingerprint returned by this preview. A simultaneous
 edit or attachment change invalidates it and requires a new preview. The server
@@ -69,7 +85,7 @@ meanwhile. It never removes a permanent content lock from an earlier posting.
 
 ## Corrections, access and operational history
 
-Under **Provozní úkony**, create an **Oprava**, **Doplnění**, **Nahrazení** or
+Under **Další úkony s dokumentem**, create an **Oprava**, **Doplnění**, **Nahrazení** or
 **Veřejné anonymizované znění** as a new linked concept with a new ID and its
 own attachment records. The original content and fingerprints remain intact.
 The new record is private and is not automatically posted. A correction does
@@ -89,6 +105,15 @@ date. It appends an audit event containing the original and corrected values and
 an internal explanation. Leaving the corrected date empty explicitly records it
 as unknown. Public history shows the date correction separately, without the
 private explanation, and preserves the originally recorded event.
+
+**Přesunout do archivu** moves an ordinary document to the shared archive without
+changing its public availability or files and without inventing a board posting
+or removal. Documents with an active posting are removed through their posting
+history instead. There is one public archive at `/dokumenty?state=archive`, shared
+by ordinary archived records and actually removed postings. Current or scheduled
+postings and uncertain source history are excluded. The catalogue without this
+filter still contains all currently public documents. Old board archive URLs
+lead to this same archive and retain the query.
 
 **Ukončit veřejné zpřístupnění** immediately hides the whole record and its
 files, including direct and legacy links, from anonymous visitors. It records

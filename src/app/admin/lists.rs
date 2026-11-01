@@ -15,12 +15,11 @@ pub fn Overview() -> impl IntoView {
             Ok(stats)=>view!{
                 <div class="admin-stats">
                     <Stat label="Na úřední desce" value=stats.published note=format!("{} naplánováno",stats.scheduled) icon="board"/>
-                    <Stat label="Rozpracovaná vyvěšení" value=stats.drafts note="Čekají na zveřejnění" icon="paper"/>
+                    <Stat label="Koncepty dokumentů" value=stats.drafts note="Čekají na zveřejnění" icon="paper"/>
                     <Stat label="Ověření odběratelé" value=stats.subscribers note=format!("{} oznámení čeká na odeslání",stats.pending_mail) icon="mail"/>
                 </div>
                 <div class="admin-overview-grid"><section class="admin-panel admin-quick"><div class="admin-panel-heading"><h2>"Co potřebujete vyřídit?"</h2><span class="admin-caption">{api::date(&stats.current_date)}</span></div>
-                    <Quick href="/admin/uredni-deska/nove" title="Vyvěsit na úřední desku" description="Koncept, přílohy a termín sejmutí." icon="board"/>
-                    <Quick href="/admin/dokumenty/nove" title="Přidat dokument" description="Formuláře a další dokumenty ke stažení." icon="paper"/>
+                    <Quick href="/admin/dokumenty/nove" title="Přidat dokument" description="Dokumenty ke stažení i vyvěšení na úřední desce." icon="paper"/>
                     <Quick href="/admin/stranky/nove" title="Vytvořit stránku" description="Nové informace pro občany." icon="pages"/>
                 </section><section class="admin-panel admin-overview-aside"><span class="admin-kicker"><Icon name="check"/>"PŘEHLED OBSAHU"</span><h2>"Web obce v číslech"</h2><dl><div><dt>"Zveřejněné dokumenty"</dt><dd>{stats.documents}</dd></div><div><dt>"Zveřejněné stránky"</dt><dd>{stats.pages}</dd></div></dl><p>"Obsah, veřejná dostupnost a vyvěšení se evidují samostatně. Po prvním vyvěšení je obsah nevratně uzamčen."</p><AdminLink href="/admin/audit" label="Otevřít audit" icon="history"/></section></div>
             }.into_any()
@@ -51,22 +50,28 @@ pub fn Entries(kind: Kind) -> impl IntoView {
     let offset = RwSignal::new(0usize);
     let search = RwSignal::new(String::new());
     let query = RwSignal::new(String::new());
-    let status = RwSignal::new(String::new());
+    let state = RwSignal::new(if kind == Kind::Document {
+        "all".to_string()
+    } else {
+        String::new()
+    });
     let data = LocalResource::new(move || {
+        let filter = if kind == Kind::Document {
+            "state"
+        } else {
+            "status"
+        };
         let path = format!(
-            "/api/v1/admin/{}?limit=21&offset={}&status={}&q={}",
+            "/api/v1/admin/{}?limit=21&offset={}&{filter}={}&q={}",
             kind.api(),
             offset.get(),
-            status.get(),
+            state.get(),
             percent_encoding::utf8_percent_encode(&query.get(), percent_encoding::NON_ALPHANUMERIC)
         );
         async move { api::get::<Vec<api::Entry>>(&path).await }
     });
     let description = match kind {
-        Kind::Notice => {
-            "Koncepty, aktuální vyvěšení i archiv. Všechny záznamy zůstávají dohledatelné."
-        }
-        Kind::Document => "Společná evidence všech dokumentů, včetně písemností úřední desky.",
+        Kind::Document => "Všechny dokumenty, vyvěšení na úřední desce a společný archiv.",
         Kind::Page => "Obsahové stránky veřejného webu, koncepty a zveřejnění.",
     };
     view! {
@@ -74,25 +79,65 @@ pub fn Entries(kind: Kind) -> impl IntoView {
         <section class="admin-panel admin-list-panel">
             <form class="admin-filters" on:submit=move|ev|{ev.prevent_default();offset.set(0);query.set(search.get());}>
                 <label class="admin-search"><Icon name="search"/><span class="sr-only">"Hledat podle názvu"</span><input type="search" placeholder="Hledat podle názvu…" maxlength="300" prop:value=move||search.get() on:input=move|ev|search.set(event_target_value(&ev))/></label>
-                <label class="admin-status-filter"><span class="sr-only">"Stav"</span><select aria-label="Stav" prop:value=move||status.get() on:change=move|ev|{offset.set(0);status.set(event_target_value(&ev));}><option value="">"Všechny stavy"</option><option value="draft">"Koncepty"</option>
-                    {if kind==Kind::Notice{view!{<option value="published">"Vyvěšeno"</option><option value="scheduled">"Naplánováno"</option>}.into_any()}else{view!{<option value="published">"Zveřejněno"</option>}.into_any()}}
-                    {(kind!=Kind::Page).then(||view!{<option value="archived">"Archiv"</option>})}
+                <label class="admin-status-filter"><span class="sr-only">"Stav"</span><select aria-label="Stav" prop:value=move||state.get() on:change=move|ev|{offset.set(0);state.set(event_target_value(&ev));}>
+                    {if kind==Kind::Document{view!{<option value="all">"Všechny dokumenty"</option><option value="current">"Aktuálně vyvěšeno"</option><option value="scheduled">"Plánovaná vyvěšení"</option><option value="archive">"Archiv"</option><option value="draft">"Koncepty"</option>}.into_any()}else{view!{<option value="">"Všechny stavy"</option><option value="draft">"Koncepty"</option><option value="published">"Zveřejněno"</option>}.into_any()}}
                 </select></label><button class="button secondary" type="submit">"Hledat"</button><button class="admin-refresh" type="button" aria-label="Obnovit seznam" on:click=move |_|data.refetch()><Icon name="refresh"/></button>
             </form>
             <Suspense fallback=Pending>{move||data.get().map(|result|match result{
                 Err(error)=>view!{<FailureView error/>}.into_any(),
-                Ok(rows)=>{
-                    let count=rows.len();
-                    view!{<div class="admin-table-wrap"><table class="admin-table"><caption class="sr-only">{kind.title()}</caption><thead><tr><th>"Název"</th><th>"Stav"</th><th>{if kind==Kind::Notice{"Vyvěšeno / sejmutí"}else if kind==Kind::Page{"Adresa stránky"}else{"Typ"}}</th><th><span class="sr-only">"Otevřít"</span></th></tr></thead><tbody>
-                        {rows.into_iter().take(20).map(|row|{let state=row.status().to_string();let href=format!("{}/{}",kind.path(),row.id);view!{<tr><td class="admin-name"><AdminLink href=href.clone() label=row.title icon=if kind==Kind::Page{"pages"}else{"paper"}/><span class="admin-row-id">{format!("#{:04}",row.id)}</span></td><td>{if kind==Kind::Page{view!{<Status value=state/>}.into_any()}else{view!{<strong>{match row.lock_state.as_str(){"locked" if matches!(row.board_status.as_str(),"published"|"archived"|"withdrawn")=>"Uzamčeno po vyvěšení","locked"=>"Uzamčeno","review"=>"K ověření",_=>"Koncept"}}</strong><small>{if row.public_access&&!row.access_blocked{"Veřejně dostupný"}else{"Neveřejný"}}</small>}.into_any()}}</td><td class="admin-table-meta">{if kind==Kind::Notice{view!{<span>{row.published_on.as_deref().map(api::date).unwrap_or_else(||"Datum vyvěšení není uvedeno".into())}</span><small>{row.withdraw_on.as_deref().map(|d|format!("Plánované sejmutí {}",api::date(d))).unwrap_or_else(||"Datum sejmutí není uvedeno".into())}</small>}.into_any()}else if kind==Kind::Page{view!{<span>{crate::catalog::page_path(&row.slug)}</span>}.into_any()}else{view!{<span>{match row.board_status.as_str(){"published"=>"Aktuálně vyvěšeno","scheduled"=>"Vyvěšení naplánováno","archived"|"withdrawn"=>"Sejmuto",_=>"Bez aktuálního vyvěšení"}}</span>}.into_any()}}</td><td class="admin-row-open"><AdminLink href label="Otevřít"/></td></tr>}}).collect_view()}
+                Ok(rows)=>{let count=rows.len();view!{
+                    <div class="admin-table-wrap"><table class="admin-table"><caption class="sr-only">{kind.title()}</caption><thead><tr><th>"Název"</th><th>"Stav"</th><th>{if kind==Kind::Page{"Adresa stránky"}else{"Úřední deska"}}</th><th><span class="sr-only">"Otevřít"</span></th></tr></thead><tbody>
+                        {rows.into_iter().take(20).map(|row|view!{<EntryRow row kind/>}).collect_view()}
                     </tbody></table></div>
-                    {(count==0).then(||view!{<div class="admin-empty"><Icon name="search"/><h2>"Žádné záznamy"</h2><p>"Upravte hledání nebo přidejte nový obsah."</p></div>})}
-                    <Pager offset count/>
-                    }.into_any()
-                }
+                    {(count==0).then(||view!{<div class="admin-empty"><Icon name="search"/><h2>"Žádné záznamy"</h2><p>"Upravte filtr nebo přidejte nový obsah."</p></div>})}<Pager offset count/>
+                }.into_any()}
             })}</Suspense>
         </section>
     }
+}
+
+#[component]
+fn EntryRow(row: api::Entry, kind: Kind) -> impl IntoView {
+    let status = row.status().to_string();
+    let href = format!("{}/{}", kind.path(), row.id);
+    let lock_label = match row.lock_state.as_str() {
+        "locked"
+            if matches!(
+                row.board_status.as_str(),
+                "published" | "archived" | "withdrawn"
+            ) =>
+        {
+            "Uzamčeno po vyvěšení"
+        }
+        "locked" => "Uzamčeno",
+        "review" => "K ověření",
+        _ if status == "archived" => "Archivováno",
+        _ if status == "published" => "Zveřejněno",
+        _ => "Koncept",
+    };
+    let board_label = match row.board_status.as_str() {
+        "published" => "Aktuálně vyvěšeno",
+        "scheduled" => "Vyvěšení naplánováno",
+        "archived" | "withdrawn" => "Sejmuto",
+        _ => "Nevyvěšeno",
+    };
+    let dates = matches!(row.board_status.as_str(), "published" | "scheduled");
+    let posted = row
+        .published_on
+        .as_deref()
+        .map(|date| format!("Od {}", api::date(date)))
+        .unwrap_or_else(|| "Datum není známo".into());
+    let removal = row
+        .withdraw_on
+        .as_deref()
+        .map(|date| format!("Plánované sejmutí {}", api::date(date)))
+        .unwrap_or_else(|| "Termín sejmutí není určen".into());
+    view! {<tr>
+        <td class="admin-name"><AdminLink href=href.clone() label=row.title icon=if kind==Kind::Page{"pages"}else{"paper"}/><span class="admin-row-id">{format!("#{:04}",row.id)}</span></td>
+        <td>{if kind==Kind::Page{view!{<Status value=status/>}.into_any()}else{view!{<strong>{lock_label}</strong><small>{if row.is_public_now.unwrap_or(row.public_access&&!row.access_blocked){"Veřejně dostupný"}else{"Neveřejný"}}</small>}.into_any()}}</td>
+        <td class="admin-table-meta">{if kind==Kind::Page{view!{<span>{crate::catalog::page_path(&row.slug)}</span>}.into_any()}else{view!{<span>{board_label}</span>{dates.then(||view!{<small>{posted}</small><small>{removal}</small>})}}.into_any()}}</td>
+        <td class="admin-row-open"><AdminLink href label="Otevřít"/></td>
+    </tr>}
 }
 
 #[component]

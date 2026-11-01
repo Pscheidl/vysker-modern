@@ -75,7 +75,7 @@ attachment-owner indexes. Search scans eligible records, repeatedly normalizes
 Czech characters and combines the two content tables plus pages. It is the
 largest measured read cost.
 
-## Matched final measurements
+## Original unified-model measurements
 
 The final comparison runs exported baseline and current implementations under
 the same conditions. Builds and other test jobs were paused for the list and
@@ -170,7 +170,7 @@ python3 tests/test_document_migration.py
 ```
 
 The fixture applies original migrations through 0028, inserts two ordinary
-documents and three notice records with ID collisions, then applies 0029 through 0033. It
+documents and three notice records with ID collisions, then applies the single migration 0029. It
 asserts that all five content records occupy `documents`, while `notices` is a
 compatibility view of those same rows. Original ordinary IDs remain unchanged,
 old notice IDs map to distinct canonical IDs, and the next generated ID cannot
@@ -227,7 +227,7 @@ was introduced.
 | --- | --- |
 | `documents_catalog` | Public, unblocked `catalog_date DESC NULLS LAST,id DESC`, ordered index scan for catalogue page |
 | `documents_current_board` | Public, unblocked actual current postings, ordered index scans for count and page |
-| `documents_public_archive` | Public, unblocked actual removed postings, ordered index scans for count and page |
+| `documents_public_archive` | Public, unblocked ordinary archive or actual removed postings, no current/scheduled posting, ordered `catalog_date,id` page scan |
 | `documents_topic` | Category and original date for thematic filtering |
 | `documents_board`, `documents_due` | Board status and scheduled maintenance projections |
 | `documents_search_public` | Partial GIN using trusted PostgreSQL `pg_trgm`, bitmap index scan for selective substring searches |
@@ -287,13 +287,20 @@ appear as a documented entry through the older public board API. Deleted draft
 attachments keep their internal metadata but never expose their original
 filenames through the later public detail.
 
-Final validation passed 282 Rust tests with zero failures and seven tests marked
+Latest verification covers 289 passing Rust tests and seven tests intentionally
 ignored by the suite: five require Mailpit, one contacts the live ČEZ API, and one
-is an opt-in digest load test. The final focused run also passed all nine document-domain
-tests and six security regression tests after the last access-control fixes.
-The combined Python suite passed 122 tests, including seven migration and
-backup/restore cases. All 11 affected browser tests passed. The final full-detail
-measurements above were repeated after the security fixes.
+is an opt-in digest load test. The full run passed 288 tests and found one obsolete
+privacy fixture that treated archival as hiding. After changing that fixture to
+the explicit visibility operation, the focused registry and privacy suites passed
+12 and 11 tests. All eight search tests then passed again, including Prague-date
+conversion after the final migration edit.
+
+The combined Python suite passed 122 tests in 34.971 seconds. After the final
+Prague-date change, all seven migration/backup-restore tests passed again in
+3.873 seconds. All 12 affected browser scenarios passed in 1.5 minutes, including
+the simplified editor, shared archive, ID collision redirect, file privacy and
+keyboard-operated mobile help. The final SQL and import measurements are recorded
+in the follow-up section below.
 
 ## Controlled upgrade and rollback
 
@@ -351,7 +358,9 @@ cannot classify uncertain municipal records or prove their historical bytes.
      --before data/migration/before.json --output data/migration/after.json
    ```
 
-   Migrations 0029 through 0033 run through the existing SQLx migration ledger.
+   The single migration 0029 runs through the existing SQLx migration ledger and
+   contains the canonical model, import revisions, retention and announcement
+   protections in the same controlled schema transition.
    A failed migration transaction rolls back, and completed checksummed versions
    are not applied twice. PostgreSQL needs the trusted `pg_trgm` extension.
    The merge and byte hashing take a bounded maintenance window, rather than
@@ -426,3 +435,119 @@ formats. The local preview was then started on a separate database with syntheti
 records and SMTP capture mode. Its homepage returned 200, a direct public request
 for the private archived attachment returned 404, and the authenticated
 administrator download returned the original bytes.
+
+## One editor and one archive follow-up
+
+The revised administration has one **Dokumenty** section. An optional posting
+checkbox reveals the posting date, blank required number of days and blank
+required attachment policy. Reference number and creation date are optional.
+The saved settings are reviewed once, with no parallel notice editor or
+mandatory issuer/legal-profile fields. Existing import provenance and internal
+evidence remain stored. The public detail distinguishes the actual document
+creation date from original source publication and local import time. A local
+publication timestamp used for catalogue ordering is converted to its Prague
+calendar day, including a UTC timestamp near midnight. Explicit creation or
+source dates retain precedence.
+
+The catalogue's `/dokumenty?state=archive` is the only public archive. Its database
+predicate is an ordinary archived record without board state, or a documented
+removed posting, with no active posting and no scheduled reposting. A wholly
+hidden record is still excluded by the shared access function. Incomplete source
+history does not become an archive entry merely because its old status says
+archived. Ordinary archival preserves public metadata and permitted files and
+does not create a posting/removal event. The current board and homepage link to
+this shared archive, and old board archive query URLs lead there with the query
+preserved. Global search still returns each document once.
+
+`tests/search.rs` adds shared-archive membership and separate creation/source-date
+regressions. Browser scenarios check the single editor/navigation, blank mandatory
+posting settings, ordinary archive file retention, worker-recorded removal with
+private retained bytes, both former board archive query variants, migrated administrator ID collisions,
+and keyboard-operated help in a narrow viewport.
+
+### Final measurements after the follow-up
+
+The final SQL comparison reran the exported original main branch and the current
+implementation on the same anonymous 2,000/20,000-document fixtures. Our builds,
+browser runs and other test jobs were paused. All six paths use current access
+guards and date projections. Full SQL, paired timings, plans and allocation peaks
+are in [documents-shared-archive.json](benchmarks/documents-shared-archive.json).
+Detail fixtures additionally contain one source mapping per document. The original
+comparison above remains a historical checkpoint, not the final query timings.
+
+| Path | 2,000 before | 2,000 final | 20,000 before | 20,000 final | Final 20,000 p95 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Catalogue | 1.251 ms | 0.774 ms | 8.659 ms | 4.919 ms | 6.726 ms |
+| Current board | 0.593 ms | 0.557 ms | 2.097 ms | 0.763 ms | 1.458 ms |
+| Shared public archive | 2.096 ms | 0.825 ms | 15.771 ms | 5.691 ms | 6.586 ms |
+| Global `rozpocet` search | 17.072 ms | 3.019 ms | 125.663 ms | 28.627 ms | 30.529 ms |
+| Selective `anonymni 9999` search | 21.321 ms | 1.455 ms | 159.616 ms | 3.008 ms | 4.312 ms |
+| Complete detail with provenance | 0.519 ms | 0.855 ms | 1.779 ms | 0.996 ms | 2.995 ms |
+
+All five list/search paths still execute two data queries and return at most 20
+summaries. Transaction control and outer page rendering are outside this SQL
+harness, as in the original comparison. The complete detail executes six fixed
+queries instead of the original three, for the additional posting history,
+evidence corrections and relations. Its 2,000-record fixed cost increases by
+0.336 ms. At 20,000 source mappings it remains faster than the original lookup.
+Query-client allocation peaks are 7.1 to 17.4 KiB. These are traced Python client
+allocations, not an estimate of the full Rust server process or PostgreSQL cache.
+
+The revised `documents_public_archive` partial index uses the shared archive
+predicate and `catalog_date DESC NULLS LAST,id DESC`. The 20,000-record page plan
+now reads 21 qualifying rows using 37 shared buffer hits. Before the index change,
+the same new query used the catalogue index, filtered out 837 rows and used 2,229
+buffer hits. Count still chooses a sequential scan with 8,000 of 20,000 documents
+qualifying. This explains the remaining archive cost without extra application
+queries or loading records into memory. Adding `INCLUDE(public_until)` did not
+change that plan or improve the diagnostic run, so it was not retained. The final
+archive remains substantially faster than the original two-model implementation.
+
+These unchanged legacy fixtures represent the migration comparison. Membership of
+newly archived ordinary documents, scheduled reposting exclusion and uncertain
+source history are independently covered by the shared-archive regression tests.
+
+The final 10,000-item import was also rerun on the final migration, including its
+revised archive index and Prague-date trigger. This was a fresh current-only run.
+Its comparison uses the already recorded original baseline from
+`documents-after.json`, rather than claiming another paired baseline run. Raw
+results and that reference are in
+[documents-final-import.json](benchmarks/documents-final-import.json).
+
+| 10,000 source items | Recorded original baseline | Fresh final import | SQL before/final |
+| --- | ---: | ---: | ---: |
+| Initial import | 39.081 s | 31.793 s | 70,005 / 50,052 |
+| Identical repeat | 10.204 s | 8.744 s | 5 / 52 |
+| One changed PDF | 10.389 s | 8.923 s | 6 / 60 |
+| Same changed PDF again | 10.328 s | 8.957 s | 6 / 57 |
+
+The identical repeat reports zero new documents and zero conflicts. Changing one
+PDF reports one pending review, and observing the same changed bytes again still
+reports one pending review. The increased repeat query count consists of bounded
+source/observation batches and explicit policy, local-block and revision checks.
+It does not introduce per-document detail reads or a full public reindex.
+
+Traced import allocation peaks at 64.14 MiB, compared with 45.75 MiB in the recorded
+original baseline. The unified importer keeps additional validated source,
+revision and identity metadata. This is a bounded working-memory cost, not a
+claim of memory improvement. The fresh current process peaks at 155.3 MiB RSS.
+The earlier combined-process RSS figure is not a directly paired comparison.
+Each bundle is still limited to 20,000 identities and a 64 MiB manifest. File bytes
+are processed one at a time, while the complete bundle commits atomically as
+described above. None of the final import phases is slower than its recorded original baseline.
+
+### Final local preview verification
+
+The final preview uses a new isolated database containing seven synthetic
+documents. Its SQLx ledger ends at migration 29, with no later migration and a
+checksum matching the current 0029 file. `documents` is a physical table and
+`notices` is only a compatibility view. The selected private attachment returns
+404 through its public URL and 200 through authenticated administration. The
+catalogue, shared archive and canonical detail return `no-store` and `noindex`.
+Both `mail_queue` and `publication_outbox` remain empty. This is local preview
+verification only. No production records or deployment were changed, and login
+credentials are intentionally excluded from this repository.
+
+The final SSR/WASM and administrator builds passed. The separate demo WASM
+configuration also passed `cargo check --no-default-features --features demo
+--lib --target wasm32-unknown-unknown`. Formatting and whitespace checks passed.

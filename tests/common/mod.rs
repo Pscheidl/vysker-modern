@@ -126,7 +126,10 @@ impl App {
             .unwrap()
     }
     pub async fn notice(&self, extra: Value) -> i64 {
-        let mut input = json!({"title":"Testovací vyhláška","description":"Informace pro občany","retain_attachments":false});
+        let mut input = json!({"title":"Testovací vyhláška","description":"Informace pro občany","published_on":backend::today(time::OffsetDateTime::now_utc()),"duration_days":20,"retain_attachments":false});
+        if extra.get("withdraw_on").is_some() {
+            input.as_object_mut().unwrap().remove("duration_days");
+        }
         input
             .as_object_mut()
             .unwrap()

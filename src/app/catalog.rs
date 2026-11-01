@@ -44,9 +44,9 @@ fn DocumentContent(document: crate::catalog::Document) -> impl IntoView {
         <header class="page-heading"><p class="eyebrow">{document.topic.unwrap_or_else(||"DOKUMENT OBCE".into())}</p><h1>{document.title}</h1></header>
         {document.import_origin.map(|_|view!{<ImportNote/>})}
         <p class="document-description">{document.description}</p>
-        <dl class="document-facts"><div><dt>"Datum dokumentu / původního zveřejnění"</dt><dd>{crate::catalog::document_date(document.document_date.as_deref().unwrap_or_default())}</dd></div>
+        <dl class="document-facts"><div><dt>"Datum vytvoření dokumentu"</dt><dd>{crate::catalog::document_date(document.document_date.as_deref().unwrap_or_default())}</dd></div>
+            {document.source_published_on.map(|value|view!{<div><dt>"Původní zveřejnění"</dt><dd>{crate::catalog::document_date(&value)}</dd></div>})}
             {document.reference_number.map(|value|view!{<div><dt>"Číslo jednací"</dt><dd>{value}</dd></div>})}
-            {document.issuer.map(|value|view!{<div><dt>"Původce"</dt><dd>{value}</dd></div>})}
         </dl>
         <section class="attachments" aria-labelledby="document-attachments"><h2 id="document-attachments">"Veřejné přílohy"</h2>
             {document.files.is_empty().then(||view!{<p>"Dokument nemá veřejně dostupnou přílohu."</p>})}

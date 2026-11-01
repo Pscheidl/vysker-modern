@@ -8,7 +8,7 @@ local posting and does not prove the historical bytes of a physical notice board
 
 ## Source authority and handover
 
-Migration `0030_document_import_revisions.sql` creates the explicit source
+Migration `0029_unified_documents.sql` creates the explicit source
 `vismo:vysker.cz`, initially in `proposals` mode with publication disabled. Existing
 public records keep their migrated access settings. New records stay private
 until an operator records the intended source policy. A configured source never

@@ -22,6 +22,8 @@ pub struct Filter {
     q: String,
     #[serde(default)]
     status: String,
+    #[serde(default)]
+    state: String,
 }
 impl Filter {
     fn values(&self, states: &[&str]) -> Result<(i64, i64, String)> {
@@ -61,9 +63,9 @@ pub struct Overview {
 }
 pub async fn overview(State(s): State<Backend>, _: Admin) -> Result<Json<Overview>> {
     let mut row: Overview = sqlx::query_as("SELECT
-        (SELECT count(*) FROM notices WHERE status='published') AS published,
-        (SELECT count(*) FROM notices WHERE status='scheduled') AS scheduled,
-        (SELECT count(*) FROM notices WHERE status='draft') AS drafts,
+        (SELECT count(*) FROM documents WHERE has_current_posting) AS published,
+        (SELECT count(*) FROM documents WHERE board_status='scheduled') AS scheduled,
+        (SELECT count(*) FROM documents WHERE status='draft' AND board_status IS DISTINCT FROM 'scheduled') AS drafts,
         (SELECT count(*) FROM documents WHERE status='published') AS documents,
         (SELECT count(*) FROM pages WHERE published=TRUE) AS pages,
         (SELECT count(*) FROM subscribers s WHERE verified_at IS NOT NULL AND unsubscribed_at IS NULL AND EXISTS(SELECT 1 FROM subscription_consents c WHERE c.subscriber_id=s.id AND c.confirmed_at IS NOT NULL AND c.withdrawn_at IS NULL AND c.superseded_at IS NULL)) AS subscribers,
@@ -89,8 +91,16 @@ pub async fn documents(
     Query(f): Query<Filter>,
 ) -> Result<Json<Vec<documents::Document>>> {
     let (limit, offset, pattern) = f.values(&["draft", "published", "archived"])?;
-    Ok(Json(sqlx::query_as("SELECT * FROM documents WHERE ($1='' OR status=$2) AND title LIKE $3 ESCAPE '!' ORDER BY coalesce(source_published_on::text,published_at) DESC NULLS LAST,id DESC LIMIT $4 OFFSET $5")
-        .bind(&f.status).bind(&f.status).bind(pattern).bind(limit).bind(offset).fetch_all(&s.pool).await?))
+    if !["", "all", "current", "scheduled", "archive", "draft"].contains(&f.state.as_str()) {
+        return Err(bad("Neplatný filtr dokumentů."));
+    }
+    let rows:Vec<documents::Document>=sqlx::query_as("SELECT id,title,left(description,400) AS description,status,created_at,published_at,source_published_on,document_date,category_id,reference_number,issuer,lock_state,public_access,access_blocked,public_until,board_status,published_on,withdraw_on,retain_attachments,posting_after_action,content_version,metadata_restricted,public_title,attachments_public,posting_public_until FROM documents WHERE ($1='' OR status=$1) AND title ILIKE $2 ESCAPE '!' AND CASE $5 WHEN 'current' THEN has_current_posting WHEN 'scheduled' THEN board_status='scheduled' WHEN 'archive' THEN ((board_status IS NULL AND status='archived') OR has_removed_posting) AND NOT has_current_posting AND board_status IS DISTINCT FROM 'scheduled' WHEN 'draft' THEN status='draft' AND board_status IS DISTINCT FROM 'scheduled' ELSE TRUE END ORDER BY catalog_date DESC NULLS LAST,id DESC LIMIT $3 OFFSET $4")
+        .bind(&f.status).bind(pattern).bind(limit).bind(offset).bind(&f.state).fetch_all(&s.pool).await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(documents::Document::with_board_settings)
+            .collect(),
+    ))
 }
 pub async fn pages(
     State(s): State<Backend>,
@@ -125,20 +135,31 @@ pub async fn document(
     _: Admin,
     Path(id): Path<i64>,
 ) -> Result<Json<documents::DocumentDetail>> {
-    let record = sqlx::query_as("SELECT * FROM documents WHERE id=$1")
+    let record: documents::Document = sqlx::query_as("SELECT * FROM documents WHERE id=$1")
         .bind(id)
         .fetch_optional(&s.pool)
         .await?
         .ok_or_else(missing)?;
     let attachments = sqlx::query_as("SELECT id,name,content_type,size_bytes,removed_at,(data IS NOT NULL AND removed_at IS NULL) AS available FROM attachments WHERE document_id=$1 ORDER BY sort_order,id").bind(id).fetch_all(&s.pool).await?;
     Ok(Json(documents::DocumentDetail {
-        record,
+        record: record.with_board_settings(),
         attachments,
         postings: super::registry::postings(&s.pool, id, false).await?,
         relations: documents::public_relations(&s.pool, id).await?,
         origin: super::registry::origin(&s.pool, id).await?,
     }))
 }
+/// Resolve old notice bookmarks before looking at the new shared ID namespace.
+pub async fn legacy_notice(
+    State(s): State<Backend>,
+    _: Admin,
+    Path(old_id): Path<i64>,
+) -> Result<Json<serde_json::Value>> {
+    let id: Option<i64> = sqlx::query_scalar("SELECT coalesce((SELECT document_id FROM document_legacy_ids WHERE old_model='notice' AND old_id=$1),(SELECT id FROM documents WHERE id=$1 AND board_status IS NOT NULL))")
+        .bind(old_id).fetch_one(&s.pool).await?;
+    Ok(Json(serde_json::json!({"id":id.ok_or_else(missing)?})))
+}
+
 pub async fn page(
     State(s): State<Backend>,
     _: Admin,

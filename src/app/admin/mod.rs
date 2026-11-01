@@ -214,7 +214,6 @@ mod workspace {
                 <aside class="admin-rail"><a href="/" target="_blank" rel="noopener" class="brand"><Logo/><span>"Vyskeř"</span></a><p class="eyebrow">"SPRÁVA OBCE"</p>
                     <nav aria-label="Administrace">
                         <AdminLink href="/admin" label="Přehled" icon="grid" exact=true/>
-                        <AdminLink href="/admin/uredni-deska" label="Úřední deska" icon="board"/>
                         <AdminLink href="/admin/dokumenty" label="Dokumenty" icon="paper"/>
                         <AdminLink href="/admin/importy" label="Kontrola importu" icon="history"/>
                         <AdminLink href="/admin/stranky" label="Stránky" icon="pages"/>
@@ -239,7 +238,7 @@ mod workspace {
                         let tail=path.trim_start_matches("/admin").trim_matches('/');
                         match tail {
                             ""=>view!{<Overview/>}.into_any(),
-                            "uredni-deska"=>view!{<Entries kind=Kind::Notice/>}.into_any(),
+                            "uredni-deska"=>view!{<leptos_router::components::Redirect path="/admin/dokumenty"/>}.into_any(),
                             "dokumenty"=>view!{<Entries kind=Kind::Document/>}.into_any(),
                             "importy"=>view!{<super::import_revisions::ImportRevisions/>}.into_any(),
                             "stranky"=>view!{<Entries kind=Kind::Page/>}.into_any(),
@@ -260,7 +259,12 @@ mod workspace {
                                     else if let Ok(id)=id.parse::<i64>(){view!{<super::events::EventEditor id/>}.into_any()}
                                     else{view!{<h1>"Akce neexistuje"</h1>}.into_any()};
                                 }
-                                let kind=match section {"uredni-deska"=>Some(Kind::Notice),"dokumenty"=>Some(Kind::Document),"stranky"=>Some(Kind::Page),_=>None};
+                                if section=="uredni-deska" {
+                                    return if id=="nove"{view!{<leptos_router::components::Redirect path="/admin/dokumenty/nove"/>}.into_any()}
+                                    else if let Ok(id)=id.parse::<i64>(){view!{<LegacyNoticeRedirect id/>}.into_any()}
+                                    else{view!{<h1>"Dokument neexistuje"</h1>}.into_any()};
+                                }
+                                let kind=match section {"dokumenty"=>Some(Kind::Document),"stranky"=>Some(Kind::Page),_=>None};
                                 match (kind, id) {
                                     (Some(kind),"nove")=>view!{<Editor kind id=0/>}.into_any(),
                                     (Some(kind),id) if id.parse::<i64>().is_ok_and(|v|v>0)=>view!{<Editor kind id={id.parse::<i64>().unwrap_or(0)}/>}.into_any(),
@@ -272,5 +276,19 @@ mod workspace {
                 </div>
             </div>
         }
+    }
+
+    #[component]
+    fn LegacyNoticeRedirect(id: i64) -> impl IntoView {
+        let record = LocalResource::new(move || async move {
+            api::get::<serde_json::Value>(&format!("/api/v1/admin/legacy/notices/{id}")).await
+        });
+        view! {<Suspense fallback=Pending>{move||record.get().map(|result|match result{
+            Ok(record)=>match record["id"].as_i64(){
+                Some(id)=>view!{<leptos_router::components::Redirect path=format!("/admin/dokumenty/{id}")/>}.into_any(),
+                None=>view!{<h1>"Dokument neexistuje"</h1>}.into_any(),
+            },
+            Err(error)=>view!{<FailureView error/>}.into_any(),
+        })}</Suspense>}
     }
 }

@@ -10,7 +10,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgConnection;
-use time::{Date, Duration, OffsetDateTime};
+use time::{Date, OffsetDateTime};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -32,76 +32,23 @@ pub struct NoticeInput {
 }
 impl NoticeInput {
     pub fn dates(&self, now: OffsetDateTime) -> Result<(Date, Option<Date>)> {
-        let posted = self.published_on.unwrap_or_else(|| today(now));
         if self.unlimited {
-            if self.withdraw_on.is_some() || self.duration_days.is_some() {
-                return Err(bad("Bez omezení nelze kombinovat s datem ani počtem dní."));
-            }
-            self.review.earliest(posted).map_err(bad)?;
-            return Ok((posted, None));
+            return Err(bad("Vyplňte počet dní vyvěšení."));
         }
-        if self.withdraw_on.is_some() && self.duration_days.is_some() {
-            return Err(bad("Vyberte datum sejmutí nebo počet dní."));
-        }
-        let days = self.duration_days.unwrap_or(15);
-        if !(1..=3650).contains(&days) {
-            return Err(bad("Doba vyvěšení musí být 1 až 3650 dní."));
-        }
-        let end = self
-            .withdraw_on
-            .or_else(|| posted.checked_add(Duration::days(days)))
-            .ok_or_else(|| bad("Datum sejmutí je mimo rozsah."))?;
-        if end <= posted {
-            return Err(bad("Sejmutí musí být po dni vyvěšení."));
-        }
-        let minimum = self.review.earliest(posted).map_err(bad)?;
-        let end = if self.withdraw_on.is_none() && self.duration_days.is_none() {
-            minimum.map_or(end, |d| d.max(end))
-        } else {
-            end
-        };
-        if minimum.is_some_and(|d| end < d) {
-            return Err(bad(
-                "Sejmutí je před minimálním termínem zvoleného pravidla.",
-            ));
-        }
-        Ok((posted, Some(end)))
+        let posted = self.published_on.unwrap_or_else(|| today(now));
+        Ok((
+            posted,
+            Some(super::registry::posting_end(
+                posted,
+                self.duration_days,
+                self.withdraw_on,
+            )?),
+        ))
     }
     async fn validate(&self, conn: &mut PgConnection) -> Result<()> {
         text(&self.title, 300)?;
         if self.retain_attachments.is_none() {
-            return Err(bad(
-                "Povinně vyberte, zda budou přílohy po sejmutí veřejné, nebo dostupné pouze v administraci.",
-            ));
-        }
-        for value in [
-            &self.review.legal_basis,
-            &self.review.original_reference,
-            &self.review.archive_basis,
-        ] {
-            if value.len() > 2000 {
-                return Err(bad("Údaje o zveřejnění jsou příliš dlouhé."));
-            }
-        }
-        if self.review.archive_title.len() > 300 {
-            return Err(bad("Název v archivu je příliš dlouhý."));
-        }
-        if self.retain_attachments == Some(true)
-            && (self.review.archive_basis.trim().is_empty() || self.review.archive_until.is_none())
-        {
-            return Err(bad(
-                "Ponechání příloh vyžaduje důvod a konečné datum zveřejnění v archivu.",
-            ));
-        }
-        if self.retain_attachments == Some(true)
-            && self
-                .review
-                .archive_until
-                .is_some_and(|d| self.withdraw_on.is_some_and(|end| d <= end))
-        {
-            return Err(bad(
-                "Konec zveřejnění příloh v archivu musí být po sejmutí.",
-            ));
+            return Err(bad("Vyberte dostupnost příloh po sejmutí."));
         }
         if self.description.len() > 50_000
             || self
@@ -119,7 +66,7 @@ impl NoticeInput {
                     .fetch_one(conn)
                     .await?;
             if !exists {
-                return Err(bad("Kategorie neexistuje."));
+                return Err(bad("Téma neexistuje."));
             }
         }
         Ok(())
@@ -168,17 +115,11 @@ pub async fn create(
     let (posted, end) = input.dates(now)?;
     let mut tx = crate::db::begin_write(&s.pool).await?;
     input.validate(&mut tx).await?;
-    if input.retain_attachments == Some(true)
-        && input
-            .review
-            .archive_until
-            .is_some_and(|d| end.is_some_and(|e| d <= e))
-    {
-        return Err(bad("Konec zveřejnění v archivu musí být po sejmutí."));
-    }
+
     let id = sqlx::query_scalar::<_, i64>("INSERT INTO notices(title,description,reference_number,category_id,issuer,published_on,withdraw_on,retain_attachments,status,created_at,updated_at,review_json) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'draft',$9,$10,$11) RETURNING id")
         .bind(input.title.trim()).bind(input.description).bind(input.reference_number).bind(input.category_id).bind(input.issuer)
         .bind(posted).bind(end).bind(input.retain_attachments.unwrap_or(false)).bind(timestamp(now)).bind(timestamp(now)).bind(serde_json::to_string(&input.review).unwrap()).fetch_one(&mut *tx).await?;
+    sqlx::query("UPDATE documents SET posting_after_action=CASE WHEN retain_attachments THEN 'retain' ELSE 'hide' END WHERE id=$1").bind(id).execute(&mut *tx).await?;
     audit(&mut tx, Some(admin.id), "created", "notice", id, now).await?;
     tx.commit().await?;
     Ok((StatusCode::CREATED, Json(serde_json::json!({"id":id}))))
@@ -193,14 +134,7 @@ pub async fn update(
     let (posted, end) = input.dates(now)?;
     let mut tx = crate::db::begin_write(&s.pool).await?;
     input.validate(&mut tx).await?;
-    if input.retain_attachments == Some(true)
-        && input
-            .review
-            .archive_until
-            .is_some_and(|d| end.is_some_and(|e| d <= e))
-    {
-        return Err(bad("Konec zveřejnění v archivu musí být po sejmutí."));
-    }
+
     let old: Option<NoticeRecord> = sqlx::query_as("SELECT * FROM notices WHERE id=$1")
         .bind(id)
         .fetch_optional(&mut *tx)
@@ -221,6 +155,7 @@ pub async fn update(
     sqlx::query("UPDATE notices SET title=$1,description=$2,reference_number=$3,category_id=$4,issuer=$5,published_on=$6,withdraw_on=$7,retain_attachments=$8,updated_at=$9,review_json=$10 WHERE id=$11")
         .bind(input.title.trim()).bind(input.description).bind(input.reference_number).bind(input.category_id).bind(input.issuer)
         .bind(posted).bind(end).bind(input.retain_attachments.unwrap_or(false)).bind(timestamp(now)).bind(serde_json::to_string(&input.review).unwrap()).bind(id).execute(&mut *tx).await?;
+    sqlx::query("UPDATE documents SET posting_after_action=CASE WHEN retain_attachments THEN 'retain' ELSE 'hide' END WHERE id=$1").bind(id).execute(&mut *tx).await?;
     audit(&mut tx, Some(admin.id), "updated", "notice", id, now).await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
@@ -269,7 +204,7 @@ async fn publish_checked(
     if token.as_ref().is_some_and(|t| t != &current_hash) {
         return Err(conflict("Obsah se změnil. Načtěte nový finální náhled."));
     }
-    sqlx::query("UPDATE documents SET posting_after_action=CASE WHEN retain_attachments THEN 'retain' ELSE 'hide' END,posting_public_until=(review_json::jsonb->>'archive_until')::date,scheduled_sha256=$2 WHERE id=$1").bind(id).bind(current_hash).execute(&mut *tx).await?;
+    sqlx::query("UPDATE documents SET posting_after_action=CASE WHEN retain_attachments THEN 'retain' ELSE 'hide' END,posting_public_until=NULL,scheduled_sha256=$2 WHERE id=$1").bind(id).bind(current_hash).execute(&mut *tx).await?;
     let posted = record
         .published_on
         .ok_or_else(|| bad("Datum vyvěšení není uvedeno."))?;
@@ -278,37 +213,8 @@ async fn publish_checked(
             "Zveřejnění nelze zpětně datovat. Upravte datum konceptu.",
         ));
     }
-    let review = record.review()?;
-    review.earliest(posted).map_err(bad)?;
-    if record.retain_attachments {
-        let until = review
-            .archive_until
-            .ok_or_else(|| bad("Není určeno ukončení archivního zveřejnění."))?;
-        if until <= today(now) || record.withdraw_on.is_some_and(|d| until <= d) {
-            return Err(bad(
-                "Konec zveřejnění v archivu musí být po sejmutí a v budoucnosti.",
-            ));
-        }
-        if let (Some(policy), Some(end)) = (
-            super::privacy::policy_in(s, &mut tx).await?,
-            record.withdraw_on,
-        ) {
-            if until > end + Duration::days(i64::from(policy.retention.notice_internal_days)) {
-                return Err(bad(
-                    "Zveřejnění v archivu přesahuje schválenou dobu interního uchování. Upravte nastavení s pověřencem.",
-                ));
-            }
-        }
-    }
-    if s.config.production
-        && (!review.reviewed
-            || review.rule.is_empty()
-            || review.legal_basis.trim().is_empty()
-            || review.original_reference.trim().is_empty())
-    {
-        return Err(bad(
-            "Před zveřejněním zkontrolujte právní režim, obsah a uložení originálu ve spisové službě.",
-        ));
+    if record.withdraw_on.is_none() {
+        return Err(bad("Vyplňte počet dní vyvěšení."));
     }
     if record.withdraw_on.is_some_and(|d| d <= today(now)) {
         return Err(bad("Lhůta dokumentu už uplynula."));
@@ -383,16 +289,6 @@ pub async fn withdraw(
         .await?;
         tx.commit().await?;
         return Ok(StatusCode::NO_CONTENT);
-    }
-    let minimum = record
-        .published_on
-        .map(|posted| record.review()?.earliest(posted).map_err(bad))
-        .transpose()?
-        .flatten();
-    if minimum.is_some_and(|date| today(now) < date) && !input.emergency {
-        return Err(conflict(
-            "Minimální doba zveřejnění dosud neuplynula. Předčasné sejmutí je možné pouze jako odůvodněný incident.",
-        ));
     }
     if input.emergency || s.config.production {
         text(&input.reason, 2000)?;

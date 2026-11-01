@@ -728,3 +728,15 @@
 .posting-correction { margin: 1rem 0; padding: 1rem; background: var(--soft); border-radius: .5rem; }
 .posting-correction h4 { margin: 0 0 .5rem; }
 .source-identity { overflow-wrap: anywhere; }
+.document-board-settings { margin-top: 1.25rem; }
+.document-posting-confirmation details { margin: 1rem 0; padding: .75rem 0; border-block: 1px solid var(--line); }
+.document-posting-confirmation summary, .admin-form-section > summary { cursor: pointer; font-weight: 600; padding: .5rem 0; }
+.document-field-label { display: flex; align-items: flex-start; justify-content: space-between; gap: .5rem; }
+.document-field-label > label { flex: 1; font-weight: 520; }
+.document-field-label > .admin-check { margin-top: .35rem; }
+.document-field-label .info-banner { flex: 1; margin: 0; }
+.document-help, .document-posting-confirmation .document-help { position: relative; flex: 0 0 auto; margin: 0; padding: 0; border: 0; }
+.document-help > summary, .document-posting-confirmation .document-help > summary { display: grid; place-items: center; width: 2rem; height: 2rem; padding: .3rem; color: var(--accent); cursor: pointer; border-radius: 50%; list-style: none; }
+.document-help > summary::-webkit-details-marker { display: none; }
+.document-help > summary:hover, .document-help > summary:focus-visible { background: var(--soft); outline: 2px solid var(--accent); outline-offset: 2px; }
+.document-help > p { position: absolute; z-index: 5; right: 0; top: 100%; width: min(23rem,calc(100vw - 4rem)); margin: .3rem 0 0; padding: 1rem; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: .5rem; box-shadow: 0 4px 16px #0002; font-size: .85rem; font-weight: 400; line-height: 1.6; }

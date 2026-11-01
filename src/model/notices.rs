@@ -113,7 +113,7 @@ pub fn publication_period(
 // The compact board projection is independent of planned removal dates.
 // Actual, documented posting/removal evidence determines membership.
 pub const CURRENT: &str = "d.board_status='published' AND d.has_current_posting";
-pub const ARCHIVED: &str = "d.board_status IN ('withdrawn','archived') AND d.has_removed_posting";
+pub const ARCHIVED: &str = "d.has_removed_posting AND NOT d.has_current_posting AND d.board_status IS DISTINCT FROM 'scheduled'";
 const PROJECTION: &str = "d.id,CASE WHEN d.metadata_restricted THEN coalesce(d.public_title,'Záznam úřední desky #'||d.id) ELSE d.title END AS title,CASE WHEN d.metadata_restricted THEN NULL ELSE d.reference_number END AS reference_number,c.name AS category_name,CASE WHEN d.metadata_restricted THEN NULL ELSE d.issuer END AS issuer,CASE WHEN d.metadata_restricted THEN NULL ELSE d.description END AS description,d.published_on,d.withdraw_on,d.withdrawn_at::timestamptz AS withdrawn_at,document_files_public(d,(now() AT TIME ZONE 'Europe/Prague')::date) AS retain_attachments,CASE WHEN d.board_status='published' THEN 'published' ELSE 'archived' END AS status";
 
 async fn list(pool: &PgPool, archived: bool, limit: i64) -> sqlx::Result<Vec<Notice>> {

@@ -12,6 +12,8 @@ function fixtureQuery(sql: string, parameters: unknown[] = []) {
     [
       'import json, psycopg, sys',
       'with psycopg.connect(sys.argv[1]) as connection:',
+      '    name = connection.execute("SELECT current_database()").fetchone()[0]',
+      '    if not name.startswith("vysker_test_"): raise RuntimeError("Expected disposable browser data")',
       '    rows = connection.execute(sys.argv[2], json.loads(sys.argv[3])).fetchall()',
       'print(json.dumps(rows))',
     ].join('\n'),
@@ -25,22 +27,48 @@ async function login(page: Page) {
   await expect(page.getByRole('navigation', { name: 'Administrace' })).toBeVisible()
 }
 
+async function operations(page: Page) {
+  if (await page.locator('details.document-operations').getAttribute('open') === null) {
+    await page.getByText('Další úkony s dokumentem', { exact: true }).click()
+  }
+}
+
+async function publishDocument(page: Page) {
+  await page.getByRole('button', { name: 'Zveřejnit dokument', exact: true }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Zveřejnit dokument', exact: true }).click()
+  await expect(page.locator('.document-state-facts')).toContainText('Veřejně dostupný')
+}
+
 async function publishPosting(page: Page, date: string, action = 'hide', redactedId?: string) {
-  await page.getByLabel('Datum místního vyvěšení *', { exact: true }).fill(date)
-  const policy = page.locator('#posting-after')
-  await expect(policy).toHaveValue('')
-  await policy.selectOption(action)
-  if (redactedId) await page.locator('#posting-redacted').fill(redactedId)
-  await page.getByLabel('Interní důvod a podklad vyvěšení *', { exact: true }).fill('Syntetický test vyvěšení bez osobních údajů.')
-  await page.locator('#posting-rule').selectOption('informational')
-  await page.locator('#posting-basis').fill('Syntetické informativní oznámení.')
-  await page.locator('#posting-original').fill('TEST-001')
-  await page.getByLabel('Pro toto vyvěšení jsem ověřil/a právní režim, lhůtu, osobní údaje, přístupnost a uložení originálu.', { exact: true }).check()
+  const board = page.locator('#document-board-enabled')
+  const editable = await board.count() > 0 && await board.isEnabled()
+  if (editable) {
+    await board.check()
+  } else {
+    await page.getByText('Nové vyvěšení na úřední desce', { exact: true }).click()
+    await expect(page.locator('#document-days')).toHaveValue('')
+    await expect(page.locator('#document-attachment-access')).toHaveValue('')
+  }
+  await page.locator('#document-posted').fill(date)
+  await page.locator('#document-days').fill('20')
+  await page.locator('#document-attachment-access').selectOption(action === 'retain' ? 'public' : 'private')
+  if (editable) {
+    await page.getByRole('button', { name: 'Uložit změny', exact: true }).click()
+    await expect(page.locator('.admin-flash')).toContainText('uložen')
+  }
+  if (redactedId) {
+    await page.getByText('Další možnosti vyvěšení', { exact: true }).click()
+    await page.getByLabel('Po sejmutí zpřístupnit samostatné anonymizované znění', { exact: true }).check()
+    await page.locator('#posting-redacted').fill(redactedId)
+  }
+  await expect(page.locator('#posting-rule,#posting-basis,#posting-original')).toHaveCount(0)
   await page.getByRole('button', { name: 'Zkontrolovat finální náhled', exact: true }).click()
   await expect(page.getByRole('region', { name: 'Finální náhled dokumentu' })).toContainText('Po vyvěšení již obsah dokumentu nelze upravit.')
   if (redactedId) await expect(page.getByRole('region', { name: 'Finální náhled anonymizovaného znění', exact: true })).toContainText('jejíž bajty tím nejsou označeny za původně vyvěšené')
   await page.getByLabel('Zkontroloval/a jsem uvedený obsah a všechny přílohy.', { exact: true }).check()
   await page.getByRole('button', { name: 'Potvrdit vyvěšení této podoby', exact: true }).click()
+  const id = Number(page.url().split('/').pop())
+  await expect.poll(() => fixtureQuery('SELECT withdraw_on=published_on+21 FROM documents WHERE id=%s', [id])[0][0]).toBe(true)
 }
 
 test('keyboard navigation, diacritic-insensitive search and pagination', async ({ page }) => {
@@ -64,17 +92,50 @@ test('keyboard navigation, diacritic-insensitive search and pagination', async (
   expect(errors).toEqual([])
 })
 
-test('publish a notice with multiple attachments and download each publicly', async ({ page, browser }) => {
+test('one document editor publishes multiple files and expiry enters the shared archive with private files', async ({ page, browser }) => {
+  test.setTimeout(120_000)
   await login(page)
-  await page.getByRole('link', { name: 'Úřední deska', exact: true }).click()
-  await page.getByRole('link', { name: 'Nové vyvěšení' }).click()
+  const navigation = page.getByRole('navigation', { name: 'Administrace' })
+  await expect(navigation.getByRole('link', { name: 'Dokumenty', exact: true })).toHaveCount(1)
+  await expect(navigation.getByRole('link', { name: 'Úřední deska', exact: true })).toHaveCount(0)
+  await navigation.getByRole('link', { name: 'Dokumenty', exact: true }).click()
+  await page.getByRole('link', { name: 'Nový dokument', exact: true }).click()
   await page.getByLabel('Název', { exact: false }).first().fill('Oznámení z browser testu')
   await page.getByLabel('Popis', { exact: true }).fill('Zveřejnění ověřené automatickým testem.')
-  await expect(page.locator('#notice-attachment-access')).toHaveValue('')
-  await page.locator('#notice-attachment-access').selectOption('private')
+  await expect(page.locator('#document-board-enabled')).not.toBeChecked()
+  await expect(page.locator('#document-days')).toHaveCount(0)
+  await expect(page.locator('#document-attachment-access')).toHaveCount(0)
+  await expect(page.getByLabel('Číslo jednací (nepovinné)', { exact: true })).not.toHaveAttribute('required')
+  await expect(page.getByLabel('Datum vytvoření dokumentu (nepovinné)', { exact: true })).not.toHaveAttribute('required')
+  await expect(page.locator('#notice-issuer,#posting-rule,#posting-basis,#posting-original')).toHaveCount(0)
+  await page.locator('#document-board-enabled').check()
+  await expect(page.locator('#document-days')).toHaveValue('')
+  await expect(page.locator('#document-days')).toHaveAttribute('required')
+  await expect(page.locator('#document-attachment-access')).toHaveValue('')
+  await expect(page.locator('#document-attachment-access')).toHaveAttribute('required')
+  await page.setViewportSize({ width: 390, height: 844 })
+  const help = page.locator('summary[aria-label="Nápověda: Počet celých dní vyvěšení"]')
+  await help.focus()
+  await page.keyboard.press('Enter')
+  await expect(help.locator('xpath=..')).toHaveAttribute('open')
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await page.keyboard.press('Escape')
+  await expect(help.locator('xpath=..')).not.toHaveAttribute('open')
+  await page.setViewportSize({ width: 1280, height: 720 })
+  await page.locator('#document-days').fill('20')
+  await page.locator('#document-posted').fill(fixtureQuery("SELECT to_char((CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Prague')::date, 'YYYY-MM-DD')")[0][0])
+  const planned = fixtureQuery("SELECT to_char((CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Prague')::date + 21, 'FMDD. FMMM. YYYY')")[0][0]
+  await expect(page.getByText(`Plánované sejmutí: ${planned}.`, { exact: false })).toBeVisible()
+  await page.locator('#document-attachment-access').selectOption('private')
   await page.getByRole('button', { name: 'Uložit koncept', exact: true }).click()
-  await expect(page).toHaveURL(/\/admin\/uredni-deska\/\d+$/)
+  await expect(page).toHaveURL(/\/admin\/dokumenty\/\d+$/)
   const id = page.url().split('/').pop()
+  // A pre-migration notice ID may now belong to a different canonical document.
+  const oldId = fixtureQuery('SELECT id FROM documents WHERE id<>%s ORDER BY id LIMIT 1', [Number(id)])[0][0]
+  fixtureQuery("INSERT INTO document_legacy_ids(old_model,old_id,document_id) VALUES ('notice',%s,%s) RETURNING document_id", [oldId, Number(id)])
+  await page.goto(`/admin/uredni-deska/${oldId}`)
+  await expect(page).toHaveURL(new RegExp(`/admin/dokumenty/${id}$`))
+  await expect(page.locator('#entry-name')).toHaveValue('Oznámení z browser testu')
   const files = [
     { name: 'oznameni.txt', mimeType: 'text/plain', buffer: Buffer.from('Testovací příloha obecního webu.\n') },
     { name: 'priloha.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\nDruhá testovací příloha.\n%%EOF\n') },
@@ -112,12 +173,12 @@ test('publish a notice with multiple attachments and download each publicly', as
     expect(download.suggestedFilename()).toBe(file.name)
     expect(readFileSync((await download.path())!)).toEqual(file.buffer)
   }
-  // The selected post-removal policy hides files while retaining immutable bytes.
-  const posting = page.locator('.posting-history > li').first()
-  await posting.getByText('Zaznamenat sejmutí nebo změnit plán', { exact: true }).click()
-  await posting.getByLabel('Interní důvod *', { exact: true }).fill('Ukončení syntetického vyvěšení.')
-  await posting.getByRole('button', { name: 'Zaznamenat sejmutí', exact: true }).click()
-  await page.getByRole('dialog').getByRole('button', { name: 'Zaznamenat sejmutí', exact: true }).click()
+  // Make the stored plan due, then let the actual worker record removal.
+  fixtureQuery("UPDATE document_postings SET planned_removal_on=(CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Prague')::date WHERE document_id=%s AND removed_at IS NULL RETURNING id", [Number(id)])
+  fixtureQuery("UPDATE documents SET withdraw_on=(CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Prague')::date WHERE id=%s RETURNING id", [Number(id)])
+  await expect.poll(() => fixtureQuery('SELECT board_status FROM documents WHERE id=%s', [Number(id)])[0][0], { timeout: 45_000 }).toBe('archived')
+  expect(fixtureQuery('SELECT removed_at IS NOT NULL FROM document_postings WHERE document_id=%s', [Number(id)])[0][0]).toBe(true)
+  await page.reload()
   await expect(page.locator('.document-state-facts')).toContainText('Sejmuto')
   await expect(page.locator('#entry-name')).toBeDisabled()
   for (const [index, link] of adminLinks.entries()) {
@@ -129,6 +190,11 @@ test('publish a notice with multiple attachments and download each publicly', as
   await publicPage.reload()
   await expect(publicPage.getByRole('heading', { name: 'Oznámení z browser testu', exact: true })).toBeVisible()
   await expect(publicPage.locator('.attachment')).toHaveCount(0)
+  await publicPage.goto(`${baseURL}/dokumenty?state=archive&q=Ozn%C3%A1men%C3%AD%20z%20browser%20testu`)
+  await expect(publicPage.locator('.site-result').getByRole('link', { name: 'Oznámení z browser testu', exact: true })).toHaveAttribute('href', `/dokumenty/${id}`)
+  await publicPage.goto(`${baseURL}/uredni-deska?state=archive&q=Ozn%C3%A1men%C3%AD%20z%20browser%20testu`)
+  await expect(publicPage).toHaveURL(/\/dokumenty\?state=archive/)
+  await expect(publicPage.locator('.site-result')).toHaveCount(1)
   await publicContext.close()
 })
 
@@ -156,11 +222,7 @@ test('email opt-in requires confirmation and opt-out cancels future deliveries',
     await page.getByLabel('Název', { exact: false }).fill(title)
     await page.getByRole('button', { name: 'Uložit koncept', exact: true }).click()
     await expect(page).toHaveURL(/\/admin\/dokumenty\/\d+$/)
-    await page.getByText('Veřejná dostupnost', { exact: true }).last().click()
-    await page.getByLabel('Interní důvod změny dostupnosti', { exact: true }).fill('Nová syntetická publikace.')
-    await page.getByRole('button', { name: 'Zpřístupnit v katalogu', exact: true }).click()
-    await page.getByRole('dialog').getByRole('button', { name: 'Zpřístupnit v katalogu', exact: true }).click()
-    await expect(page.locator('.document-state-facts')).toContainText('Veřejně dostupný')
+    await publishDocument(page)
   }
   const notification = () => fixtureQuery("SELECT m.body FROM mail_queue m JOIN subscribers s ON s.id=m.subscriber_id WHERE s.email=%s AND m.purpose='document' ORDER BY m.id", [email])
   expect(notification()).toHaveLength(0)
@@ -194,14 +256,16 @@ test('account management loads and mobile pages fit the viewport', async ({ page
 
 test('cancelling a scheduled notice preserves private files and rejects a stale editor', async ({ page, browser }) => {
   await login(page)
-  await page.getByRole('link', { name: 'Úřední deska', exact: true }).click()
-  await page.getByRole('link', { name: 'Nové vyvěšení' }).click()
+  await page.getByRole('navigation', { name: 'Administrace' }).getByRole('link', { name: 'Dokumenty', exact: true }).click()
+  await page.getByRole('link', { name: 'Nový dokument', exact: true }).click()
   await page.getByLabel('Název', { exact: false }).first().fill('Zrušené plánované oznámení')
   const tomorrow = fixtureQuery("SELECT to_char((CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Prague')::date + 1, 'YYYY-MM-DD')")[0][0]
-  await page.getByLabel('Datum vyvěšení', { exact: false }).fill(tomorrow)
-  await page.locator('#notice-attachment-access').selectOption('private')
+  await page.locator('#document-board-enabled').check()
+  await page.locator('#document-posted').fill(tomorrow)
+  await page.locator('#document-days').fill('20')
+  await page.locator('#document-attachment-access').selectOption('private')
   await page.getByRole('button', { name: 'Uložit koncept', exact: true }).click()
-  await expect(page).toHaveURL(/\/admin\/uredni-deska\/\d+$/)
+  await expect(page).toHaveURL(/\/admin\/dokumenty\/\d+$/)
   const id = page.url().split('/').pop()
   const contents = Buffer.from('Soukromá příloha plánovaného oznámení.\n')
   await page.locator('#upload-file').setInputFiles({
@@ -270,11 +334,7 @@ test('an ordinary catalogue document can be posted with the same identity and co
   await page.getByRole('button', { name: 'Uložit koncept', exact: true }).click()
   await expect(page).toHaveURL(/\/admin\/dokumenty\/\d+$/)
   const id = page.url().split('/').pop()!
-  await page.getByText('Veřejná dostupnost', { exact: true }).last().click()
-  await page.getByLabel('Interní důvod změny dostupnosti', { exact: true }).fill('Zpřístupnění běžného dokumentu v katalogu.')
-  await page.getByRole('button', { name: 'Zpřístupnit v katalogu', exact: true }).click()
-  await page.getByRole('dialog').getByRole('button', { name: 'Zpřístupnit v katalogu', exact: true }).click()
-  await expect(page.locator('.document-state-facts')).toContainText('Veřejně dostupný')
+  await publishDocument(page)
   const visitor = await browser.newContext()
   const publicPage = await visitor.newPage()
   try {
@@ -296,6 +356,7 @@ test('an ordinary catalogue document can be posted with the same identity and co
     await page.setViewportSize({ width: 390, height: 844 })
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
     await page.screenshot({ path: 'target/admin-document-mobile.png', fullPage: true })
+    await operations(page)
     await page.getByText('Vytvořit opravu nebo navazující dokument', { exact: true }).click()
     await page.locator('#correction-reason').fill('Oprava syntetického textu.')
     await page.getByRole('button', { name: 'Vytvořit navazující koncept', exact: true }).click()
@@ -303,7 +364,8 @@ test('an ordinary catalogue document can be posted with the same identity and co
     await expect.poll(() => page.url().split('/').pop()).not.toBe(id)
     await expect(page.locator('.document-state-facts')).toContainText('Koncept')
     await expect(page.locator('#entry-name')).toBeEnabled()
-    await expect(page.locator('#posting-after')).toHaveValue('')
+    await expect(page.locator('#document-board-enabled')).not.toBeChecked()
+    await expect(page.locator('#document-attachment-access')).toHaveCount(0)
   } finally {
     await visitor.close()
   }
@@ -317,6 +379,7 @@ test('an anonymized copy is previewed and frozen without claiming the original p
   await page.getByRole('button', { name: 'Uložit koncept', exact: true }).click()
   await expect(page).toHaveURL(/\/admin\/dokumenty\/\d+$/)
   const original = page.url().split('/').pop()!
+  await operations(page)
   await page.getByText('Vytvořit opravu nebo navazující dokument', { exact: true }).click()
   await page.locator('#correction-kind').selectOption('anonymized')
   await page.locator('#correction-reason').fill('Syntetická oddělená veřejná kopie.')
@@ -348,6 +411,50 @@ test('an anonymized copy is previewed and frozen without claiming the original p
     await expect(page.locator('.document-state-facts')).toContainText('Uzamčeno')
     await expect(page.locator('.document-state-facts')).not.toContainText('Uzamčeno po vyvěšení')
     await expect(page.locator('#entry-name')).toBeDisabled()
+  } finally {
+    await visitor.close()
+  }
+})
+
+test('ordinary document archive preserves public metadata and files in the same archive', async ({ page, browser }) => {
+  await login(page)
+  await page.getByRole('navigation', { name: 'Administrace' }).getByRole('link', { name: 'Dokumenty', exact: true }).click()
+  await page.getByRole('link', { name: 'Nový dokument', exact: true }).click()
+  const title = 'Běžný dokument ve společném archivu'
+  await page.getByLabel('Název', { exact: false }).fill(title)
+  await page.getByLabel('Datum vytvoření dokumentu (nepovinné)', { exact: true }).fill('2020-01-02')
+  await page.getByRole('button', { name: 'Uložit koncept', exact: true }).click()
+  await expect(page).toHaveURL(/\/admin\/dokumenty\/\d+$/)
+  const id = page.url().split('/').pop()!
+  const bytes = Buffer.from('Anonymní běžný archivní dokument.\n')
+  await page.locator('#upload-file').setInputFiles({ name: 'archiv.txt', mimeType: 'text/plain', buffer: bytes })
+  await page.getByRole('button', { name: 'Nahrát soubor', exact: true }).click()
+  await expect(page.locator('.admin-files li')).toHaveCount(1)
+  const file = (await page.locator('.admin-files a').getAttribute('href'))!.replace('/admin', '')
+  await publishDocument(page)
+  await operations(page)
+  await page.getByText('Přesunout do archivu', { exact: true }).first().click()
+  await page.getByLabel('Důvod archivace *', { exact: true }).fill('Ukončení aktuálnosti běžného syntetického dokumentu.')
+  await page.getByRole('button', { name: 'Přesunout do archivu', exact: true }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Přesunout do archivu', exact: true }).click()
+  await expect(page.locator('.admin-flash')).toContainText('společného archivu')
+  expect(fixtureQuery('SELECT status,public_access,board_status,has_removed_posting FROM documents WHERE id=%s', [Number(id)])[0]).toEqual(['archived', true, null, false])
+  const visitor = await browser.newContext()
+  try {
+    const publicPage = await visitor.newPage()
+    await publicPage.goto(`${baseURL}/dokumenty?state=archive&q=${encodeURIComponent(title)}`)
+    await expect(publicPage.locator('.site-result').getByRole('link', { name: title, exact: true })).toHaveAttribute('href', `/dokumenty/${id}`)
+    await publicPage.getByRole('link', { name: title, exact: true }).click()
+    await expect(publicPage.getByText('Datum vytvoření dokumentu', { exact: true })).toBeVisible()
+    await expect(publicPage.locator('.document-postings')).toHaveCount(0)
+    const download = await visitor.request.get(`${baseURL}${file}`)
+    expect(download.status()).toBe(200)
+    expect(await download.body()).toEqual(bytes)
+    await publicPage.goto(`${baseURL}/uredni-deska?q=${encodeURIComponent(title)}`)
+    await expect(publicPage.locator('.site-result')).toHaveCount(0)
+    await publicPage.getByRole('link', { name: 'Společný veřejný archiv dokumentů', exact: true }).click()
+    await expect(publicPage).toHaveURL(/\/dokumenty\?state=archive/)
+    await expect(publicPage.locator('.site-result')).toHaveCount(1)
   } finally {
     await visitor.close()
   }

@@ -399,6 +399,10 @@ pub fn router(state: Backend) -> Router {
             axum::routing::put(navigation::update_category).delete(navigation::remove_category),
         )
         .route(
+            "/api/v1/admin/legacy/notices/{id}",
+            get(management::legacy_notice),
+        )
+        .route(
             "/api/v1/admin/documents",
             get(management::documents).post(documents::create),
         )

@@ -134,7 +134,7 @@ async fn redirects_and_images_follow_publication_and_withdrawal() {
     let response = app.call("GET", &path, None, false).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()["content-type"], "image/png");
-    sqlx::query("UPDATE documents SET status='archived' WHERE id=$1")
+    sqlx::query("UPDATE documents SET public_access=FALSE,access_blocked=TRUE WHERE id=$1")
         .bind(doc)
         .execute(&app.state.pool)
         .await

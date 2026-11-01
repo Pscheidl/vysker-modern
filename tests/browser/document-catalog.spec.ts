@@ -2,11 +2,13 @@ import { test, expect } from './fixtures'
 
 test('limited searches state their scope and preserve the query in full-site fallback', async ({ page }) => {
   await page.goto('/uredni-deska?stav=archiv&q=synteticky-nenalezeny-vyraz')
-  await expect(page.getByText('Hledáte pouze mezi sejmutými písemnostmi, které zůstávají veřejně dostupné.', { exact: true })).toBeVisible()
+  await expect(page).toHaveURL(/\/dokumenty\?state=archive/)
+  await expect(page.getByText('Hledáte ve společném veřejném archivu dokumentů a sejmutých písemností. Aktuálně vyvěšené dokumenty zde nejsou.', { exact: true })).toBeVisible()
   await expect(page.getByRole('link', { name: 'Prohledat celý web', exact: true })).toHaveAttribute('href', '/hledat?q=synteticky-nenalezeny-vyraz')
-  await page.getByRole('link', { name: 'Aktuálně vyvěšeno', exact: true }).click()
+  await page.goto('/uredni-deska?q=synteticky-nenalezeny-vyraz')
   await expect(page.getByRole('searchbox', { name: 'Hledat v dokumentech' })).toHaveValue('synteticky-nenalezeny-vyraz')
-  await expect(page.getByText('Hledáte pouze mezi aktuálně vyvěšenými písemnostmi.', { exact: true })).toBeVisible()
+  await expect(page.locator('#board-search-scope')).toContainText('Hledáte pouze mezi aktuálně vyvěšenými písemnostmi.')
+  await expect(page.getByRole('link', { name: 'Společný veřejný archiv dokumentů', exact: true })).toHaveAttribute('href', '/dokumenty?state=archive&q=synteticky-nenalezeny-vyraz&kategorie=')
   await page.getByRole('link', { name: 'Prohledat celý web', exact: true }).click()
   await expect(page).toHaveURL(/\/hledat\?q=synteticky-nenalezeny-vyraz$/)
 })

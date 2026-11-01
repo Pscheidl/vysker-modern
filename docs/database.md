@@ -67,11 +67,10 @@ or UI default. `lock_state` is `draft`, permanently `locked`, or conservatively
 SHA-256 and immutable ID-based storage keys. All public downloads check current
 parent and attachment visibility, independent of search projections.
 
-Migration 0030 adds explicit source authority, aliases, observed revisions and
-run evidence. Migration 0031 adds measured indexed search and actual-posting
-projections. Migration 0032 separates policy-driven disposal from withdrawal.
-Migration 0033 permanently suppresses reannouncement of old content without
-inserting mail or changing already queued recipients. See the measured plans,
+The same migration adds explicit source authority, aliases, observed revisions,
+run evidence, indexed search and actual-posting projections. It separates
+policy-driven disposal from withdrawal and permanently suppresses reannouncement
+of old content without inserting mail or changing already queued recipients. See the measured plans,
 counts and rollback procedure in [verification](unified-documents-verification.md).
 
 ## Transactions and concurrency
@@ -185,3 +184,20 @@ compatible with it. See [operations.md](operations.md).
 After first deployment, preserve applied SQLx migrations and add subsequent
 schema changes as new migrations. A Git history squash alone must not rewrite
 migration checksums in an already deployed database.
+
+The unreleased registry changes are delivered as one migration,
+`0029_unified_documents.sql`, after the unchanged deployed migrations through 0028.
+Development uses a freshly created database after this rewrite. No stacked
+unreleased migration chain or checksum repair is required.
+
+The administration edits all documents through the same API. Optional board
+settings are saved on a draft as `board_status`, `published_on`, `withdraw_on`
+and the explicit attachment access choice. The requested positive duration is
+validated on the server and the removal date is calculated from it. There is no
+assumed period. `document_date` is the optional document creation date, distinct
+from the database insertion time and source publication date. Issuer and old
+review metadata are retained for historical fidelity, not requested by the editor.
+Ordinary `status='archived'` records retain their separate public access decision.
+The common archive includes them and documented removed postings, excluding
+current postings and scheduled records. Moving to the archive does not unlock
+content or send another announcement.
