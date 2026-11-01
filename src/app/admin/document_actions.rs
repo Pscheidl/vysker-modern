@@ -357,7 +357,8 @@ fn PostingRecord(
     let reason = RwSignal::new(String::new());
     let emergency = RwSignal::new(false);
     let plan = RwSignal::new(posting.withdraw_on.clone().unwrap_or_default());
-    let active = posting.origin == "local"
+    let active = matches!(posting.origin.as_str(), "local" | "migration")
+        && posting.certainty == "documented"
         && posting.initial_state == "current"
         && posting.withdrawn_at.is_none()
         && posting.withdrawn_on.is_none();

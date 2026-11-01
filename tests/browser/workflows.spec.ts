@@ -351,7 +351,7 @@ test('cancelling a scheduled notice preserves private files and rejects a stale 
       WHERE id=%s RETURNING id
     )
     INSERT INTO document_postings(document_id,origin,certainty,initial_state,started_on,started_at,after_action,snapshot_sha256)
-      SELECT id,'local','documented','current',(CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Prague')::date,
+      SELECT id,'migration','documented','current',(CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Prague')::date,
         CURRENT_TIMESTAMP,'hide',document_fingerprint(id) FROM published RETURNING document_id
   `, [Number(id)])).toEqual([[Number(id)]])
   expect(fixtureQuery('SELECT status FROM notices WHERE id=%s', [Number(id)])[0][0]).toBe('published')
@@ -363,6 +363,8 @@ test('cancelling a scheduled notice preserves private files and rejects a stale 
   const preservedFile = await page.request.get(attachment!)
   expect(preservedFile.status()).toBe(200)
   expect(await preservedFile.body()).toEqual(contents)
+  await page.reload()
+  await expect(page.getByText('Zaznamenat sejmutí nebo změnit plán', { exact: true })).toBeVisible()
 })
 
 test('an ordinary catalogue document can be posted with the same identity without extra document actions', async ({ page, browser }) => {
