@@ -2467,16 +2467,21 @@ pub async fn deliver_one(
     if matches!(purpose.as_str(), "application" | "approval") {
         // A retry can outlive the decision or settlement, including mail queued by
         // older versions. Recheck under the rental lock before any SMTP attempt.
-        let current: String = sqlx::query_scalar("SELECT status FROM rentals WHERE id=$1")
-            .bind(rental_id)
-            .fetch_one(&mut *tx)
-            .await?;
+        let (current, not_ended): (String, bool) = sqlx::query_as(
+            "SELECT status,(ends_local AT TIME ZONE 'Europe/Prague')>$2 FROM rentals WHERE id=$1",
+        )
+        .bind(rental_id)
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await?;
         let expected = if purpose == "application" {
             "pending"
         } else {
             "approved"
         };
-        if current != expected {
+        // Approved rentals remain approved while awaiting meter photos or billing.
+        // Their old confirmation is no longer useful once the rental has ended.
+        if current != expected || (purpose == "approval" && !not_ended) {
             sqlx::query("UPDATE rental_mail_queue SET cancelled_at=$2,body=NULL,lock_token=NULL,locked_until=0 WHERE id=$1 AND sent_at IS NULL AND cancelled_at IS NULL")
                 .bind(message_id).bind(now.unix_timestamp()).execute(&mut *tx).await?;
             tx.commit().await?;

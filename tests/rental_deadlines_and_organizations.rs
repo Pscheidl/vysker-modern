@@ -161,6 +161,76 @@ async fn delivery_discards_historical_receipts_and_approvals_for_superseded_stat
 }
 
 #[tokio::test]
+async fn resumed_delivery_discards_ended_approvals_without_maintenance_but_sends_future_ones() {
+    for (start, end) in [(None, None), (Some(1080), Some(1140))] {
+        let app = App::new().await;
+        let asset = support::asset(&app, true).await;
+        let day = support::monday();
+        let ended = stored_rental(&app, asset, day, start, end, "approved").await;
+        let future =
+            stored_rental(&app, asset, day + Duration::days(2), start, end, "approved").await;
+        sqlx::query("UPDATE rentals SET require_meter=TRUE WHERE id=$1")
+            .bind(ended)
+            .execute(&app.state.pool)
+            .await
+            .unwrap();
+        for (id, body) in [
+            (ended, "Expired confirmation"),
+            (future, "Future confirmation"),
+        ] {
+            sqlx::query("INSERT INTO rental_mail_queue(rental_id,recipient,subject,body,purpose,next_attempt_at,created_at) VALUES ($1,'tenant@example.test','Confirmation',$2,'approval',0,0)")
+                .bind(id).bind(body).execute(&app.state.pool).await.unwrap();
+        }
+        let boundary: OffsetDateTime = sqlx::query_scalar(
+            "SELECT ends_local AT TIME ZONE 'Europe/Prague' FROM rentals WHERE id=$1",
+        )
+        .bind(ended)
+        .fetch_one(&app.state.pool)
+        .await
+        .unwrap();
+        // Simulate the mail worker resuming before any maintenance has run.
+        let failed =
+            lettre::AsyncSmtpTransport::<lettre::Tokio1Executor>::builder_dangerous("127.0.0.1")
+                .port(9)
+                .build();
+        assert!(
+            rentals::deliver_one(&app.state, &failed, boundary)
+                .await
+                .unwrap()
+        );
+        let discarded: (bool, i64) = sqlx::query_as("SELECT cancelled_at IS NOT NULL AND sent_at IS NULL AND body IS NULL AND lock_token IS NULL AND locked_until=0,attempts FROM rental_mail_queue WHERE rental_id=$1 AND purpose='approval'")
+            .bind(ended).fetch_one(&app.state.pool).await.unwrap();
+        assert_eq!(discarded, (true, 0));
+        let preserved: bool = sqlx::query_scalar("SELECT status='approved' AND require_meter AND identity IS NOT NULL AND before_photo IS NULL AND after_photo IS NULL AND last_reminder_date IS NULL FROM rentals WHERE id=$1")
+            .bind(ended).fetch_one(&app.state.pool).await.unwrap();
+        assert!(
+            preserved,
+            "Discarding mail must leave the rental available for meter upload and settlement"
+        );
+
+        let (port, capture) = support::smtp_capture().await;
+        let smtp =
+            lettre::AsyncSmtpTransport::<lettre::Tokio1Executor>::builder_dangerous("127.0.0.1")
+                .port(port)
+                .build();
+        assert!(
+            rentals::deliver_one(&app.state, &smtp, boundary)
+                .await
+                .unwrap()
+        );
+        let message = tokio::time::timeout(std::time::Duration::from_secs(5), capture)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(message.contains("Future confirmation"));
+        assert!(!message.contains("Expired confirmation"));
+        let sent: bool = sqlx::query_scalar("SELECT sent_at IS NOT NULL AND cancelled_at IS NULL FROM rental_mail_queue WHERE rental_id=$1 AND purpose='approval'")
+            .bind(future).fetch_one(&app.state.pool).await.unwrap();
+        assert!(sent);
+    }
+}
+
+#[tokio::test]
 async fn cancelled_admin_rental_never_retries_its_failed_approval() {
     let app = App::new().await;
     let asset = support::asset(&app, false).await;

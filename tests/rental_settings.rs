@@ -370,6 +370,13 @@ async fn disabled_workers_preserve_pending_mail_and_pause_reminders_and_automati
     let meter = support::create(&app, input).await["rentals"][0]["id"]
         .as_i64()
         .unwrap();
+    let upcoming = support::create(
+        &app,
+        support::admin_input(asset, day, Some("22:00"), Some("23:00")),
+    )
+    .await["rentals"][0]["id"]
+        .as_i64()
+        .unwrap();
     sqlx::query(
         "UPDATE rentals SET start_date=CURRENT_DATE-1,end_date=CURRENT_DATE-1 WHERE id IN ($1,$2)",
     )
@@ -383,7 +390,7 @@ async fn disabled_workers_preserve_pending_mail_and_pause_reminders_and_automati
         .await
         .unwrap();
     sqlx::query("INSERT INTO rental_mail_queue(rental_id,recipient,subject,body,purpose,next_attempt_at,created_at) VALUES ($1,'tenant@example.test','Test','Outdated approval','approval',0,0)").bind(automatic).execute(&app.state.pool).await.unwrap();
-    sqlx::query("INSERT INTO rental_mail_queue(rental_id,recipient,subject,body,purpose,next_attempt_at,created_at) VALUES ($1,'tenant@example.test','Test','Keep me','approval',0,0)").bind(meter).execute(&app.state.pool).await.unwrap();
+    sqlx::query("INSERT INTO rental_mail_queue(rental_id,recipient,subject,body,purpose,next_attempt_at,created_at) VALUES ($1,'tenant@example.test','Test','Keep me','approval',0,0)").bind(upcoming).execute(&app.state.pool).await.unwrap();
     assert_eq!(set_enabled(&app, false).await.status(), 200);
     let now = OffsetDateTime::now_utc();
     rentals::maintenance(&app.state, now).await.unwrap();
@@ -404,7 +411,7 @@ async fn disabled_workers_preserve_pending_mail_and_pause_reminders_and_automati
         .fetch_one(&app.state.pool)
         .await
         .unwrap(),
-        2
+        3
     );
     assert_eq!(set_enabled(&app, true).await.status(), 200);
     rentals::maintenance(&app.state, now).await.unwrap();
@@ -426,7 +433,7 @@ async fn disabled_workers_preserve_pending_mail_and_pause_reminders_and_automati
         2
     );
     // Resuming revalidates queued mail. The now-invoiced term's old approval is
-    // discarded, while the still-approved meter rental's queued message survives.
+    // discarded, while the upcoming rental's queued message survives.
     assert!(rentals::deliver_one(&app.state, &smtp, now).await.unwrap());
     let obsolete: (bool, i64) = sqlx::query_as("SELECT cancelled_at IS NOT NULL AND sent_at IS NULL AND body IS NULL,attempts FROM rental_mail_queue WHERE rental_id=$1 AND purpose='approval'")
         .bind(automatic).fetch_one(&app.state.pool).await.unwrap();
