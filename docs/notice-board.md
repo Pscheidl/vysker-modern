@@ -30,15 +30,16 @@ certainty, precise content fingerprint, planned removal and actual removal.
 The `notices` compatibility view is only an adapter over this same content table.
 It is not a second content store.
 
-The public **Dokumenty** catalogue contains every currently public document.
-**Úřední deska** contains documents with an actual current posting and links to
-the shared **Veřejný archiv** at `/dokumenty?state=archive`. This single archive
-contains ordinary archived documents and actually removed postings whose
-metadata remains public. A current posting, scheduled reposting or uncertain
-source history does not qualify. Legacy board archive URLs lead to this same
-view, preserving the query. A retained record may have private attachments, according to the
-explicit decision made for that posting. A wholly hidden document is absent from
-both views and from public search. All views link to `/dokumenty/{id}`.
+Public **Dokumenty a formuláře** at `/dokumenty` is one catalogue containing every
+currently public document, including ordinary documents, current board postings
+and removed records that remain public. There is no separate public archive tab
+or archive filter. **Úřední deska** contains only documents with an actual current
+posting and links to the catalogue through **Všechny dokumenty**. Legacy document
+and board archive URLs show the same complete catalogue, preserving the query.
+A retained record may have private attachments according to the explicit decision
+made for that posting. A wholly hidden document is absent from the catalogue,
+board and public search. Both views link to `/dokumenty/{id}`. Internal archive
+states and posting history remain available independently of this public layout.
 
 A passed planned date alone does not prove an actual removal. The worker records
 the removal transaction and then updates the current-state projection. Public
@@ -56,7 +57,9 @@ sufficient.
 Choose **Zkontrolovat finální náhled** and review the exact saved title, text,
 optional reference number and ordered files. The warning is **Po vyvěšení již
 obsah dokumentu nelze upravit.** The submitted token binds approval to these
-content bytes and metadata. Concurrent edits or uploads require a new preview.
+content bytes and metadata. Every attachment change after preview requires
+saving the document again and reviewing a new final preview. Concurrent content
+changes also invalidate the previous confirmation.
 The shared write transaction and database guards prevent a publication/edit race.
 
 The first actual posting permanently locks the content and the complete ordered
@@ -70,10 +73,14 @@ its reason, keeps attachments and refuses cancellation after actual posting.
 If the server misses a scheduled date it must not manufacture an earlier actual
 event or silently satisfy a legal period. Review the recorded missed schedule.
 
-An anonymized version selected for later release has its own final preview and
-confirmation token. Confirmation freezes the approved copy before it can be
-released after removal. Its administrative state is **Uzamčeno**, without an
-invented posting event or a claim that its bytes were originally posted.
+Removal does not automatically publish an anonymized version. Such versions are
+provided only on request, without a new request-handling workflow in this change.
+Historical links and any existing immutable copies remain evidence, without a
+claim that their bytes were originally posted. New posting requests reject the
+former `anonymized` action. A historical active posting with that action hides
+its original on removal and never automatically publishes the linked copy.
+A pending historical schedule using that action returns for review with an audit
+record instead of publishing automatically.
 
 Corrections, supplements, replacement documents and anonymized versions are new
 linked concepts with new IDs and their own attachment records. They are not
@@ -84,9 +91,8 @@ legal period by itself.
 ## Mandatory attachment availability decision
 
 There is no preselected post-removal access policy. The operator must explicitly
-choose **Po sejmutí ponechat přílohy veřejné** or **Po sejmutí přílohy pouze pro
-administrátory**. An existing separately linked anonymized version can be selected in
-**Další možnosti vyvěšení**. The saved choice is shown again in the final review,
+choose **Ponechat veřejné** or **Pouze pro administrátory**. These are the only two choices. The saved choice is shown again
+in the final review,
 without a second policy form. Ordinary documents without a posting do not need
 this decision.
 

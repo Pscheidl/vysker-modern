@@ -356,8 +356,20 @@ pub async fn maintenance(s: &Backend, now: OffsetDateTime) -> Result<()> {
     for id in expired {
         archive_record(&mut tx, id, None, now).await?;
     }
+    let retired: Vec<i64> = sqlx::query_scalar("SELECT id FROM documents WHERE board_status='scheduled' AND posting_after_action='anonymized' ORDER BY id LIMIT 500")
+        .fetch_all(&mut *tx).await?;
+    for id in retired {
+        return_to_draft(
+            &mut tx,
+            id,
+            None,
+            "schedule_cancelled",
+            serde_json::json!({"reason":"Automatické zveřejnění anonymizovaného znění bylo zrušeno. Dostupnost příloh vyžaduje nové schválení."}),
+            now,
+        ).await?;
+    }
     let scheduled: Vec<NoticeRecord> = sqlx::query_as(
-        "SELECT * FROM notices WHERE status='scheduled' AND published_on<=$1 ORDER BY id LIMIT 500",
+        "SELECT n.* FROM notices n JOIN documents d ON d.id=n.id WHERE n.status='scheduled' AND n.published_on<=$1 AND d.posting_after_action IS DISTINCT FROM 'anonymized' ORDER BY n.id LIMIT 500",
     )
     .bind(today(now))
     .fetch_all(&mut *tx)

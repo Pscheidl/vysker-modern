@@ -67,6 +67,9 @@ async function completePublication(page: Page, path: string, submit: () => Promi
 }
 
 async function publishDocument(page: Page) {
+  if (await page.getByRole('heading', { name: 'Nejdříve uložte změny', exact: true }).isVisible()) {
+    await page.getByRole('button', { name: 'Uložit změny', exact: true }).click()
+  }
   await page.getByRole('button', { name: 'Zveřejnit dokument', exact: true }).click()
   const id = page.url().split('/').pop()!
   await completePublication(page, `/api/v1/admin/documents/${id}/publish`, () =>
@@ -74,7 +77,7 @@ async function publishDocument(page: Page) {
   await expect(page.locator('.document-state-facts')).toContainText('Veřejně dostupný')
 }
 
-async function publishPosting(page: Page, date: string, action = 'hide', redactedId?: string) {
+async function publishPosting(page: Page, date: string, action = 'hide') {
   const board = page.locator('#document-board-enabled')
   const editable = await board.count() > 0 && await board.isEnabled()
   if (editable) {
@@ -91,15 +94,9 @@ async function publishPosting(page: Page, date: string, action = 'hide', redacte
     await page.getByRole('button', { name: 'Uložit změny', exact: true }).click()
     await expect(page.locator('.admin-flash')).toContainText('uložen')
   }
-  if (redactedId) {
-    await page.getByText('Další možnosti vyvěšení', { exact: true }).click()
-    await page.getByLabel('Po sejmutí zpřístupnit samostatné anonymizované znění', { exact: true }).check()
-    await page.locator('#posting-redacted').fill(redactedId)
-  }
   await expect(page.locator('#posting-rule,#posting-basis,#posting-original')).toHaveCount(0)
   await page.getByRole('button', { name: 'Zkontrolovat finální náhled', exact: true }).click()
   await expect(page.getByRole('region', { name: 'Finální náhled dokumentu' })).toContainText('Po vyvěšení již obsah dokumentu nelze upravit.')
-  if (redactedId) await expect(page.getByRole('region', { name: 'Finální náhled anonymizovaného znění', exact: true })).toContainText('jejíž bajty tím nejsou označeny za původně vyvěšené')
   await page.getByLabel('Zkontroloval/a jsem uvedený obsah a všechny přílohy.', { exact: true }).check()
   const id = Number(page.url().split('/').pop())
   await completePublication(page, `/api/v1/admin/documents/${id}/postings`, () =>
@@ -128,7 +125,7 @@ test('keyboard navigation, diacritic-insensitive search and pagination', async (
   expect(errors).toEqual([])
 })
 
-test('one document editor publishes multiple files and expiry enters the shared archive with private files', async ({ page, browser }) => {
+test('one document editor publishes multiple files and expiry remains in the full catalogue with private files', async ({ page, browser }) => {
   test.setTimeout(120_000)
   await login(page)
   const navigation = page.getByRole('navigation', { name: 'Administrace' })
@@ -149,6 +146,10 @@ test('one document editor publishes multiple files and expiry enters the shared 
   await expect(page.locator('#document-days')).toHaveAttribute('required')
   await expect(page.locator('#document-attachment-access')).toHaveValue('')
   await expect(page.locator('#document-attachment-access')).toHaveAttribute('required')
+  await page.getByRole('button', { name: 'Uložit koncept', exact: true }).click()
+  await expect(page).toHaveURL(/\/admin\/dokumenty\/nove$/)
+  expect(await page.locator('#document-days').evaluate((input: HTMLInputElement) => input.validity.valueMissing)).toBe(true)
+  expect(await page.locator('#document-attachment-access').evaluate((input: HTMLSelectElement) => input.validity.valueMissing)).toBe(true)
   await page.setViewportSize({ width: 390, height: 844 })
   const help = page.locator('summary[aria-label="Nápověda: Počet celých dní vyvěšení"]')
   await help.focus()
@@ -159,6 +160,8 @@ test('one document editor publishes multiple files and expiry enters the shared 
   await expect(help.locator('xpath=..')).not.toHaveAttribute('open')
   await page.setViewportSize({ width: 1280, height: 720 })
   await page.locator('#document-days').fill('20')
+  await page.locator('#document-posted').fill('2020-01-01')
+  expect(await page.locator('#document-posted').evaluate((input: HTMLInputElement) => input.validity.rangeUnderflow)).toBe(true)
   await page.locator('#document-posted').fill(fixtureQuery("SELECT to_char((CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Prague')::date, 'YYYY-MM-DD')")[0][0])
   const planned = fixtureQuery("SELECT to_char((CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Prague')::date + 21, 'FMDD. FMMM. YYYY')")[0][0]
   await expect(page.getByText(`Plánované sejmutí: ${planned}.`, { exact: false })).toBeVisible()
@@ -182,6 +185,8 @@ test('one document editor publishes multiple files and expiry enters the shared 
     await expect(page.locator('.admin-files li')).toHaveCount(index + 1)
     await expect(page.locator('.admin-files')).toContainText(file.name)
   }
+  await page.getByRole('button', { name: 'Uložit změny', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Nejdříve uložte změny', exact: true })).toHaveCount(0)
   await page.reload()
   await expect(page.locator('.admin-files li')).toHaveCount(files.length)
   for (const file of files) {
@@ -226,10 +231,10 @@ test('one document editor publishes multiple files and expiry enters the shared 
   await publicPage.reload()
   await expect(publicPage.getByRole('heading', { name: 'Oznámení z browser testu', exact: true })).toBeVisible()
   await expect(publicPage.locator('.attachment')).toHaveCount(0)
-  await publicPage.goto(`${baseURL}/dokumenty?state=archive&q=Ozn%C3%A1men%C3%AD%20z%20browser%20testu`)
+  await publicPage.goto(`${baseURL}/dokumenty?q=Ozn%C3%A1men%C3%AD%20z%20browser%20testu`)
   await expect(publicPage.locator('.site-result').getByRole('link', { name: 'Oznámení z browser testu', exact: true })).toHaveAttribute('href', `/dokumenty/${id}`)
   await publicPage.goto(`${baseURL}/uredni-deska?state=archive&q=Ozn%C3%A1men%C3%AD%20z%20browser%20testu`)
-  await expect(publicPage).toHaveURL(/\/dokumenty\?state=archive/)
+  await expect(publicPage).toHaveURL(/\/dokumenty\?q=/)
   await expect(publicPage.locator('.site-result')).toHaveCount(1)
   await publicContext.close()
 })
@@ -399,50 +404,63 @@ test('an ordinary catalogue document can be posted with the same identity withou
   }
 })
 
-test('an anonymized copy is previewed and frozen without claiming the original posting', async ({ page, browser }) => {
+test('attachment changes invalidate the reviewed posting and require saving again', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
   await login(page)
-  await page.getByRole('navigation', { name: 'Administrace' }).getByRole('link', { name: 'Dokumenty', exact: true }).click()
-  await page.getByRole('link', { name: 'Nový dokument', exact: true }).click()
-  await page.getByLabel('Název', { exact: false }).fill('Originál pro odvozené veřejné znění')
+  await page.goto('/admin/dokumenty/nove')
+  await page.getByLabel('Název', { exact: false }).fill('Potvrzení po změně příloh')
+  await page.locator('#document-board-enabled').check()
+  await page.locator('#document-days').fill('20')
+  await page.locator('#document-attachment-access').selectOption('private')
   await page.getByRole('button', { name: 'Uložit koncept', exact: true }).click()
   await expect(page).toHaveURL(/\/admin\/dokumenty\/\d+$/)
-  const original = page.url().split('/').pop()!
-  const copy = await prepareDocument(page, `/api/v1/admin/documents/${original}/corrections`, {
-    kind: 'anonymized', reason: 'Syntetická oddělená veřejná kopie připravená mimo editor.',
-  })
-  const derived = String(copy.id)
-  await page.goto(`/admin/dokumenty/${derived}`)
-  await page.getByLabel('Název', { exact: false }).fill('Samostatné anonymizované znění')
-  await page.getByLabel('Popis', { exact: true }).fill('Veřejné samostatné znění bez osobních údajů.')
-  await page.getByRole('button', { name: 'Uložit změny', exact: true }).click()
-  await expect(page.locator('.admin-flash')).toContainText('uložen')
-  await page.goto(`/admin/dokumenty/${original}`)
-  const today = fixtureQuery("SELECT to_char((CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Prague')::date, 'YYYY-MM-DD')")[0][0]
-  await publishPosting(page, today, 'anonymized', derived)
-  await expect(page.locator('.document-state-facts')).toContainText('Uzamčeno po vyvěšení')
-  const visitor = await browser.newContext()
-  try {
-    expect((await visitor.request.get(`${baseURL}/api/v1/documents/${derived}`)).status()).toBe(404)
-    const posting = page.locator('.posting-history > li').first()
-    await posting.getByText('Zaznamenat sejmutí nebo změnit plán', { exact: true }).click()
-    await posting.getByLabel('Interní důvod *', { exact: true }).fill('Přechod na schválenou veřejnou kopii.')
-    await posting.getByRole('button', { name: 'Zaznamenat sejmutí', exact: true }).click()
-    await page.getByRole('dialog').getByRole('button', { name: 'Zaznamenat sejmutí', exact: true }).click()
-    await expect(page.locator('.document-state-facts')).toContainText('Sejmuto')
-    const publicPage = await visitor.newPage()
-    await publicPage.goto(`${baseURL}/dokumenty/${derived}`)
-    await expect(publicPage.getByRole('heading', { name: 'Samostatné anonymizované znění', exact: true })).toBeVisible()
-    await expect(publicPage.locator('.document-postings')).toHaveCount(0)
-    await page.goto(`/admin/dokumenty/${derived}`)
-    await expect(page.locator('.document-state-facts')).toContainText('Uzamčeno')
-    await expect(page.locator('.document-state-facts')).not.toContainText('Uzamčeno po vyvěšení')
-    await expect(page.locator('#entry-name')).toBeDisabled()
-  } finally {
-    await visitor.close()
+  await expect(page.getByLabel('Po sejmutí zpřístupnit samostatné anonymizované znění', { exact: true })).toHaveCount(0)
+  await expect(page.locator('#posting-redacted')).toHaveCount(0)
+  await page.getByRole('button', { name: 'Zkontrolovat finální náhled', exact: true }).click()
+  await page.getByLabel('Zkontroloval/a jsem uvedený obsah a všechny přílohy.', { exact: true }).check()
+  await expect(page.getByRole('button', { name: 'Potvrdit vyvěšení této podoby', exact: true })).toBeEnabled()
+  const files = ['prvni.txt', 'druha.txt']
+  for (const [index, name] of files.entries()) {
+    await page.locator('#upload-file').setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from(`Syntetická příloha ${index}.`) })
+    await page.getByRole('button', { name: 'Nahrát soubor', exact: true }).click()
+    await expect(page.locator('.admin-files li')).toHaveCount(index + 1)
+    await expect(page.getByRole('heading', { name: 'Nejdříve uložte změny', exact: true })).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Finální náhled dokumentu', exact: true })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Potvrdit vyvěšení této podoby', exact: true })).toHaveCount(0)
+    await expect(page.locator('#upload-file')).toBeEnabled()
   }
+  await page.getByRole('button', { name: 'Uložit změny', exact: true }).click()
+  await page.getByRole('button', { name: 'Zkontrolovat finální náhled', exact: true }).click()
+  const preview = page.getByRole('region', { name: 'Finální náhled dokumentu', exact: true })
+  for (const name of files) await expect(preview).toContainText(name)
+  await expect(page.getByLabel('Zkontroloval/a jsem uvedený obsah a všechny přílohy.', { exact: true })).not.toBeChecked()
+  await page.getByLabel('Zkontroloval/a jsem uvedený obsah a všechny přílohy.', { exact: true }).check()
+  await page.locator('.admin-files li').filter({ hasText: 'prvni.txt' }).getByRole('button', { name: 'Odebrat', exact: true }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Odebrat', exact: true }).click()
+  await expect(page.locator('.admin-files li').filter({ hasText: 'prvni.txt' })).toContainText('Obsah odstraněn')
+  await expect(page.getByRole('heading', { name: 'Nejdříve uložte změny', exact: true })).toBeVisible()
+  await expect(preview).toHaveCount(0)
+  await page.getByRole('button', { name: 'Uložit změny', exact: true }).click()
+  await page.getByRole('button', { name: 'Zkontrolovat finální náhled', exact: true }).click()
+  await expect(preview).not.toContainText('prvni.txt')
+  await expect(preview).toContainText('druha.txt')
+  await expect(page.getByLabel('Zkontroloval/a jsem uvedený obsah a všechny přílohy.', { exact: true })).not.toBeChecked()
+  await page.getByLabel('Popis', { exact: true }).fill('Rozepsaný text se při práci s přílohami nesmí ztratit.')
+  await expect(page.locator('#upload-file')).toBeDisabled()
+  await expect(preview).toHaveCount(0)
+  await page.getByRole('button', { name: 'Uložit změny', exact: true }).click()
+  await page.getByRole('button', { name: 'Zkontrolovat finální náhled', exact: true }).click()
+  await expect(preview).toContainText('Rozepsaný text se při práci s přílohami nesmí ztratit.')
+  await page.getByLabel('Zkontroloval/a jsem uvedený obsah a všechny přílohy.', { exact: true }).check()
+  const id = page.url().split('/').pop()!
+  await completePublication(page, `/api/v1/admin/documents/${id}/postings`, () =>
+    page.getByRole('button', { name: 'Potvrdit vyvěšení této podoby', exact: true }).click())
+  await expect(page.locator('.document-state-facts')).toContainText('Uzamčeno po vyvěšení')
+  expect(errors).toEqual([])
 })
 
-test('ordinary document archive preserves public metadata and files in the same archive', async ({ page, browser }) => {
+test('an ordinary archived record remains in the full catalogue with its files', async ({ page, browser }) => {
   await login(page)
   await page.getByRole('navigation', { name: 'Administrace' }).getByRole('link', { name: 'Dokumenty', exact: true }).click()
   await page.getByRole('link', { name: 'Nový dokument', exact: true }).click()
@@ -466,7 +484,7 @@ test('ordinary document archive preserves public metadata and files in the same 
   const visitor = await browser.newContext()
   try {
     const publicPage = await visitor.newPage()
-    await publicPage.goto(`${baseURL}/dokumenty?state=archive&q=${encodeURIComponent(title)}`)
+    await publicPage.goto(`${baseURL}/dokumenty?q=${encodeURIComponent(title)}`)
     await expect(publicPage.locator('.site-result').getByRole('link', { name: title, exact: true })).toHaveAttribute('href', `/dokumenty/${id}`)
     await publicPage.getByRole('link', { name: title, exact: true }).click()
     await expect(publicPage.getByText('Datum vytvoření dokumentu', { exact: true })).toBeVisible()
@@ -476,8 +494,8 @@ test('ordinary document archive preserves public metadata and files in the same 
     expect(await download.body()).toEqual(bytes)
     await publicPage.goto(`${baseURL}/uredni-deska?q=${encodeURIComponent(title)}`)
     await expect(publicPage.locator('.site-result')).toHaveCount(0)
-    await publicPage.getByRole('link', { name: 'Společný veřejný archiv dokumentů', exact: true }).click()
-    await expect(publicPage).toHaveURL(/\/dokumenty\?state=archive/)
+    await publicPage.getByRole('link', { name: 'Všechny dokumenty', exact: true }).click()
+    await expect(publicPage).toHaveURL(/\/dokumenty\?q=/)
     await expect(publicPage.locator('.site-result')).toHaveCount(1)
   } finally {
     await visitor.close()
@@ -558,4 +576,48 @@ test('switching a saved draft to the board requires saving before a fresh final 
   await publishDocument(page)
   await expect(page.getByRole('heading', { name: 'Nejdříve uložte změny', exact: true })).toHaveCount(0)
   expect(pageErrors).toEqual([])
+})
+
+
+test('a late save response cannot clear another document editor or its unsaved changes', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  await login(page)
+  await page.goto('/admin/dokumenty/nove')
+  await page.getByLabel('Název', { exact: false }).fill('První koncept pro pomalé uložení')
+  await page.getByRole('button', { name: 'Uložit koncept', exact: true }).click()
+  await expect(page).toHaveURL(/\/admin\/dokumenty\/\d+$/)
+  const id = page.url().split('/').pop()!
+  await page.getByLabel('Popis', { exact: true }).fill('Uložení prvního dokumentu čeká na odpověď.')
+  let release!: () => void
+  let ready!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const received = new Promise<void>(resolve => { ready = resolve })
+  const url = `${baseURL}/api/v1/admin/documents/${id}`
+  await page.route(url, async route => {
+    const response = await route.fetch()
+    ready()
+    await gate
+    await route.fulfill({ response })
+  }, { times: 1 })
+  page.on('dialog', dialog => dialog.accept())
+  try {
+    await page.getByRole('button', { name: 'Uložit změny', exact: true }).click()
+    await received
+    await page.getByRole('navigation', { name: 'Administrace' }).getByRole('link', { name: 'Dokumenty', exact: true }).click()
+    await page.getByRole('link', { name: 'Nový dokument', exact: true }).click()
+    await page.getByLabel('Název', { exact: false }).fill('Druhý rozepsaný koncept')
+    const response = page.waitForResponse(url)
+    release()
+    expect((await response).ok()).toBe(true)
+    await expect(page).toHaveURL(/\/admin\/dokumenty\/nove$/)
+    await expect(page.locator('.admin-save-state')).toHaveText('Máte neuložené změny')
+    await expect(page.locator('#entry-name')).toHaveValue('Druhý rozepsaný koncept')
+    await page.getByRole('button', { name: 'Uložit koncept', exact: true }).click()
+    await expect(page).toHaveURL(/\/admin\/dokumenty\/\d+$/)
+    expect(page.url().split('/').pop()).not.toBe(id)
+    expect(errors).toEqual([])
+  } finally {
+    release()
+  }
 })

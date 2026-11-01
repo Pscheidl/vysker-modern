@@ -779,7 +779,7 @@ class ImportTests(unittest.TestCase):
         with connect(self.url) as conn:
             import_bundle(conn, self.root, publish_content=True)
             with self.assertRaisesRegex(ValueError, 'Destructive reimport is disabled'):
-                reconcile(conn, self.root, {data['pages'][0]['key']: 'Zastupitelstvo'}, apply=True)
+                reconcile(conn, self.root, {data['pages'][0]['key']: 'Zasedání zastupitelstva'}, apply=True)
             self.assertEqual(conn.execute('SELECT count(*) FROM documents').fetchone()[0], 1)
             self.assertEqual(conn.execute('SELECT count(*) FROM attachments').fetchone()[0], 1)
 

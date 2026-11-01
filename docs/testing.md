@@ -82,20 +82,22 @@ Covered workflows:
 - Subscription request, confirmation, notification and unsubscribe
 - Account settings and viewport overflow on mobile
 - Shared catalogue and board identity, search scope, deduplication and migration privacy
-- Worker-recorded expiration into the single shared archive, permanent content
-  lock, private retained downloads and old direct-file denial
-- Existing ordinary archive records preserve public metadata and files without
-  inventing a posting, and old board archive URLs lead to the shared archive
+- Worker-recorded removal preserves the public document in the common catalogue,
+  permanent content lock, private retained downloads and old direct-file denial
+- Existing ordinary archived records preserve public metadata and files without
+  inventing a posting
+- One public catalogue without archive tabs or filters, including current and
+  removed public records even when reached through old archive URLs
 - Scheduled cancellation with a stale editor
-- Separate anonymized preview, immutable derived copy and release without invented
-  posting history, using an existing linked copy prepared through the API
+- Only two post-removal attachment choices, with no anonymized-copy ID field
 - Absence of the removed additional-actions panel and a saved ordinary draft
   switched to the board and back, including invalidation of a confirmed preview
-  when the content changes
+  when the content or attachments change, followed by saving and reviewing again
 
-Archive records and linked copies are prepared through the authenticated API.
-Their former creation controls are intentionally absent from the simplified
-editor.
+Records with an internal archived state are prepared through the authenticated
+API. Their former creation controls are intentionally absent from the simplified
+editor. Domain tests also cover rejection of new automatic anonymized-copy plans
+and safe handling of existing historical plans without releasing a copy.
 
 The subscription form enables its email input only after hydration, matching
 the submit button's existing readiness guard. This prevents fast input from

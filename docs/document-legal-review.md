@@ -7,7 +7,7 @@ Produkční obsah ani skutečná vyvěšení nebyly v této práci měněny.
 
 ## Jedna evidence a jednoduchý formulář
 
-Jednotná databáze, editor a společný archiv jsou technické uspořádání. Důležité
+Jednotná databáze, editor a společný katalog jsou technické uspořádání. Důležité
 je zachovat rozlišení skutečného vyvěšení, plánovaného sejmutí, skutečného sejmutí
 a veřejné dostupnosti. Úředník nemusí tyto skutečnosti zadávat do dvou různých
 částí administrace.
@@ -66,8 +66,14 @@ upozorňuje. Zjednodušený editor nenabízí ruční ukončení veřejnosti cel
 záznamu ani vytvoření propojené kopie. Jestliže i název nebo popis vyžadují
 znepřístupnění, musí oprávněný technický správce použít zachované chráněné API
 pro změnu veřejné dostupnosti s uvedením důvodu. Samotná volba skrytých příloh
-tuto potřebu neřeší. Existující propojené anonymizované znění zůstává samostatným
-dokumentem a nepřepisuje původní bajty.
+tuto potřebu neřeší.
+
+Po sejmutí jsou jen dvě volby: ponechat přílohy veřejné, nebo je zpřístupnit pouze
+administrátorům. Anonymizované znění se poskytuje pouze na vyžádání. Tato změna
+nezavádí nový postup pro podávání a vyřizování žádostí. Sejmutí automaticky
+nezveřejní žádnou anonymizovanou kopii, ani podle dříve uloženého plánu.
+Historická vazba na samostatné znění může zůstat zachovaná a původní bajty se
+nepřepisují. Nový plán automatického zveřejnění kopie server odmítne.
 
 Oprávněný správce může originál dál stáhnout v administraci. Interní uchování
 má vlastní účel a retenční režim. Nejde o povolení uchovávat osobní údaje navždy.

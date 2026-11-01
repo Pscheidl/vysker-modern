@@ -39,6 +39,41 @@ def baseline(conn):
 
 
 class DocumentMigrationTests(unittest.TestCase):
+    def test_council_category_rename_preserves_ids_links_and_subscription_choices(self):
+        with temporary_database() as database, connect(database) as conn:
+            baseline(conn)
+            category = conn.execute("SELECT id FROM categories WHERE name='Zastupitelstvo'").fetchone()[0]
+            version = conn.execute('SELECT version FROM categories WHERE id=%s', (category,)).fetchone()[0]
+            conn.execute('UPDATE notices SET category_id=%s WHERE id=1', (category,))
+            conn.execute('UPDATE subscribers SET all_notice_categories=FALSE,notice_category_ids=ARRAY[%s]::bigint[] WHERE id=1', (category,))
+            consent = conn.execute('SELECT to_jsonb(c) FROM subscription_consents c ORDER BY id').fetchall()
+            for migration in sorted((ROOT / 'migrations').glob('*.sql')):
+                if int(migration.name.split('_', 1)[0]) >= 29:
+                    conn.execute(migration.read_text())
+            self.assertEqual(conn.execute('SELECT name FROM categories WHERE id=%s', (category,)).fetchone()[0], 'Zasedání zastupitelstva')
+            self.assertEqual(conn.execute('SELECT version FROM categories WHERE id=%s', (category,)).fetchone()[0], version + 1)
+            self.assertEqual(conn.execute("SELECT category_id FROM documents WHERE id=(SELECT document_id FROM document_legacy_ids WHERE old_model='notice' AND old_id=1)").fetchone()[0], category)
+            self.assertEqual(conn.execute('SELECT all_notice_categories,notice_category_ids FROM subscribers WHERE id=1').fetchone(), (False, [category]))
+            self.assertEqual(conn.execute('SELECT to_jsonb(c) FROM subscription_consents c ORDER BY id').fetchall(), consent)
+            self.assertEqual(conn.execute("SELECT count(*) FROM document_migration_issues WHERE kind='category_rename_conflict'").fetchone()[0], 0)
+
+    def test_existing_council_label_is_reported_without_merging_category_identity(self):
+        with temporary_database() as database, connect(database) as conn:
+            baseline(conn)
+            original = conn.execute("SELECT id FROM categories WHERE name='Zastupitelstvo'").fetchone()[0]
+            existing = conn.execute("INSERT INTO categories(name) VALUES ('Zasedání zastupitelstva') RETURNING id").fetchone()[0]
+            conn.execute('UPDATE notices SET category_id=%s WHERE id=1', (original,))
+            conn.execute('UPDATE subscribers SET all_notice_categories=FALSE,notice_category_ids=ARRAY[%s,%s]::bigint[] WHERE id=1', (original, existing))
+            for migration in sorted((ROOT / 'migrations').glob('*.sql')):
+                if int(migration.name.split('_', 1)[0]) >= 29:
+                    conn.execute(migration.read_text())
+            self.assertEqual(conn.execute('SELECT id,name FROM categories WHERE id IN (%s,%s) ORDER BY id', (original, existing)).fetchall(), [(original, 'Zastupitelstvo'), (existing, 'Zasedání zastupitelstva')])
+            self.assertEqual(conn.execute('SELECT notice_category_ids FROM subscribers WHERE id=1').fetchone()[0], [original, existing])
+            self.assertEqual(conn.execute("SELECT category_id FROM documents WHERE id=(SELECT document_id FROM document_legacy_ids WHERE old_model='notice' AND old_id=1)").fetchone()[0], original)
+            document, issue = conn.execute("SELECT document_id,details FROM document_migration_issues WHERE kind='category_rename_conflict'").fetchone()
+            self.assertIsNone(document)
+            self.assertEqual((issue['old_category_id'], issue['existing_category_id']), (original, existing))
+
     def test_collision_mapping_bytes_provenance_and_lock_guards(self):
         with temporary_database() as database, connect(database) as conn:
             baseline(conn)

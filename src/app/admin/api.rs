@@ -34,6 +34,7 @@ pub struct Entry {
     pub description: Option<String>,
     pub status: String,
     pub published_on: Option<String>,
+    pub current_date: String,
     pub withdraw_on: Option<String>,
     pub withdrawn_at: Option<String>,
     pub reference_number: Option<String>,

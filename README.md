@@ -19,7 +19,7 @@ Current illustration and identity: [Saint Anne's Chapel and the treeless Hůra h
 ## Implemented pages and controls
 
 - Homepage with a landscape relief, shortcuts and recent documents.
-- Official notice board, archive and document details backed by PostgreSQL.
+- Official notice board, shared document catalogue and details backed by PostgreSQL.
 - Category filters, sorting and browser search that ignores Czech diacritics.
 - General documents and forms, search, municipal information and contact details.
 - Structured calendar with a homepage feed, event details and archive, subscriptions, accessibility, privacy and a 404 page.
@@ -160,8 +160,9 @@ The workflow reads the base path from Pages configuration and reports the
 public URL after deployment. A personal access token is not required.
 
 The demo sends no email and contains no attachment file contents. Search,
-sorting, categories, the archive, theme switching and mobile navigation run in
-the browser. The `ssr` production mode and `demo` preview are separate builds.
+sorting, categories, the document catalogue, theme switching and mobile
+navigation run in the browser. The `ssr` production mode and `demo` preview are
+separate builds.
 
 Basic environment settings:
 
@@ -176,9 +177,12 @@ Basic environment settings:
 
 - Official notice board with an explicitly entered number of complete calendar
   days after the posting day, without a preselected interval.
-- The shared public archive contains ordinary archived documents and documented
-  removed postings whose documents remain public, excluding current or scheduled postings.
+- **Dokumenty a formuláře** is one catalogue of all publicly available documents,
+  including current board postings and removed records that remain public. There
+  is no separate public archive or archive filter.
 - Attachment availability after removal is an explicit mandatory choice with no default. Private attachments remain downloadable by administrators until separate retention disposal.
+- The choices are to retain public files or make them private. Anonymized versions
+  are provided only on request, with no automatic publication of a copy after removal.
 - A single document catalogue and administration, with separate posting history.
 - Notifications about new documents, including official notices, activated
   after email verification.
@@ -203,7 +207,8 @@ compatibility projection of the same canonical rows.
 posting, planned removal, actual removal, public visibility and permanent content
 locking are independent. The first actual posting freezes content and ordered
 attachment bytes through database guards. Publication requires a server-generated
-preview fingerprint. Corrections and observed source revisions create new linked
+preview fingerprint. Attachment changes after preview require saving again and
+reviewing a new preview. Corrections and observed source revisions create new linked
 concepts, never rewrite locked originals.
 
 Access to attachment URLs is checked against the current canonical record at
@@ -272,7 +277,7 @@ subscription requests and controlled data retention.
 
 ## Production preparation
 
-- [Notice board rules, archive and publication evidence](docs/notice-board.md)
+- [Notice board rules, public catalogue and publication evidence](docs/notice-board.md)
 - [Full Docker deployment, HTTPS, backups and recovery](docs/operations.md)
 - Administration at `/admin/posta` shows recipients and outgoing message status.
 - Mandatory disclosures, contact details and statements are managed as content pages.

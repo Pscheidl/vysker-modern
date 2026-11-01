@@ -598,3 +598,82 @@ administrator login and served the current assets. A previously retained private
 file returned 404 through its original public link, 401 through its administrator
 link without login, and 200 to the authenticated administrator. A retained public
 archive file still returned 200. The database and credentials were preserved.
+
+## Catalogue and publication workflow follow-up
+
+The public Documents and Forms section is now a single catalogue of every
+currently public document, including current postings and removed records.
+There is no separate public archive tab or archive-only document filter. Old
+archive URLs lead to the complete catalogue with the query, topic, sort and page
+preserved. The board and homepage link to **Všechny dokumenty**. Internal archive
+states and API compatibility remain available without introducing another public
+list. Existing access predicates, pagination and indexes are unchanged.
+
+The already prepared migration 0029 renames **Zastupitelstvo** to **Zasedání
+zastupitelstva** while retaining its category ID and subscriber choices. It also
+increments the category's version so a stale administration form cannot undo
+the rename. If both names already exist, it preserves both identities and adds a
+`category_rename_conflict` issue for review. No further migration was added.
+Migration tests verify identifiers, subscriptions, consent evidence and this
+collision path. Import mapping, demo records and seed data use the new name.
+
+Automatic publication of an anonymized copy after removal has been removed.
+The editor offers only the explicit retain/hide attachment choices. The posting
+API rejects the old action and removed copy-selection fields. Historical
+anonymized plans are cancelled with audit evidence and require a new decision.
+Removing an already existing historical posting preserves the original privacy
+block and never publishes or announces its linked copy. Historical relationships
+remain recorded. Anonymized copies are handled only on request, outside this
+automatic publication workflow.
+
+Uploading or removing an attachment now invalidates the approved preview as soon
+as the operation starts. The refreshed attachment list and content version do not
+replace the editor's metadata. Several attachment operations can precede a single
+save. The operator must then save, load the new final preview and confirm again.
+Unsaved metadata blocks attachment changes, and a different editor's simultaneous
+metadata change produces a conflict instead of being silently adopted. Removed
+attachment rows remain in internal evidence but no longer appear as missing files
+in the final publication preview.
+
+The UI uses the server's current Prague date to reject a past local posting date,
+including an editor left open across midnight. Duration remains a required whole
+number from 1 to 3650 with no default, and the attachment choice also has no
+default. Independent review additionally found and fixed a delayed Save response
+that could affect another open editor after navigation. Responses from disposed
+editors are now ignored.
+
+The backend and migration checks passed: 290 Rust tests with seven intentionally
+ignored, 124 Python tests, then all 13 registry tests after adding runtime
+`current_date`, and all nine migration/backup-restore tests after the final
+category-version correction. The migration correction changes one category row,
+not document content, subscriber identity or notification eligibility. Existing
+query plans and performance results remain applicable to the unchanged catalogue
+read path. No new indexes or full reindex operation were introduced.
+
+All 14 affected browser scenarios passed in 1.7 minutes. They cover the complete
+catalogue and legacy URL handling, required choices, past-date validation,
+multiple uploads followed by a single save, removal after preview approval,
+delayed responses and navigation away during a save. A separate desktop and
+390-pixel mobile walkthrough checked keyboard help, empty required fields,
+invalid durations, attachment changes and confirmation without JavaScript errors
+or horizontal overflow. Visual review prompted two final text corrections:
+the save panel describes the next step for its actual saved/unsaved state, and
+shorter access choices fit mobile controls. The long SHA-256 value remains
+available in a keyboard-accessible disclosure beneath the file instead of
+interrupting the main confirmation instructions.
+
+The replacement local preview uses a fresh isolated database with the final
+0029 checksum, seven synthetic documents, seven attachments, four posting events
+and one pending import revision. The renamed category retains ID 3 and now has
+version 2. Both notification queues are empty. Existing ordinary, current and
+removed public records appear in the same catalogue, while drafts do not. Login
+was verified, and the private retained attachment returned 404 from its original
+public URL, 401 from the unauthenticated administrator route and 200 to the
+logged-in administrator. The earlier preview database was retained separately.
+
+After the final visual adjustments, both affected browser scenarios passed again
+in 38.7 seconds. The repeated UX walkthrough also verified a simulated midnight
+change in the server date and keyboard operation of the collapsed file checksum.
+The final web, WASM and administration tool builds passed. Formatting and diff
+checks are clean. The local instance was restarted on the final build, and login,
+all referenced assets and private-file authorization were verified once more.

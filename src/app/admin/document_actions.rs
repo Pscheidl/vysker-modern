@@ -20,6 +20,8 @@ pub(super) fn DocumentHelp(label: &'static str, text: &'static str) -> impl Into
 pub fn DocumentActions(
     entry: Entry,
     board_enabled: RwSignal<bool>,
+    publication_epoch: RwSignal<u64>,
+    current_date: RwSignal<String>,
     publishing: RwSignal<bool>,
     busy: Signal<bool>,
     reload: RwSignal<u64>,
@@ -44,8 +46,8 @@ pub fn DocumentActions(
             </section>
         }>
             {can_publish.then(move||view!{<PublishDocument id publishing busy=disabled reload/>})}
-            {(can_post&&prepared).then(move||view!{<section class="admin-panel admin-form-section"><h2>"Potvrzení vyvěšení"</h2><PostingForm entry=posting_entry.get_value() saved=true publishing busy=disabled reload/></section>})}
-            {(can_post&&!editable_draft).then(move||view!{<details class="admin-panel admin-form-section"><summary>"Nové vyvěšení na úřední desce"</summary><p>"Vznikne nový záznam vyvěšení. Obsah, který už je uzamčený, zůstane stejný."</p><PostingForm entry=posting_entry.get_value() saved=false publishing busy=disabled reload/></details>})}
+            {(can_post&&prepared).then(move||view!{<section class="admin-panel admin-form-section"><h2>"Potvrzení vyvěšení"</h2><PostingForm entry=posting_entry.get_value() saved=true publication_epoch current_date publishing busy=disabled reload/></section>})}
+            {(can_post&&!editable_draft).then(move||view!{<details class="admin-panel admin-form-section"><summary>"Nové vyvěšení na úřední desce"</summary><p>"Vznikne nový záznam vyvěšení. Obsah, který už je uzamčený, zůstane stejný."</p><PostingForm entry=posting_entry.get_value() saved=false publication_epoch current_date publishing busy=disabled reload/></details>})}
         </Show>
         {scheduled.then(move ||view!{<CancelSchedule id busy=disabled reload/>})}
         <PostingHistory document_id=id postings=entry.postings busy=disabled reload/>
@@ -97,9 +99,14 @@ pub(super) fn BoardSettings(
     published_on: RwSignal<String>,
     duration_days: RwSignal<String>,
     retention: RwSignal<Option<bool>>,
+    current_date: RwSignal<String>,
     #[prop(default = false)] mark_dirty: bool,
 ) -> impl IntoView {
     let ctx = expect_context::<AdminContext>();
+    let past_date = Signal::derive(move || {
+        let date = published_on.get();
+        !date.is_empty() && date < current_date.get()
+    });
     let removal = Memo::new(move |_| {
         let day = time::Date::parse(
             &published_on.get(),
@@ -116,11 +123,11 @@ pub(super) fn BoardSettings(
     });
     view! {<div class="document-board-settings">
         <div class="admin-form-row">
-            <div class="admin-field"><div class="document-field-label"><label for="document-posted">"Datum vyvěšení *"</label><DocumentHelp label="Datum vyvěšení" text="Dnešní datum vyvěsí dokument po potvrzení náhledu. Budoucí datum naplánuje vyvěšení. Datum nahrání souboru ani původního zveřejnění tím nenahrazujte."/></div><input id="document-posted" type="date" required prop:value=move||published_on.get() on:input=move|ev|{published_on.set(event_target_value(&ev));if mark_dirty{ctx.dirty.set(true);}}/></div>
-            <div class="admin-field"><div class="document-field-label"><label for="document-days">"Počet celých dní vyvěšení *"</label><DocumentHelp label="Počet celých dní vyvěšení" text="Počet celých kalendářních dní po dni vyvěšení. Výpočet neurčuje zákonnou lhůtu. U doručování veřejnou vyhláškou zohledněte víkendy a svátky a případně počet dní prodlužte."/></div><input id="document-days" type="number" min="1" max="3650" required prop:value=move||duration_days.get() on:input=move|ev|{duration_days.set(event_target_value(&ev));if mark_dirty{ctx.dirty.set(true);}}/></div>
+            <div class="admin-field"><div class="document-field-label"><label for="document-posted">"Datum vyvěšení *"</label><DocumentHelp label="Datum vyvěšení" text="Dnešní datum vyvěsí dokument po potvrzení náhledu. Budoucí datum naplánuje vyvěšení. Datum nahrání souboru ani původního zveřejnění tím nenahrazujte."/></div><input id="document-posted" type="date" required min=move||current_date.get() aria-invalid=move||past_date.get().then_some("true") aria-describedby=move||past_date.get().then_some("document-posted-note") prop:value=move||published_on.get() on:input=move|ev|{published_on.set(event_target_value(&ev));if mark_dirty{ctx.dirty.set(true);}}/><Show when=move||past_date.get()><p id="document-posted-note" class="admin-caption" role="alert">"Datum vyvěšení nemůže být v minulosti. Vyberte dnešní nebo budoucí datum."</p></Show></div>
+            <div class="admin-field"><div class="document-field-label"><label for="document-days">"Počet celých dní vyvěšení *"</label><DocumentHelp label="Počet celých dní vyvěšení" text="Počet celých kalendářních dní po dni vyvěšení. Výpočet neurčuje zákonnou lhůtu. U doručování veřejnou vyhláškou zohledněte víkendy a svátky a případně počet dní prodlužte."/></div><input id="document-days" type="number" min="1" max="3650" step="1" required prop:value=move||duration_days.get() on:input=move|ev|{duration_days.set(event_target_value(&ev));if mark_dirty{ctx.dirty.set(true);}}/></div>
         </div>
         {move||removal.get().map(|date|view!{<p class="field-note">"Plánované sejmutí: "{date}". Automatické sejmutí proběhne nejdříve na začátku tohoto dne."</p>})}
-        <div class="admin-field"><div class="document-field-label"><label for="document-attachment-access">"Dostupnost příloh po sejmutí *"</label><DocumentHelp label="Dostupnost příloh po sejmutí" text="Veřejné přílohy zůstanou ke stažení i v archivu. Při volbě pouze pro administrátory je po sejmutí stáhnou jen správci. Název a popis mohou zůstat veřejné, proto nesmějí obsahovat údaje, které mají být skryté. Tato volba sama neopravňuje ke zveřejnění osobních údajů a nemění uzamčení obsahu."/></div><select id="document-attachment-access" required prop:value=move||match retention.get(){Some(true)=>"public",Some(false)=>"private",None=>""} on:change=move|ev|{retention.set(match event_target_value(&ev).as_str(){"public"=>Some(true),"private"=>Some(false),_=>None});if mark_dirty{ctx.dirty.set(true);}}><option value="">"Vyberte dostupnost příloh"</option><option value="public">"Po sejmutí ponechat přílohy veřejné"</option><option value="private">"Po sejmutí přílohy pouze pro administrátory"</option></select></div>
+        <div class="admin-field"><div class="document-field-label"><label for="document-attachment-access">"Dostupnost příloh po sejmutí *"</label><DocumentHelp label="Dostupnost příloh po sejmutí" text="Veřejné přílohy zůstanou ke stažení v katalogu Dokumenty i po sejmutí. Při volbě pouze pro administrátory je po sejmutí stáhnou jen správci. Název a popis mohou zůstat veřejné, proto nesmějí obsahovat údaje, které mají být skryté. Tato volba sama neopravňuje ke zveřejnění osobních údajů a nemění uzamčení obsahu."/></div><select id="document-attachment-access" required prop:value=move||match retention.get(){Some(true)=>"public",Some(false)=>"private",None=>""} on:change=move|ev|{retention.set(match event_target_value(&ev).as_str(){"public"=>Some(true),"private"=>Some(false),_=>None});if mark_dirty{ctx.dirty.set(true);}}><option value="">"Vyberte dostupnost příloh"</option><option value="public">"Ponechat veřejné"</option><option value="private">"Pouze pro administrátory"</option></select></div>
     </div>}
 }
 
@@ -128,6 +135,8 @@ pub(super) fn BoardSettings(
 fn PostingForm(
     entry: Entry,
     saved: bool,
+    publication_epoch: RwSignal<u64>,
+    current_date: RwSignal<String>,
     publishing: RwSignal<bool>,
     busy: Signal<bool>,
     reload: RwSignal<u64>,
@@ -136,7 +145,6 @@ fn PostingForm(
     let ctx = expect_context::<AdminContext>();
     let error = RwSignal::new(None);
     let preview = RwSignal::new(None::<api::PublicationPreview>);
-    let redacted_preview = RwSignal::new(None::<api::PublicationPreview>);
     let checked = RwSignal::new(false);
     let published_on = RwSignal::new(if saved {
         entry.published_on.unwrap_or_default()
@@ -156,8 +164,6 @@ fn PostingForm(
     } else {
         None
     });
-    let anonymized = RwSignal::new(false);
-    let redacted_id = RwSignal::new(String::new());
     let reason = RwSignal::new(String::new());
     let preview_generation = RwSignal::new(0u64);
     Effect::new(move |_| {
@@ -165,30 +171,23 @@ fn PostingForm(
             published_on.get(),
             duration_days.get(),
             retention.get(),
-            anonymized.get(),
-            redacted_id.get(),
+            reason.get(),
+            publication_epoch.get(),
             ctx.dirty.get(),
         );
         preview_generation.update(|generation| *generation = generation.wrapping_add(1));
         preview.set(None);
-        redacted_preview.set(None);
         checked.set(false);
     });
     let prepare = Action::new_local(move |_: &()| {
         let requested_generation = preview_generation.get_untracked();
-        let derived = anonymized.get_untracked();
-        let derived_id = redacted_id
-            .get_untracked()
-            .parse::<i64>()
-            .ok()
-            .filter(|value| *value > 0 && *value != id);
+        let requested_epoch = publication_epoch.get_untracked();
         async move {
             if preview.is_disposed() {
                 return;
             }
             error.set(None);
             preview.set(None);
-            redacted_preview.set(None);
             checked.set(false);
             let result = api::get::<api::PublicationPreview>(&format!(
                 "/api/v1/admin/documents/{id}/preview"
@@ -197,37 +196,25 @@ fn PostingForm(
             // Editing can replace this form while the request is in flight.
             if preview.is_disposed()
                 || preview_generation.try_get_untracked() != Some(requested_generation)
+                || publication_epoch.try_get_untracked() != Some(requested_epoch)
                 || ctx.dirty.try_get_untracked() != Some(false)
             {
                 return;
             }
             match result {
                 Ok(value) => {
-                    if derived {
-                        let Some(derived_id) = derived_id else {
+                    if !value.document.current_date.is_empty() {
+                        current_date.set(value.document.current_date.clone());
+                        if published_on.get_untracked() < value.document.current_date {
                             error.set(Some(api::Failure {
                                 status: 400,
-                                message: "Vyberte ID samostatného anonymizovaného dokumentu."
-                                    .into(),
+                                message: if saved {
+                                    "Datum vyvěšení je již v minulosti. Upravte datum a uložte změny. Potom načtěte nový náhled."
+                                } else {
+                                    "Datum vyvěšení je již v minulosti. Zvolte dnešní nebo budoucí datum a načtěte nový náhled."
+                                }.into(),
                             }));
                             return;
-                        };
-                        let result = api::get::<api::PublicationPreview>(&format!(
-                            "/api/v1/admin/documents/{derived_id}/preview"
-                        ))
-                        .await;
-                        if preview.is_disposed()
-                            || preview_generation.try_get_untracked() != Some(requested_generation)
-                            || ctx.dirty.try_get_untracked() != Some(false)
-                        {
-                            return;
-                        }
-                        match result {
-                            Ok(derived) => redacted_preview.set(Some(derived)),
-                            Err(failure) => {
-                                error.set(Some(failure));
-                                return;
-                            }
                         }
                     }
                     preview.set(Some(value));
@@ -241,13 +228,10 @@ fn PostingForm(
             .get_untracked()
             .map(|value| value.token)
             .unwrap_or_default();
-        let derived = anonymized.get_untracked();
         let explanation = reason.get_untracked();
         let payload = json!({
             "token":token,"published_on":published_on.get_untracked(),"duration_days":duration_days.get_untracked().parse::<i64>().ok(),
-            "after_action":if derived{"anonymized"}else if retention.get_untracked()==Some(true){"retain"}else{"hide"},
-            "redacted_document_id":if derived{redacted_id.get_untracked().parse::<i64>().ok()}else{None},
-            "redacted_token":if derived{redacted_preview.get_untracked().map(|value|value.token)}else{None},
+            "after_action":if retention.get_untracked()==Some(true){"retain"}else{"hide"},
             "reason":if explanation.trim().is_empty(){"Vyvěšení schválené obsluhou po kontrole finálního náhledu.".to_string()}else{explanation}
         });
         publishing.set(true);
@@ -263,7 +247,6 @@ fn PostingForm(
             match result {
                 Ok(_) if !reload.is_disposed() => {
                     preview.try_set(None);
-                    redacted_preview.try_set(None);
                     checked.try_set(false);
                     ctx.dirty.set(false);
                     ctx.changed(
@@ -273,7 +256,6 @@ fn PostingForm(
                 }
                 Err(failure) => {
                     preview.try_set(None);
-                    redacted_preview.try_set(None);
                     checked.try_set(false);
                     error.try_set(Some(failure));
                 }
@@ -285,6 +267,7 @@ fn PostingForm(
         Signal::derive(move || busy.get() || prepare.pending().get() || publish.pending().get());
     let complete = Signal::derive(move || {
         !published_on.get().is_empty()
+            && published_on.get() >= current_date.get()
             && duration_days
                 .get()
                 .parse::<i64>()
@@ -293,15 +276,12 @@ fn PostingForm(
     });
     view! {<form class="document-posting-confirmation" on:submit=move|ev|{ev.prevent_default();if !disabled.get_untracked()&&complete.get_untracked()&&checked.get_untracked()&&preview.get_untracked().is_some(){publish.dispatch(());}}><ErrorMessage error/>
         <fieldset disabled=move||disabled.get()>
-            {if saved{view!{<p>"Náhled použije uložený obsah, přílohy a následující nastavení vyvěšení."</p><dl class="document-facts"><div><dt>"Datum vyvěšení"</dt><dd>{move||api::date(&published_on.get())}</dd></div><div><dt>"Počet celých dní vyvěšení"</dt><dd>{move||duration_days.get()}</dd></div><div><dt>"Přílohy po sejmutí"</dt><dd>{move||match retention.get(){Some(true)=>"Zůstanou veřejné",Some(false)=>"Pouze pro administrátory",None=>"Volba chybí"}}</dd></div></dl>}.into_any()}else{view!{<BoardSettings published_on duration_days retention/>}.into_any()}}
+            {if saved{view!{<p>"Náhled použije uložený obsah, přílohy a následující nastavení vyvěšení."</p><dl class="document-facts"><div><dt>"Datum vyvěšení"</dt><dd>{move||api::date(&published_on.get())}</dd></div><div><dt>"Počet celých dní vyvěšení"</dt><dd>{move||duration_days.get()}</dd></div><div><dt>"Přílohy po sejmutí"</dt><dd>{move||match retention.get(){Some(true)=>"Zůstanou veřejné",Some(false)=>"Pouze pro administrátory",None=>"Volba chybí"}}</dd></div></dl>}.into_any()}else{view!{<BoardSettings published_on duration_days retention current_date/>}.into_any()}}
             <details><summary>"Další možnosti vyvěšení"</summary>
                 <label class="admin-field" for="posting-reason"><span>"Interní poznámka k vyvěšení (nepovinné)"</span><textarea id="posting-reason" maxlength="2000" prop:value=move||reason.get() on:input=move|ev|reason.set(event_target_value(&ev))></textarea></label>
-                <label class="admin-check"><input type="checkbox" prop:checked=move||anonymized.get() on:change=move|ev|anonymized.set(event_target_checked(&ev))/><span>"Po sejmutí zpřístupnit samostatné anonymizované znění"</span></label>
-                <Show when=move||anonymized.get()><label class="admin-field" for="posting-redacted"><span>"ID propojeného anonymizovaného dokumentu *"</span><input id="posting-redacted" type="number" min="1" required prop:value=move||redacted_id.get() on:input=move|ev|redacted_id.set(event_target_value(&ev))/><small>"Tato volba ukončí veřejnou dostupnost originálu a použije samostatnou schválenou kopii."</small></label></Show>
             </details>
             <button class="button secondary" type="button" disabled=move||!complete.get() on:click=move |_|{prepare.dispatch(());}>"Zkontrolovat finální náhled"</button>
             {move||preview.get().map(|value|view!{<section class="publication-preview" aria-label="Finální náhled dokumentu"><SnapshotContent preview=value/>
-                {move||redacted_preview.get().map(|derived|view!{<section class="publication-preview" aria-label="Finální náhled anonymizovaného znění"><h3>"Samostatné anonymizované znění"</h3><SnapshotContent preview=derived/><p class="info-banner">"Anonymizované znění se při potvrzení také nevratně uzamkne. Jde o samostatnou veřejnou kopii, jejíž bajty tím nejsou označeny za původně vyvěšené."</p></section>})}
                 <div class="document-field-label"><p class="info-banner"><Icon name="lock"/>"Po vyvěšení již obsah dokumentu nelze upravit."</p><DocumentHelp label="Uzamčení po vyvěšení" text="Uzamkne se název, text i všechny přílohy této podoby. Sejmutí dokumentu ani změna dostupnosti příloh podle zvoleného režimu obsah znovu neodemknou."/></div>
                 <label class="admin-check"><input type="checkbox" prop:checked=move||checked.get() on:change=move|ev|checked.set(event_target_checked(&ev))/><span>"Zkontroloval/a jsem uvedený obsah a všechny přílohy."</span></label>
                 <button class="button primary" type="submit" disabled=move||!checked.get()||disabled.get()>"Potvrdit vyvěšení této podoby"</button>
@@ -315,7 +295,7 @@ fn SnapshotContent(preview: api::PublicationPreview) -> impl IntoView {
     view! {
         <h3>{preview.document.title}</h3><p>{preview.document.description.unwrap_or_default()}</p>
         <dl class="document-facts">{preview.document.reference_number.map(|value|view!{<div><dt>"Číslo jednací"</dt><dd>{value}</dd></div>})}{preview.document.issuer.filter(|value|!value.trim().is_empty()).map(|value|view!{<div><dt>"Původce převzatého dokumentu"</dt><dd>{value}</dd></div>})}<div><dt>"Datum vytvoření dokumentu"</dt><dd>{crate::catalog::document_date(preview.document.document_date.as_deref().unwrap_or_default())}</dd></div></dl>
-        <h4>"Přílohy v uloženém pořadí"</h4><ol>{preview.attachments.into_iter().map(|file|view!{<li>{if file.available{view!{<a href=format!("/api/v1/admin/attachments/{}",file.id) target="_blank" rel="noopener">{file.name}</a>}.into_any()}else{view!{<strong>{file.name}</strong><span>"Soubor není dostupný. Před vyvěšením vyžaduje ověření."</span>}.into_any()}}<small>{format!("{} B",file.size_bytes)}</small>{(!file.sha256.is_empty()).then(||view!{<code class="file-fingerprint">{file.sha256}</code>})}</li>}).collect_view()}</ol>
+        <h4>"Přílohy v uloženém pořadí"</h4><ol>{preview.attachments.into_iter().map(|file|view!{<li>{if file.available{view!{<a href=format!("/api/v1/admin/attachments/{}",file.id) target="_blank" rel="noopener">{file.name}</a>}.into_any()}else{view!{<strong>{file.name}</strong><span>"Soubor není dostupný. Před vyvěšením vyžaduje ověření."</span>}.into_any()}}<small>{format!("{} B",file.size_bytes)}</small>{(!file.sha256.is_empty()).then(||view!{<details class="file-verification"><summary>"Kontrolní otisk souboru"</summary><p class="admin-caption">"SHA-256 umožňuje ověřit, že se soubor nezměnil."</p><code class="file-fingerprint">{file.sha256}</code></details>})}</li>}).collect_view()}</ol>
     }
 }
 
@@ -413,7 +393,7 @@ fn PostingRecord(
     );
     view! {<li><h3>{format!("Vyvěšení #{id}")}</h3><p>{if posting.origin=="local" {"Místní vyvěšení"}else{"Převzatá historie zdroje"}}</p>
         <dl class="document-facts"><div><dt>"Vyvěšeno"</dt><dd>{crate::catalog::document_event_date(posting.published_at.as_deref(),posting.published_on.as_deref())}</dd></div><div><dt>"Plánované sejmutí"</dt><dd>{posting.withdraw_on.as_deref().map(api::date).unwrap_or_else(||"Není určeno".into())}</dd></div><div><dt>"Skutečné sejmutí"</dt><dd>{actual_withdrawal}</dd></div></dl>
-        <p class="field-note">{match posting.after_action.as_str(){"retain"=>"Po sejmutí zůstávají přílohy veřejně dostupné.","anonymized"=>"Po sejmutí se zpřístupní samostatné anonymizované znění.","hide"=>"Po sejmutí jsou přílohy dostupné pouze administrátorům.",_=>"Režim po sejmutí vyžaduje ověření."}}</p>
+        <p class="field-note">{match posting.after_action.as_str(){"retain"=>"Po sejmutí zůstávají přílohy veřejně dostupné.","hide"=>"Po sejmutí jsou přílohy dostupné pouze administrátorům.",_=>"Režim po sejmutí vyžaduje ověření."}}</p>
         {active.then(move ||view!{<details><summary>"Zaznamenat sejmutí nebo změnit plán"</summary><ErrorMessage error/>
             <label class="admin-field" for=format!("posting-reason-{id}")><span>"Interní důvod *"</span><textarea id=format!("posting-reason-{id}") maxlength="2000" prop:value=move ||reason.get() on:input=move |ev|reason.set(event_target_value(&ev))></textarea></label>
             <label class="admin-check"><input type="checkbox" prop:checked=move ||emergency.get() on:change=move |ev|emergency.set(event_target_checked(&ev))/><span>"Předčasné sejmutí kvůli incidentu"</span></label>

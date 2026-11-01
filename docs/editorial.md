@@ -10,8 +10,9 @@ networks by the reverse proxy.
 
 **Dokumenty** is the only document administration section. It manages ordinary
 documents and documents that also appear on the official notice board. The
-**Stav** filter offers all records, current postings, scheduled postings, the
-shared archive and drafts. There is no parallel notice editor. The stable public detail is
+**Stav** filter offers all records, current postings, scheduled postings,
+archived records and drafts. This is an administration filter, not a separate
+public archive. There is no parallel notice editor. The stable public detail is
 `/dokumenty/{id}`. The notice-board view filters recorded postings and does not
 create a second document or a second upload. Search lists a document once.
 
@@ -54,23 +55,24 @@ saved date, duration and policy before the final preview. It does not ask for th
 same settings twice. After changing a saved draft, including its board checkbox,
 the editor shows **Nejdříve uložte změny** instead of a disabled publication
 button. Save again to display the appropriate publication or posting confirmation.
-Every edit discards the previous preview and its confirmation. Merely saving the
-document does not publish or post it.
+Every edit discards the previous preview and its confirmation. This includes
+every attachment change after preview: save the document again, request a new
+final preview and confirm its current files. Merely saving the document does not
+publish or post it.
 An already public ordinary document or an unchanged locked document can start
 another posting under **Nové vyvěšení na úřední desce**, using the same controls.
 Do not substitute a historical source date for a new local posting date.
 
 Every posting requires an explicit attachment-access choice:
 
-- **Po sejmutí ponechat přílohy veřejné** keeps the retained files public.
-- **Po sejmutí přílohy pouze pro administrátory** revokes anonymous file access
+- **Ponechat veřejné** keeps the retained files public.
+- **Pouze pro administrátory** revokes anonymous file access
   while retaining the original bytes for authorized administration.
 
-Under **Další možnosti vyvěšení**, **Po sejmutí zpřístupnit samostatné
-anonymizované znění** selects an existing separately prepared linked document. It never
-replaces the original. Its title, text and files appear in a second final
-preview. Confirmation freezes that exact derived copy without claiming that it
-was originally posted. Concurrent changes require a new preview.
+These are the only two post-removal choices. The editor does not select an
+anonymized document by ID or automatically release a copy. Anonymized versions
+are provided only on request. This change does not introduce a request form or
+request-handling workflow. Existing historical links to copies remain preserved.
 
 The access choice controls file availability independently of the permanent
 content lock. Authorized administrators can download retained files after
@@ -80,7 +82,8 @@ Choose **Zkontrolovat finální náhled**, inspect the title, text, optional ref
 ordered attachments and their fingerprints, and confirm the review.
 The warning is **Po vyvěšení již obsah dokumentu nelze upravit.** Publication
 submits the same content fingerprint returned by this preview. A simultaneous
-edit or attachment change invalidates it and requires a new preview. The server
+edit or attachment change invalidates it. Save changes again and review a new
+preview before confirming publication. The server
 and database enforce these rules independently of the controls shown on screen.
 
 A future date schedules this reviewed content. **Zrušit plánované vyvěšení**
@@ -106,11 +109,13 @@ an internal explanation. Leaving the corrected date empty explicitly records it
 as unknown. Public history shows the date correction separately, without the
 private explanation, and preserves the originally recorded event.
 
-There is one public archive at `/dokumenty?state=archive`, shared by existing
-ordinary archived records and actually removed postings. Current or scheduled
-postings and uncertain source history are excluded. The catalogue without this
-filter still contains all currently public documents. Old board archive URLs
-lead to this same archive and retain the query.
+Public **Dokumenty a formuláře** at `/dokumenty` is one catalogue of every
+currently public document, including ordinary documents, current board postings
+and removed records that remain public. It has no separate archive tab or archive
+filter. **Úřední deska** shows current postings and links to the catalogue through
+**Všechny dokumenty**. Old document and board archive URLs show this same complete
+catalogue while retaining the search query. Internal archival states and public
+access decisions remain separate.
 
 **Zobrazit historii a interní audit** shows operational evidence only to
 administrators. Local access blocks remain enforced for public detail, search,
@@ -253,8 +258,9 @@ focus to its button. Clicking outside or choosing a link closes the submenu.
 Only one submenu opens at a time. The current section and page are highlighted.
 Without JavaScript the navigation links remain expanded and usable.
 
-**Kategorie** manages catalogue topics and their order. Used categories
-cannot be deleted because document records still refer to them. Existing topic
+**Kategorie** manages catalogue topics and their order. The council-meeting topic
+is **Zasedání zastupitelstva**. Used categories cannot be deleted because document
+records still refer to them. Existing topic
 assignments remain separate from posting. The simplified document editor does
 not offer a topic-assignment operation.
 Names and order remain editable. Edits use version checks and all mutations are

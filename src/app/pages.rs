@@ -20,12 +20,12 @@ pub fn Home() -> impl IntoView {
         <section class="home-board" aria-labelledby="home-board-title">
             <div class="page-width">
                 <div class="section-heading"><div class="section-title"><h2 id="home-board-title">"Úřední deska"</h2><Suspense fallback=|| ()>{move || board.get().and_then(Result::ok).map(|b| view!{<span class="count-badge">{posted_count(if cfg!(feature="demo") {b.notices.iter().filter(|n| !n.archived).count()} else {b.published_count})}</span>})}</Suspense></div>
-                    <div class="section-tools"><A href=super::site_url("/dokumenty?state=archive") attr:class="text-link">"Veřejný archiv"<Icon/></A></div>
+                    <div class="section-tools"><A href=super::site_url("/dokumenty") attr:class="text-link">"Všechny dokumenty"<Icon/></A></div>
                 </div>
                 <Suspense fallback=Loading>{move || board.get().map(|result| match result {
                     Ok(b) => {
                         let selected: Vec<_> = b.notices.into_iter().filter(|n| !n.archived).take(3).collect();
-                        if selected.is_empty() {view!{<p class="home-board-empty">"Na desce teď není žádný dokument. "<A href=super::site_url("/dokumenty?state=archive")>"Veřejný archiv"</A></p>}.into_any()} else {
+                        if selected.is_empty() {view!{<p class="home-board-empty">"Na desce teď není žádný dokument. "<A href=super::site_url("/dokumenty")>"Všechny dokumenty"</A></p>}.into_any()} else {
                             view!{<div class="notice-grid">{selected.into_iter().map(|notice| view!{<NoticeCard notice/>}).collect_view()}</div>}.into_any()
                         }
                     },

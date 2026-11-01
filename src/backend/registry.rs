@@ -40,7 +40,7 @@ pub async fn preview(
             .fetch_optional(&mut *tx)
             .await?
             .ok_or_else(missing)?;
-    let attachments:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('id',id,'name',name,'content_type',content_type,'size_bytes',size_bytes,'sha256',sha256,'available',data IS NOT NULL AND removed_at IS NULL) FROM attachments WHERE document_id=$1 ORDER BY sort_order,id").bind(id).fetch_all(&mut *tx).await?;
+    let attachments:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('id',id,'name',name,'content_type',content_type,'size_bytes',size_bytes,'sha256',sha256,'available',data IS NOT NULL) FROM attachments WHERE document_id=$1 AND removed_at IS NULL ORDER BY sort_order,id").bind(id).fetch_all(&mut *tx).await?;
     let token = fingerprint(&mut tx, id).await?;
     tx.commit().await?;
     Ok(Json(
@@ -80,8 +80,6 @@ pub struct PostingInput {
     pub duration_days: Option<i64>,
     pub after_action: String,
     pub public_until: Option<Date>,
-    pub redacted_document_id: Option<i64>,
-    pub redacted_token: Option<String>,
     pub reason: String,
 }
 pub async fn post(
@@ -97,7 +95,7 @@ pub async fn post(
         input.withdraw_on,
     )?);
     text(&input.reason, 2000)?;
-    if !["retain", "hide", "anonymized"].contains(&input.after_action.as_str()) {
+    if !["retain", "hide"].contains(&input.after_action.as_str()) {
         return Err(bad(
             "Vyberte, zda budou přílohy po sejmutí veřejné, nebo dostupné pouze v administraci. Volba nemá výchozí hodnotu.",
         ));
@@ -138,53 +136,8 @@ pub async fn post(
             "Některá příloha není úplně převzatá. Před vyvěšením doplňte chybějící soubory.",
         ));
     }
-    if input.after_action == "anonymized" {
-        let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM document_relations r JOIN documents d ON d.id=r.related_id WHERE original_id=$1 AND related_id=$2 AND kind='anonymized' AND NOT d.access_blocked)").bind(id).bind(input.redacted_document_id).fetch_one(&mut *tx).await?;
-        if !valid {
-            return Err(bad("Vyberte samostatné propojené anonymizované znění."));
-        }
-        let redacted = input
-            .redacted_document_id
-            .ok_or_else(|| bad("Chybí anonymizované znění."))?;
-        let (state, disposed): (String, bool) = sqlx::query_as(
-            "SELECT lock_state,disposed_at IS NOT NULL FROM documents WHERE id=$1 FOR UPDATE",
-        )
-        .bind(redacted)
-        .fetch_one(&mut *tx)
-        .await?;
-        if state == "review" || disposed {
-            return Err(conflict(
-                "Anonymizované znění vyžaduje kontrolu nebo bylo skartováno.",
-            ));
-        }
-        let redacted_hash = fingerprint(&mut tx, redacted).await?;
-        if input.redacted_token.as_deref() != Some(redacted_hash.as_str()) {
-            return Err(conflict(
-                "Načtěte a potvrďte aktuální náhled anonymizovaného znění.",
-            ));
-        }
-        let incomplete:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM attachments WHERE document_id=$1 AND removed_at IS NULL AND data IS NULL)").bind(redacted).fetch_one(&mut *tx).await?;
-        if incomplete {
-            return Err(conflict("Anonymizované znění má chybějící přílohu."));
-        }
-        if state == "draft" {
-            sqlx::query("UPDATE documents SET lock_state='locked' WHERE id=$1")
-                .bind(redacted)
-                .execute(&mut *tx)
-                .await?;
-            event(
-                &mut tx,
-                redacted,
-                Some(admin.id),
-                "anonymized_snapshot_frozen",
-                &input.reason,
-                json!({"original_id":id,"sha256":redacted_hash,"posting_claim":false}),
-            )
-            .await?;
-        }
-    }
-    sqlx::query("UPDATE documents SET published_on=$2,withdraw_on=$3,retain_attachments=$4,posting_after_action=$5,posting_public_until=$6,posting_redacted_id=$7,scheduled_sha256=$8,board_status='draft' WHERE id=$1")
-      .bind(id).bind(input.published_on).bind(input.withdraw_on).bind(input.after_action=="retain").bind(&input.after_action).bind(input.public_until).bind(input.redacted_document_id).bind(&input.token).execute(&mut *tx).await?;
+    sqlx::query("UPDATE documents SET published_on=$2,withdraw_on=$3,retain_attachments=$4,posting_after_action=$5,posting_public_until=$6,posting_redacted_id=NULL,scheduled_sha256=$7,board_status='draft' WHERE id=$1")
+      .bind(id).bind(input.published_on).bind(input.withdraw_on).bind(input.after_action=="retain").bind(&input.after_action).bind(input.public_until).bind(&input.token).execute(&mut *tx).await?;
     if input.published_on > today(now) {
         sqlx::query("UPDATE documents SET board_status='scheduled' WHERE id=$1")
             .bind(id)
@@ -205,7 +158,7 @@ pub async fn start_posting(
     reason: &str,
     now: OffsetDateTime,
 ) -> Result<()> {
-    let (locked,approved,after_action,public_until,redacted):(String,Option<String>,Option<String>,Option<Date>,Option<i64>)=sqlx::query_as("SELECT lock_state,scheduled_sha256,posting_after_action,posting_public_until,posting_redacted_id FROM documents WHERE id=$1 FOR UPDATE").bind(id).fetch_one(&mut *conn).await?;
+    let (locked,approved,after_action,public_until):(String,Option<String>,Option<String>,Option<Date>)=sqlx::query_as("SELECT lock_state,scheduled_sha256,posting_after_action,posting_public_until FROM documents WHERE id=$1 FOR UPDATE").bind(id).fetch_one(&mut *conn).await?;
     let blocked: bool = sqlx::query_scalar(
         "SELECT access_blocked OR disposed_at IS NOT NULL FROM documents WHERE id=$1",
     )
@@ -229,11 +182,16 @@ pub async fn start_posting(
     }
     let action = after_action
         .ok_or_else(|| bad("Chybí povinné rozhodnutí o dostupnosti příloh po sejmutí."))?;
+    if !["retain", "hide"].contains(&action.as_str()) {
+        return Err(conflict(
+            "Vyberte znovu dostupnost příloh. Automatické zveřejnění anonymizovaného znění již není podporováno.",
+        ));
+    }
     if locked == "review" {
         return Err(conflict("Historie dokumentu vyžaduje ověření."));
     }
     sqlx::query("UPDATE documents SET lock_state='locked',public_access=TRUE,status='published',attachments_public=TRUE,metadata_restricted=FALSE,public_until=NULL,board_status='published',board_published_at=$2,published_at=coalesce(published_at,$2),withdrawn_at=NULL WHERE id=$1 AND NOT access_blocked").bind(id).bind(timestamp(now)).execute(&mut *conn).await?;
-    let posting_id:i64=sqlx::query_scalar("INSERT INTO document_postings(document_id,origin,certainty,started_on,started_at,planned_removal_on,after_action,public_until,redacted_document_id,snapshot_sha256) SELECT id,'local','documented',published_on,$2,withdraw_on,$3,$4,$5,$6 FROM documents WHERE id=$1 RETURNING id").bind(id).bind(now).bind(&action).bind(public_until).bind(redacted).bind(hash).fetch_one(&mut *conn).await?;
+    let posting_id:i64=sqlx::query_scalar("INSERT INTO document_postings(document_id,origin,certainty,started_on,started_at,planned_removal_on,after_action,public_until,snapshot_sha256) SELECT id,'local','documented',published_on,$2,withdraw_on,$3,$4,$5 FROM documents WHERE id=$1 RETURNING id").bind(id).bind(now).bind(&action).bind(public_until).bind(hash).fetch_one(&mut *conn).await?;
     event(
         conn,
         id,
@@ -294,7 +252,7 @@ pub async fn remove_posting(
     reason: &str,
     now: OffsetDateTime,
 ) -> Result<()> {
-    let (id,action,until,redacted):(i64,String,Option<Date>,Option<i64>)=sqlx::query_as("SELECT document_id,after_action,public_until,redacted_document_id FROM document_postings WHERE id=$1 AND certainty='documented' AND removed_at IS NULL AND removed_on IS NULL FOR UPDATE").bind(posting).fetch_optional(&mut *conn).await?.ok_or_else(||conflict("Vyvěšení již bylo ukončeno nebo není doloženo."))?;
+    let (id,action,until):(i64,String,Option<Date>)=sqlx::query_as("SELECT document_id,after_action,public_until FROM document_postings WHERE id=$1 AND certainty='documented' AND removed_at IS NULL AND removed_on IS NULL FOR UPDATE").bind(posting).fetch_optional(&mut *conn).await?.ok_or_else(||conflict("Vyvěšení již bylo ukončeno nebo není doloženo."))?;
     sqlx::query("UPDATE document_postings SET removed_at=$2,removed_on=$3 WHERE id=$1")
         .bind(posting)
         .bind(now)
@@ -310,25 +268,8 @@ pub async fn remove_posting(
                 .bind(id)
                 .execute(&mut *conn)
                 .await?;
-            let released=sqlx::query("UPDATE documents d SET public_access=TRUE,status='published',published_at=coalesce(published_at,$2) WHERE id=$1 AND NOT access_blocked AND lock_state='locked' AND disposed_at IS NULL AND NOT EXISTS(SELECT 1 FROM attachments a WHERE a.document_id=d.id AND a.removed_at IS NULL AND a.data IS NULL)").bind(redacted).bind(timestamp(now)).execute(&mut *conn).await?.rows_affected();
-            if released > 0 {
-                let target = redacted.ok_or_else(missing)?;
-                // Switching to an approved archive rendition is not a new bulletin.
-                sqlx::query("SELECT claim_document_announcement($1,$2)")
-                    .bind(target)
-                    .bind(now)
-                    .execute(&mut *conn)
-                    .await?;
-                event(
-                    conn,
-                    target,
-                    actor,
-                    "anonymized_archive_released",
-                    reason,
-                    json!({"original_id":id,"posting_claim":false}),
-                )
-                .await?;
-            }
+            // Preserve the historical privacy decision for the original.
+            // A linked copy is never automatically published by removing it.
         }
     }
     event(

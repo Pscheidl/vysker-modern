@@ -21,7 +21,8 @@ pub fn Editor(kind: Kind, id: i64) -> impl IntoView {
                 let stats: api::Overview = api::get("/api/v1/admin/overview").await?;
                 Ok(Entry {
                     status: "draft".into(),
-                    published_on: Some(stats.current_date),
+                    published_on: Some(stats.current_date.clone()),
+                    current_date: stats.current_date,
                     ..Default::default()
                 })
             }
@@ -39,7 +40,11 @@ fn EditorForm(kind: Kind, entry: Entry, reload: RwSignal<u64>) -> impl IntoView 
     let site = use_context::<crate::app::SiteResource>();
     let id = entry.id;
     let version = entry.version;
-    let content_version = entry.content_version;
+    let content_version = RwSignal::new(entry.content_version);
+    let publication_epoch = RwSignal::new(0u64);
+    let current_date = RwSignal::new(entry.current_date.clone());
+    let files = RwSignal::new(entry.attachments.clone());
+    let file_baseline = StoredValue::new(entry.clone());
     let operational_entry = entry.clone();
     let status = entry.status().to_string();
     let scheduled = entry.board_status == "scheduled";
@@ -60,6 +65,21 @@ fn EditorForm(kind: Kind, entry: Entry, reload: RwSignal<u64>) -> impl IntoView 
             .unwrap_or_default(),
     );
     let retention = RwSignal::new(entry.retain_attachments);
+    let metadata_dirty = Signal::derive(move || {
+        let original = file_baseline.get_value();
+        name.get() != original.title
+            || description.get() != original.description.unwrap_or_default()
+            || reference.get() != original.reference_number.unwrap_or_default()
+            || document_date.get() != original.document_date.unwrap_or_default()
+            || board_enabled.get() != original.board_enabled
+            || posted.get() != original.published_on.unwrap_or_default()
+            || duration.get()
+                != original
+                    .duration_days
+                    .map(|days| days.to_string())
+                    .unwrap_or_default()
+            || retention.get() != original.retain_attachments
+    });
     let slug = RwSignal::new(entry.slug.clone());
     let content = RwSignal::new(entry.content.clone());
     let published = RwSignal::new(entry.published.unwrap_or(false));
@@ -74,7 +94,7 @@ fn EditorForm(kind: Kind, entry: Entry, reload: RwSignal<u64>) -> impl IntoView 
             Kind::Document => json!({
                 "title":name.get_untracked(),"description":description.get_untracked(),
                 "reference_number":optional(reference.get_untracked()),"issuer":issuer.get_value(),
-                "document_date":optional(document_date.get_untracked()),"expected_version":content_version,
+                "document_date":optional(document_date.get_untracked()),"expected_version":content_version.get_untracked(),
                 "board_enabled":enabled,
                 "published_on":if enabled{optional(posted.get_untracked())}else{None},
                 "duration_days":if enabled{duration.get_untracked().parse::<i64>().ok()}else{None},
@@ -91,7 +111,12 @@ fn EditorForm(kind: Kind, entry: Entry, reload: RwSignal<u64>) -> impl IntoView 
             } else {
                 format!("/api/v1/admin/{}/{id}", kind.api())
             };
-            match api::save(if id == 0 { "POST" } else { "PUT" }, &path, Some(payload)).await {
+            let result =
+                api::save(if id == 0 { "POST" } else { "PUT" }, &path, Some(payload)).await;
+            if error.is_disposed() || content_version.is_disposed() || reload.is_disposed() {
+                return;
+            }
+            match result {
                 Ok(result) => {
                     ctx.dirty.set(false);
                     if let Some(site) = site {
@@ -176,19 +201,19 @@ fn EditorForm(kind: Kind, entry: Entry, reload: RwSignal<u64>) -> impl IntoView 
                         }.into_any()}}
                     </section>
                     {(kind==Kind::Document&&!locked).then(move||view!{<section class="admin-panel admin-form-section"><div class="document-field-label"><label class="admin-check"><input id="document-board-enabled" type="checkbox" prop:checked=move||board_enabled.get() on:change=move|ev|{board_enabled.set(event_target_checked(&ev));ctx.dirty.set(true);}/><span><strong>"Vyvěsit na úřední desce"</strong><small>"Po uložení přidáte přílohy a potvrdíte finální náhled. Samotné uložení konceptu dokument nevyvěsí."</small></span></label><super::document_actions::DocumentHelp label="Vyvěšení na úřední desce" text="Zaškrtnutím připravíte vyvěšení na elektronické desce tohoto webu. Proběhne až po potvrzení finálního náhledu. Záznam na webu sám nepotvrzuje vyvěšení na fyzické úřední desce ani splnění všech zákonných podmínek."/></div>
-                        <Show when=move||board_enabled.get()><super::document_actions::BoardSettings published_on=posted duration_days=duration retention mark_dirty=true/></Show>
+                        <Show when=move||board_enabled.get()><super::document_actions::BoardSettings published_on=posted duration_days=duration retention current_date mark_dirty=true/></Show>
                     </section>})}
                     {(kind==Kind::Page).then(move||view!{<section class="admin-panel admin-form-section"><h2>"Dostupnost stránky"</h2><label class="admin-check"><input type="checkbox" prop:checked=move||published.get() on:change=move|ev|{published.set(event_target_checked(&ev));ctx.dirty.set(true);}/><span><strong>"Zveřejnit na webu"</strong><small>"Změna se projeví po uložení. Bez zaškrtnutí zůstává stránka konceptem."</small></span></label></section>})}
                 </fieldset>
             </form>
             {(kind==Kind::Page&&id>0).then(move||view!{<PageHistory id name content busy/>})}
             {(kind==Kind::Document&&has_postings).then(move||view!{<IncidentForm id/>})}
-            {(kind==Kind::Document).then(move||view!{<Files kind id files=entry.attachments editable=!locked busy working=file_busy reload/>})}
-            {(kind==Kind::Document&&id>0).then(move||view!{<super::document_actions::DocumentActions entry=operational_entry board_enabled publishing busy reload/>})}
+            {(kind==Kind::Document).then(move||view!{<Files kind id files baseline=file_baseline content_version publication_epoch metadata_dirty editable=!locked busy working=file_busy/>})}
+            {(kind==Kind::Document&&id>0).then(move||view!{<super::document_actions::DocumentActions entry=operational_entry board_enabled publication_epoch current_date publishing busy reload/>})}
         </div>
         <aside class="admin-editor-sidebar"><section class="admin-panel admin-save-panel"><h2>"Uložení a zveřejnění"</h2>
             {if locked{view!{<div class="admin-note"><Icon name="lock"/><p>{if scheduled{"Dokument čeká na plánované vyvěšení. Obsah této podoby nelze během čekání měnit."}else if immutable{"Obsah a přílohy této vyvěšené podoby nelze měnit."}else{"Obsah a přílohy zveřejněného dokumentu nelze v tomto editoru měnit."}}</p></div>}.into_any()}else{view!{
-                <p>{move||if kind==Kind::Document&&board_enabled.get(){if id==0{"Nejdříve uložte koncept. Potom přidejte přílohy a potvrďte finální náhled vyvěšení."}else{"Nejdříve uložte změny. Potom se zobrazí potvrzení vyvěšení."}}else if id==0&&kind==Kind::Document{"Nejdříve uložte koncept. Potom přidejte přílohy a dokument zveřejněte."}else{"Uložte změny před dalšími kroky."}}</p>
+                <p>{move||if kind!=Kind::Document{"Uložte změny před dalšími kroky."}else if id==0{if board_enabled.get(){"Nejdříve uložte koncept. Potom přidejte přílohy a potvrďte finální náhled vyvěšení."}else{"Nejdříve uložte koncept. Potom přidejte přílohy a dokument zveřejněte."}}else if ctx.dirty.get(){if board_enabled.get(){"Nejdříve uložte změny. Potom se zobrazí potvrzení vyvěšení."}else{"Uložte změny před zveřejněním dokumentu."}}else if board_enabled.get(){"Změny jsou uložené. Níže zkontrolujte finální náhled a potvrďte vyvěšení."}else{"Změny jsou uložené. Níže můžete dokument zveřejnit."}}</p>
                 <button class="button primary" type="submit" form="content-editor" disabled=move||busy.get()>{move||if save.pending().get(){"Ukládám…"}else if id==0&&kind==Kind::Document{"Uložit koncept"}else{"Uložit změny"}}</button>
                 <span class="admin-save-state" role="status">{move||if ctx.dirty.get(){"Máte neuložené změny"}else if id==0{"Nový koncept"}else{"Všechny změny jsou uložené"}}</span>
             }.into_any()}}
@@ -243,11 +268,14 @@ fn optional(value: String) -> Option<String> {
 fn Files(
     kind: Kind,
     id: i64,
-    files: Vec<api::File>,
+    files: RwSignal<Vec<api::File>>,
+    baseline: StoredValue<Entry>,
+    content_version: RwSignal<i64>,
+    publication_epoch: RwSignal<u64>,
+    metadata_dirty: Signal<bool>,
     editable: bool,
     busy: Signal<bool>,
     working: RwSignal<bool>,
-    reload: RwSignal<u64>,
 ) -> impl IntoView {
     let ctx = expect_context::<AdminContext>();
     let input = NodeRef::<leptos::html::Input>::new();
@@ -255,54 +283,112 @@ fn Files(
     let error = RwSignal::new(None);
     let upload = Action::new_local(move |file: &web_sys::File| {
         let file = file.clone();
+        working.set(true);
+        publication_epoch.update(|epoch| *epoch = epoch.wrapping_add(1));
+        ctx.dirty.set(true);
         async move {
-            working.set(true);
             error.set(None);
             let result = api::upload(
                 &format!("/api/v1/admin/{}/{id}/attachments", kind.api()),
                 file,
             )
             .await;
-            working.set(false);
-            match result {
+            if working.is_disposed() {
+                return;
+            }
+            let refreshed = refresh_files(id, files, baseline, content_version).await;
+            working.try_set(false);
+            if error.is_disposed() {
+                return;
+            }
+            match result.and(refreshed) {
                 Ok(_) => {
-                    ctx.changed("Příloha byla nahrána.");
-                    reload.update(|v| *v += 1);
+                    selected.set(false);
+                    if let Some(input) = input.get() {
+                        input.set_value("");
+                    }
+                    ctx.changed("Příloha byla nahrána. Uložte změny před novým potvrzením.");
                 }
                 Err(failure) => error.set(Some(failure)),
             }
         }
     });
-    let remove = Action::new_local(move |id: &i64| {
-        let id = *id;
+    let remove = Action::new_local(move |file_id: &i64| {
+        let file_id = *file_id;
+        working.set(true);
+        publication_epoch.update(|epoch| *epoch = epoch.wrapping_add(1));
+        ctx.dirty.set(true);
         async move {
-            working.set(true);
             error.set(None);
-            let result =
-                api::save("DELETE", &format!("/api/v1/admin/attachments/{id}"), None).await;
-            working.set(false);
-            match result {
+            let result = api::save(
+                "DELETE",
+                &format!("/api/v1/admin/attachments/{file_id}"),
+                None,
+            )
+            .await;
+            if working.is_disposed() {
+                return;
+            }
+            let refreshed = refresh_files(id, files, baseline, content_version).await;
+            working.try_set(false);
+            if error.is_disposed() {
+                return;
+            }
+            match result.and(refreshed) {
                 Ok(_) => {
-                    ctx.changed("Obsah přílohy byl odstraněn.");
-                    reload.update(|v| *v += 1);
+                    ctx.changed("Obsah přílohy byl odstraněn. Uložte změny před novým potvrzením.");
                 }
                 Err(failure) => error.set(Some(failure)),
             }
         }
     });
-    let disabled = Signal::derive(move || busy.get() || ctx.dirty.get());
+    let disabled = Signal::derive(move || busy.get() || metadata_dirty.get());
     view! {<section class="admin-panel admin-form-section"><div class="admin-panel-heading"><h2>"Přílohy"</h2><Icon name="paper"/></div><ErrorMessage error/>
         {if id==0{view!{<div class="admin-note"><Icon name="info"/><p>"Přílohy přidáte po prvním uložení konceptu."</p></div>}.into_any()}else{view!{
-            <ul class="admin-files">{files.into_iter().map(|file|{let file_id=file.id;let removed=file.removed_at.is_some();view!{<li><Icon name="paper"/><div><strong>{file.name}</strong><small>{if removed{"Obsah odstraněn".into()}else if !file.available{"Bez uloženého souboru".into()}else{format!("{} kB",(file.size_bytes+1023)/1024)}}</small></div>{file.available.then(||view!{<a class="text-link" href=format!("/api/v1/admin/attachments/{file_id}") download>"Stáhnout"</a>})}{(editable&&!removed).then(move||view!{<ConfirmButton label="Odebrat" title="Odebrat přílohu?" description="Obsah souboru se odstraní. Jeho název zůstane v historii záznamu." danger=true disabled on_confirm=Callback::new(move|()|{remove.dispatch(file_id);})/>})}</li>}}).collect_view()}</ul>
+            <ul class="admin-files">{move||files.get().into_iter().map(|file|{let file_id=file.id;let removed=file.removed_at.is_some();view!{<li><Icon name="paper"/><div><strong>{file.name}</strong><small>{if removed{"Obsah odstraněn".into()}else if !file.available{"Bez uloženého souboru".into()}else{format!("{} kB",(file.size_bytes+1023)/1024)}}</small></div>{file.available.then(||view!{<a class="text-link" href=format!("/api/v1/admin/attachments/{file_id}") download>"Stáhnout"</a>})}{(editable&&!removed).then(move||view!{<ConfirmButton label="Odebrat" title="Odebrat přílohu?" description="Obsah souboru se odstraní. Jeho název zůstane v historii záznamu." danger=true disabled on_confirm=Callback::new(move|()|{if !disabled.get_untracked(){remove.dispatch(file_id);}})/>})}</li>}}).collect_view()}</ul>
             {editable.then(move||view!{<div class="admin-upload"><Icon name="upload"/><label for="upload-file"><strong>"Přidat přílohu"</strong><span>"PDF, obrázek, text nebo kancelářský dokument. Nejvýše 10 MiB."</span></label><input node_ref=input id="upload-file" type="file" accept=".pdf,.png,.jpg,.jpeg,.txt,.csv,.docx,.xlsx,.odt,.ods" disabled=move||disabled.get() on:change=move |_|{
                 error.set(None);let file=input.get().and_then(|el|el.files()).and_then(|files|files.item(0));
                 if file.as_ref().is_some_and(|file|file.size()>10.0*1024.0*1024.0){selected.set(false);error.set(Some(api::Failure{status:413,message:"Soubor je větší než 10 MiB.".into()}));}else{selected.set(file.is_some());}
-            }/><button class="button secondary" type="button" disabled=move||disabled.get()||!selected.get() on:click=move |_|{if let Some(file)=input.get().and_then(|el|el.files()).and_then(|files|files.item(0)){upload.dispatch(file);}}>{move||if upload.pending().get(){"Nahrávám…"}else{"Nahrát soubor"}}</button>
-                <Show when=move||ctx.dirty.get()><p class="admin-caption">"Nejdříve uložte změny ve formuláři."</p></Show>
+            }/><button class="button secondary" type="button" disabled=move||disabled.get()||!selected.get() on:click=move |_|{if disabled.get_untracked(){return;}if let Some(file)=input.get().and_then(|el|el.files()).and_then(|files|files.item(0)){upload.dispatch(file);}}>{move||if upload.pending().get(){"Nahrávám…"}else{"Nahrát soubor"}}</button>
+                <Show when=move||metadata_dirty.get()><p class="admin-caption">"Nejdříve uložte změny ve formuláři."</p></Show>
             </div>})}
             {(!editable).then(||view!{<p class="admin-caption">"Přílohy zveřejněného nebo archivovaného záznamu nelze měnit."</p>})}
         }.into_any()}}
     </section>}
+}
+
+async fn refresh_files(
+    id: i64,
+    files: RwSignal<Vec<api::File>>,
+    baseline: StoredValue<Entry>,
+    content_version: RwSignal<i64>,
+) -> api::Result<()> {
+    let current = api::get::<Entry>(&format!("/api/v1/admin/documents/{id}")).await?;
+    if files.is_disposed() || content_version.is_disposed() || baseline.is_disposed() {
+        return Ok(());
+    }
+    let original = baseline.get_value();
+    // Do not silently accept another editor's metadata while refreshing a file change.
+    if current.title != original.title
+        || current.description != original.description
+        || current.reference_number != original.reference_number
+        || current.issuer != original.issuer
+        || current.document_date != original.document_date
+        || current.board_enabled != original.board_enabled
+        || current.published_on != original.published_on
+        || current.duration_days != original.duration_days
+        || current.retain_attachments != original.retain_attachments
+        || current.lock_state != original.lock_state
+        || current.status != original.status
+    {
+        return Err(api::Failure {
+            status: 409,
+            message: "Dokument mezitím změnil jiný uživatel. Před dalším uložením načtěte jeho aktuální podobu.".into(),
+        });
+    }
+    files.set(current.attachments);
+    content_version.set(current.content_version);
+    Ok(())
 }
 
 #[component]

@@ -2,13 +2,17 @@ import { test, expect } from './fixtures'
 
 test('limited searches state their scope and preserve the query in full-site fallback', async ({ page }) => {
   await page.goto('/uredni-deska?stav=archiv&q=synteticky-nenalezeny-vyraz')
-  await expect(page).toHaveURL(/\/dokumenty\?state=archive/)
-  await expect(page.getByText('Hledáte ve společném veřejném archivu dokumentů a sejmutých písemností. Aktuálně vyvěšené dokumenty zde nejsou.', { exact: true })).toBeVisible()
+  await expect(page).toHaveURL('/dokumenty?q=synteticky-nenalezeny-vyraz')
+  await expect(page.getByRole('heading', { name: 'Dokumenty a formuláře', exact: true })).toBeVisible()
+  await expect(page.getByRole('navigation', { name: 'Pohled dokumentů' })).toHaveCount(0)
+  await expect(page.getByRole('link', { name: 'Veřejný archiv', exact: true })).toHaveCount(0)
+  await expect(page.getByLabel('Téma', { exact: true }).getByRole('option', { name: 'Zasedání zastupitelstva', exact: true })).toHaveCount(1)
+  await expect(page.getByLabel('Téma', { exact: true }).getByRole('option', { name: 'Zastupitelstvo', exact: true })).toHaveCount(0)
   await expect(page.getByRole('link', { name: 'Prohledat celý web', exact: true })).toHaveAttribute('href', '/hledat?q=synteticky-nenalezeny-vyraz')
   await page.goto('/uredni-deska?q=synteticky-nenalezeny-vyraz')
   await expect(page.getByRole('searchbox', { name: 'Hledat v dokumentech' })).toHaveValue('synteticky-nenalezeny-vyraz')
   await expect(page.locator('#board-search-scope')).toContainText('Hledáte pouze mezi aktuálně vyvěšenými písemnostmi.')
-  await expect(page.getByRole('link', { name: 'Společný veřejný archiv dokumentů', exact: true })).toHaveAttribute('href', '/dokumenty?state=archive&q=synteticky-nenalezeny-vyraz&kategorie=')
+  await expect(page.getByRole('link', { name: 'Všechny dokumenty', exact: true })).toHaveAttribute('href', '/dokumenty?q=synteticky-nenalezeny-vyraz')
   await page.getByRole('link', { name: 'Prohledat celý web', exact: true }).click()
   await expect(page).toHaveURL(/\/hledat\?q=synteticky-nenalezeny-vyraz$/)
 })
@@ -19,6 +23,14 @@ test('catalog and board use the same canonical document details without duplicat
   await expect(catalog).toHaveCount(1)
   const canonical = await catalog.getByRole('link').getAttribute('href')
   expect(canonical).toMatch(/^\/dokumenty\/\d+$/)
+  for (const legacy of ['state=archive', 'stav=archiv']) {
+    await page.goto(`/dokumenty?${legacy}&q=zkusebni+01&sort=title`)
+    await expect(page).toHaveURL('/dokumenty?q=zkusebni%2001&razeni=title')
+    // Old archive links must still include currently posted documents.
+    await expect(page.locator('.site-result').getByRole('link', { name: 'Zkušební vyhláška 01', exact: true })).toHaveAttribute('href', canonical!)
+    await expect(page.getByRole('navigation', { name: 'Pohled dokumentů' })).toHaveCount(0)
+    await expect(page.locator('.filter-bar input[name="state"]')).toHaveCount(0)
+  }
   await page.goto('/uredni-deska?q=zkusebni+01')
   await expect(page.locator('.site-result').getByRole('link', { name: 'Zkušební vyhláška 01', exact: true })).toHaveAttribute('href', canonical!)
   await page.goto('/hledat?q=zkusebni+01')

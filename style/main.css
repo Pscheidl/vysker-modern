@@ -712,6 +712,8 @@
 .publication-preview li { margin: .75rem 0; overflow-wrap: anywhere; }
 .publication-preview li small, .file-fingerprint { display: block; }
 .file-fingerprint { font-size: .75rem; overflow-wrap: anywhere; }
+.document-posting-confirmation .file-verification { margin: .25rem 0; padding: 0; border: 0; }
+.document-posting-confirmation .file-verification > summary { padding: .25rem 0; font-size: .8rem; font-weight: 400; color: var(--muted); }
 .posting-history { list-style: none; padding: 0; }
 .document-postings, .document-relations { margin-top: 2rem; }
 .document-relations li { margin: .75rem 0; }

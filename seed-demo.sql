@@ -24,7 +24,7 @@ VALUES
 
     ('Oznámení o konání 5. zasedání Zastupitelstva obce Vyskeř',
      'OUV-398/2026',
-     (SELECT id FROM categories WHERE name = 'Zastupitelstvo'),
+     (SELECT id FROM categories WHERE name = 'Zasedání zastupitelstva'),
      'Obec Vyskeř',
      'Zasedání se koná v zasedací místnosti obecního úřadu. Jednání je veřejné.',
      ((CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Prague')::date + (-9)), ((CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Prague')::date + (+3)), NULL, FALSE, 'published'),

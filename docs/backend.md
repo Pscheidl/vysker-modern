@@ -204,6 +204,11 @@ search and `status` for filtering. Search wildcards are treated literally.
 These queries use PostgreSQL LIKE and do not normalize Czech diacritics. Public
 browser search normalizes diacritics separately.
 
+The council-meeting topic is **Zasedání zastupitelstva**. Migration 0029 renames
+the former **Zastupitelstvo** category while retaining its ID. If the new name
+already exists, both records remain and `document_migration_issues` receives a
+`category_rename_conflict` entry with both category IDs and a null `document_id`.
+
 ### Official notice board
 
 Draft input includes `title`, `description`, `reference_number`, `category_id`,
@@ -218,6 +223,10 @@ Draft input includes `title`, `description`, `reference_number`, `category_id`,
 - `withdraw_on` specifies a date instead of an interval.
 - `unlimited=true` is rejected. A duration or explicit removal date is required.
 - `retain_attachments` is required and has no default.
+- New registry posting requests accept only `after_action="retain"` or `"hide"`.
+  `"anonymized"` is rejected. An existing historical posting with that action
+  hides its original on removal without automatically publishing a copy. A pending
+  historical schedule using it returns for review with an audit record.
 - The withdrawal date is the planned first day outside the posting interval.
   Actual removal is recorded separately. Dates use `YYYY-MM-DD`.
 - Removal preserves the stored document and attachment bytes. Archive metadata
@@ -262,6 +271,9 @@ redirect to `/obec`, including their query parameters. A separate managed page
 with the slug `obec` is not required.
 
 ### Attachments
+
+Any attachment change after a final preview invalidates its confirmation. The
+editor requires saving again and reviewing a new preview before publication.
 
 The per-file limit is 10 MiB. Supported types are PDF, PNG, JPEG, TXT, CSV, DOCX,
 XLSX, ODT and ODS. Validation checks extensions and basic signatures, and requires

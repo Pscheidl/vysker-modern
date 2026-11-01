@@ -68,6 +68,10 @@ async fn mandatory_choice_has_no_default_and_preview_is_bound_to_exact_bytes() {
     );
     let fresh = preview(&app, id).await;
     assert_eq!(
+        fresh["document"]["current_date"],
+        obecni_web::backend::today(OffsetDateTime::now_utc()).to_string()
+    );
+    assert_eq!(
         post(&app, id, &fresh["token"], "").await.status(),
         StatusCode::BAD_REQUEST
     );
@@ -525,105 +529,210 @@ async fn preview_exposes_missing_file_and_incomplete_document_cannot_be_posted()
         .await
         .unwrap();
     assert_eq!(state, "draft");
+    let attachment = p["attachments"][0]["id"].as_i64().unwrap();
+    assert_eq!(
+        app.call(
+            "DELETE",
+            &format!("/api/v1/admin/attachments/{attachment}"),
+            None,
+            true
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    let complete = preview(&app, id).await;
+    assert_eq!(complete["attachments"].as_array().unwrap().len(), 0);
+    assert_ne!(complete["token"], p["token"]);
+    assert_eq!(
+        post(&app, id, &complete["token"], "hide").await.status(),
+        StatusCode::CREATED
+    );
 }
 
 #[tokio::test]
-async fn anonymized_rendition_requires_own_current_preview_and_freezes_without_posting_claim() {
+async fn automatic_anonymized_release_is_rejected_and_legacy_removal_keeps_copy_private() {
     let app = App::new().await;
-    let id = draft(&app).await;
-    file(&app, id).await;
-    let r = app
-        .call(
-            "POST",
-            &format!("/api/v1/admin/documents/{id}/corrections"),
-            Some(json!({"kind":"anonymized","reason":"Samostatné veřejné znění"})),
-            true,
+    let now = OffsetDateTime::now_utc();
+    let day = obecni_web::backend::today(now);
+    for automatic in [false, true] {
+        let id = draft(&app).await;
+        let original_file = file(&app, id).await;
+        let response = app
+            .call(
+                "POST",
+                &format!("/api/v1/admin/documents/{id}/corrections"),
+                Some(json!({"kind":"anonymized","reason":"Historická samostatná podoba"})),
+                true,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let derived = body_json(response).await["id"].as_i64().unwrap();
+        let p = preview(&app, id).await;
+        assert_eq!(
+            post(&app, id, &p["token"], "anonymized").await.status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(app.call("POST", &format!("/api/v1/admin/documents/{id}/postings"), Some(json!({"token":p["token"],"published_on":day,"duration_days":7,"after_action":"hide","redacted_document_id":derived,"redacted_token":"obsolete","reason":"Starý klient"})), true).await.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let derived_file: i64 =
+            sqlx::query_scalar("SELECT id FROM attachments WHERE document_id=$1")
+                .bind(derived)
+                .fetch_one(&app.state.pool)
+                .await
+                .unwrap();
+        let before: Vec<(i64, Vec<u8>, String)> = sqlx::query_as(
+            "SELECT id,data,sha256 FROM attachments WHERE document_id IN ($1,$2) ORDER BY id",
         )
-        .await;
-    assert_eq!(r.status(), StatusCode::CREATED);
-    let derived = body_json(r).await["id"].as_i64().unwrap();
-    let stale = preview(&app, derived).await;
-    assert_eq!(
-        app.call(
-            "PUT",
-            &format!("/api/v1/admin/documents/{derived}"),
-            Some(json!({"title":"Samostatná anonymizovaná podoba","description":"Veřejný text"})),
-            true
-        )
-        .await
-        .status(),
-        StatusCode::NO_CONTENT
-    );
-    let p = preview(&app, id).await;
-    let day = obecni_web::backend::today(OffsetDateTime::now_utc());
-    let mut input = json!({"token":p["token"],"published_on":day,"duration_days":7,"after_action":"anonymized","redacted_document_id":derived,"redacted_token":stale["token"],"reason":"Schválení obou podob"});
-    let path = format!("/api/v1/admin/documents/{id}/postings");
-    assert_eq!(
-        app.call("POST", &path, Some(input.clone()), true)
-            .await
-            .status(),
-        StatusCode::CONFLICT
-    );
-    input["redacted_token"] = preview(&app, derived).await["token"].clone();
-    assert_eq!(
-        app.call("POST", &path, Some(input), true).await.status(),
-        StatusCode::CREATED
-    );
-    assert_eq!(
-        app.call(
-            "PUT",
-            &format!("/api/v1/admin/documents/{derived}"),
-            Some(json!({"title":"Změna po schválení"})),
-            true
-        )
-        .await
-        .status(),
-        StatusCode::CONFLICT
-    );
-    let count: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM document_postings WHERE document_id=$1")
-            .bind(derived)
-            .fetch_one(&app.state.pool)
-            .await
-            .unwrap();
-    assert_eq!(count, 0);
-    assert_eq!(
-        app.call("GET", &format!("/api/v1/documents/{derived}"), None, false)
-            .await
-            .status(),
-        StatusCode::NOT_FOUND
-    );
-    let posting: i64 = sqlx::query_scalar("SELECT id FROM document_postings WHERE document_id=$1")
         .bind(id)
-        .fetch_one(&app.state.pool)
+        .bind(derived)
+        .fetch_all(&app.state.pool)
         .await
         .unwrap();
-    assert_eq!(
-        app.call(
-            "POST",
-            &format!("/api/v1/admin/postings/{posting}/withdraw"),
-            Some(json!({"reason":"Zpřístupnění schváleného znění"})),
-            true
-        )
-        .await
-        .status(),
-        StatusCode::NO_CONTENT
-    );
-    assert_eq!(
-        app.call("GET", &format!("/api/v1/documents/{id}"), None, false)
+        sqlx::query("UPDATE documents SET lock_state='locked' WHERE id IN ($1,$2)")
+            .bind(id)
+            .bind(derived)
+            .execute(&app.state.pool)
+            .await
+            .unwrap();
+        let removal = if automatic {
+            day - Duration::days(1)
+        } else {
+            day + Duration::days(2)
+        };
+        sqlx::query("UPDATE documents SET status='published',public_access=TRUE,board_status='published',published_on=$2,withdraw_on=$3,posting_after_action='anonymized',posting_redacted_id=$4 WHERE id=$1").bind(id).bind(day-Duration::days(10)).bind(removal).bind(derived).execute(&app.state.pool).await.unwrap();
+        let posting: i64 = sqlx::query_scalar("INSERT INTO document_postings(document_id,origin,certainty,started_on,started_at,planned_removal_on,after_action,redacted_document_id,snapshot_sha256) VALUES($1,'local','documented',$2,$3,$4,'anonymized',$5,document_fingerprint($1)) RETURNING id").bind(id).bind(day-Duration::days(10)).bind(now-Duration::days(10)).bind(removal).bind(derived).fetch_one(&app.state.pool).await.unwrap();
+        assert_eq!(
+            app.call(
+                "GET",
+                &format!("/api/v1/attachments/{original_file}"),
+                None,
+                false
+            )
             .await
             .status(),
-        StatusCode::NOT_FOUND
-    );
+            StatusCode::OK
+        );
+        if automatic {
+            obecni_web::backend::notices::maintenance(&app.state, now)
+                .await
+                .unwrap();
+            obecni_web::backend::notices::maintenance(&app.state, now)
+                .await
+                .unwrap();
+        } else {
+            assert_eq!(
+                app.call(
+                    "POST",
+                    &format!("/api/v1/admin/postings/{posting}/withdraw"),
+                    Some(json!({"reason":"Sejmutí historického nastavení"})),
+                    true
+                )
+                .await
+                .status(),
+                StatusCode::NO_CONTENT
+            );
+        }
+        for document in [id, derived] {
+            assert_eq!(
+                app.call("GET", &format!("/api/v1/documents/{document}"), None, false)
+                    .await
+                    .status(),
+                StatusCode::NOT_FOUND
+            );
+        }
+        for attachment in [original_file, derived_file] {
+            assert_eq!(
+                app.call(
+                    "GET",
+                    &format!("/api/v1/attachments/{attachment}"),
+                    None,
+                    false
+                )
+                .await
+                .status(),
+                StatusCode::NOT_FOUND
+            );
+            assert_eq!(
+                app.call(
+                    "GET",
+                    &format!("/api/v1/admin/attachments/{attachment}"),
+                    None,
+                    true
+                )
+                .await
+                .status(),
+                StatusCode::OK
+            );
+        }
+        let after: Vec<(i64, Vec<u8>, String)> = sqlx::query_as(
+            "SELECT id,data,sha256 FROM attachments WHERE document_id IN ($1,$2) ORDER BY id",
+        )
+        .bind(id)
+        .bind(derived)
+        .fetch_all(&app.state.pool)
+        .await
+        .unwrap();
+        assert_eq!(before, after);
+        let (blocked,copy_public,copy_announced,copy_postings): (bool,bool,bool,i64) = sqlx::query_as("SELECT access_blocked,(SELECT public_access FROM documents WHERE id=$2),EXISTS(SELECT 1 FROM document_announcements WHERE document_id=$2),(SELECT count(*) FROM document_postings WHERE document_id=$2) FROM documents WHERE id=$1").bind(id).bind(derived).fetch_one(&app.state.pool).await.unwrap();
+        assert!(blocked);
+        assert!(!copy_public && !copy_announced);
+        assert_eq!(copy_postings, 0);
+    }
+    let queued: i64 = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM publication_outbox)+(SELECT count(*) FROM mail_queue)",
+    )
+    .fetch_one(&app.state.pool)
+    .await
+    .unwrap();
+    assert_eq!(queued, 0);
+}
+
+#[tokio::test]
+async fn retired_anonymized_schedule_is_cancelled_without_blocking_other_publications() {
+    let app = App::new().await;
+    let now = OffsetDateTime::now_utc();
+    let day = obecni_web::backend::today(now) + Duration::days(1);
+    let id = draft(&app).await;
+    let derived = draft(&app).await;
+    let ordinary = draft(&app).await;
+    for document in [id, ordinary] {
+        let p = preview(&app, document).await;
+        assert_eq!(app.call("POST", &format!("/api/v1/admin/documents/{document}/postings"), Some(json!({"token":p["token"],"published_on":day,"duration_days":7,"after_action":"hide","reason":"Plánované vyvěšení"})), true).await.status(), StatusCode::CREATED);
+    }
+    sqlx::query(
+        "UPDATE documents SET posting_after_action='anonymized',posting_redacted_id=$2 WHERE id=$1",
+    )
+    .bind(id)
+    .bind(derived)
+    .execute(&app.state.pool)
+    .await
+    .unwrap();
+    obecni_web::backend::notices::maintenance(&app.state, now + Duration::days(1))
+        .await
+        .unwrap();
+    let (state,public,locked,announced,events): (String,bool,String,bool,i64) = sqlx::query_as("SELECT board_status,public_access,lock_state,EXISTS(SELECT 1 FROM document_announcements WHERE document_id=$1),(SELECT count(*) FROM notice_events WHERE notice_id=$1 AND kind='schedule_cancelled') FROM documents WHERE id=$1").bind(id).fetch_one(&app.state.pool).await.unwrap();
+    assert_eq!(state, "draft");
+    assert_eq!(locked, "draft");
+    assert!(!public && !announced);
+    assert_eq!(events, 1);
     let detail = body_json(
-        app.call("GET", &format!("/api/v1/documents/{derived}"), None, false)
+        app.call("GET", &format!("/api/v1/admin/documents/{id}"), None, true)
             .await,
     )
     .await;
-    assert_eq!(detail["title"], "Samostatná anonymizovaná podoba");
-    assert_eq!(detail["postings"].as_array().unwrap().len(), 0);
-    let (original_blocked,announcement):(bool,bool)=sqlx::query_as("SELECT access_blocked,EXISTS(SELECT 1 FROM document_announcements WHERE document_id=$2) FROM documents WHERE id=$1").bind(id).bind(derived).fetch_one(&app.state.pool).await.unwrap();
-    assert!(original_blocked && announcement);
+    assert!(detail["retain_attachments"].is_null());
+    assert_eq!(
+        app.call("GET", &format!("/api/v1/documents/{derived}"), None, false)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        app.call("GET", &format!("/api/v1/documents/{ordinary}"), None, false)
+            .await
+            .status(),
+        StatusCode::OK
+    );
 }
 
 #[tokio::test]

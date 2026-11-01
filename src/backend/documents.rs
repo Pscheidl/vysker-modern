@@ -79,6 +79,8 @@ pub struct Document {
     pub is_public_now: bool,
     #[sqlx(default)]
     pub files_public_now: bool,
+    #[sqlx(skip)]
+    pub current_date: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -406,6 +408,7 @@ pub async fn public_relations(pool: &sqlx::PgPool, id: i64) -> Result<Vec<serde_
 impl Document {
     pub fn with_board_settings(mut self) -> Self {
         let day = super::today(OffsetDateTime::now_utc());
+        self.current_date = day.to_string();
         self.is_public_now = self.public_access
             && !self.access_blocked
             && self.public_until.is_none_or(|until| until > day);
@@ -420,10 +423,14 @@ impl Document {
             .zip(self.withdraw_on)
             .map(|(start, end)| (end - start).whole_days() - 1)
             .filter(|days| *days > 0);
-        self.retain_attachments = self
-            .posting_after_action
-            .as_deref()
-            .map(|action| action == "retain");
+        self.retain_attachments =
+            self.posting_after_action
+                .as_deref()
+                .and_then(|action| match action {
+                    "retain" => Some(true),
+                    "hide" => Some(false),
+                    _ => None,
+                });
         self
     }
     pub fn into_public(self) -> Self {
