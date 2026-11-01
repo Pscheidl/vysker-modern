@@ -1,5 +1,6 @@
 use super::{
     api::{self, Kind},
+    attachment_progress::AttachmentIndexProgress,
     ui::*,
 };
 use crate::app::components::Icon;
@@ -24,6 +25,7 @@ pub fn Overview() -> impl IntoView {
                 </section><section class="admin-panel admin-overview-aside"><span class="admin-kicker"><Icon name="check"/>"PŘEHLED OBSAHU"</span><h2>"Web obce v číslech"</h2><dl><div><dt>"Zveřejněné dokumenty"</dt><dd>{stats.documents}</dd></div><div><dt>"Zveřejněné stránky"</dt><dd>{stats.pages}</dd></div></dl><p>"Obsah, veřejná dostupnost a vyvěšení se evidují samostatně. Po prvním vyvěšení je obsah nevratně uzamčen."</p><AdminLink href="/admin/audit" label="Otevřít audit" icon="history"/></section></div>
             }.into_any()
         })}</Suspense>
+        <AttachmentIndexProgress/>
     }
 }
 #[component]
@@ -93,6 +95,7 @@ pub fn Entries(kind: Kind) -> impl IntoView {
                 }.into_any()}
             })}</Suspense>
         </section>
+        {(kind==Kind::Document).then(||view!{<AttachmentIndexProgress/>})}
     }
 }
 

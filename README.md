@@ -72,6 +72,7 @@ Documentation:
 - [Production operations, backups and recovery](docs/operations.md)
 - [Ubuntu VPS staging deployment and SSH hardening plan](docs/vps-test-deployment.md)
 - [Staging Compose modes, startup and scheduled import](docs/staging-deployment.md)
+- [Attachment search, OCR limits and measured resource use](docs/attachment-search.md)
 - [Remaining implementation work](docs/roadmap.md)
 - [Original website migration and later host transfer](docs/migration.md)
 

@@ -27,6 +27,18 @@ pub struct Hit {
     pub category: String,
     pub posted: String,
     pub archived: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ssr", sqlx(skip))]
+    pub attachment: Option<AttachmentMatch>,
+}
+/// A public, current attachment passage explaining why its parent document matched.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AttachmentMatch {
+    pub id: i64,
+    pub name: String,
+    pub page: i32,
+    pub label: String,
+    pub excerpt: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SearchPage {
@@ -123,6 +135,7 @@ pub async fn search(query: SearchQuery) -> Result<SearchPage, ServerFnError> {
                 category: n.category,
                 posted: n.posted_iso,
                 archived: n.archived,
+                attachment: None,
             })
             .collect(),
         total: page.total,

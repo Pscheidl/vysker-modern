@@ -26,6 +26,11 @@ name = "obec-admin"
 path = "src/bin/admin.rs"
 required-features = ["ssr"]
 
+[[bin]]
+name = "attachment-index"
+path = "src/bin/attachment-index.rs"
+required-features = ["ssr"]
+
 [dependencies]
 image = { version = "0.25", optional = true, default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 anyhow = { version = "1.0.104", optional = true }

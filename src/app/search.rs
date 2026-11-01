@@ -28,7 +28,7 @@ fn query(kind: &'static str) -> Memo<SearchQuery> {
             sort: p
                 .get("razeni")
                 .or_else(|| p.get("sort"))
-                .unwrap_or_else(|| "newest".into()),
+                .unwrap_or_else(|| "relevance".into()),
             page: p
                 .get("strana")
                 .or_else(|| p.get("page"))
@@ -44,13 +44,41 @@ fn Filters(
     #[prop(default = false)] topics: bool,
 ) -> impl IntoView {
     let categories = Resource::new(|| (), |_| crate::catalog::load_subscription_categories());
-    view! {<form class="filter-bar" method="get" action=site_url(path) role="search">
+    let search_input = NodeRef::<leptos::html::Input>::new();
+    let category_input = NodeRef::<leptos::html::Select>::new();
+    let sort_input = NodeRef::<leptos::html::Select>::new();
+    #[cfg(feature = "hydrate")]
+    Effect::new(move |previous: Option<SearchQuery>| {
+        let current = query.get();
+        // Preserve edits made to the server-rendered form before hydration.
+        // Only later URL navigation, including Back and Forward, resets controls.
+        if previous
+            .as_ref()
+            .is_some_and(|previous| previous != &current)
+        {
+            if let Some(input) = search_input.get() {
+                input.set_value(&current.q);
+            }
+            if let Some(input) = category_input.get() {
+                input.set_value(&current.category);
+            }
+            if let Some(input) = sort_input.get() {
+                input.set_value(if current.sort.is_empty() {
+                    "relevance"
+                } else {
+                    &current.sort
+                });
+            }
+        }
+        current
+    });
+    view! {<form class="filter-bar" autocomplete="off" method="get" action=site_url(path) role="search">
         {(path=="/uredni-deska").then(move||view!{<input type="hidden" name="state" value=move ||query.get().state/>})}
-        <div class="filter-search"><label class="sr-only" for="public-query">"Hledat v dokumentech"</label><Icon name="search"/><input id="public-query" type="search" name="q" maxlength="200" placeholder="Název, téma nebo číslo jednací…" prop:value=move ||query.get().q value=move ||query.get().q/></div>
-        {topics.then(||view!{<div class="filter-control"><label for="public-category">"Téma"</label><select id="public-category" name="kategorie" prop:value=move ||query.get().category>
-            <option value="">"Všechna témata"</option><Suspense fallback=|| ()>{move || categories.get().and_then(Result::ok).map(|items|items.into_iter().map(|category|{let name=category.name.clone();let selected_name=name.clone();view!{<option value=category.name selected=move ||query.get().category==selected_name>{name}</option>}}).collect_view())}</Suspense>
+        <div class="filter-search"><label class="sr-only" for="public-query">"Hledat v dokumentech"</label><Icon name="search"/><input node_ref=search_input id="public-query" autocomplete="off" type="search" name="q" maxlength="200" placeholder="Název, obsah dokumentu nebo číslo jednací…" value=move ||query.get().q/></div>
+        {topics.then(||view!{<div class="filter-control"><label for="public-category">"Téma"</label><select node_ref=category_input id="public-category" name="kategorie" autocomplete="off">
+            <option value="">"Všechna témata"</option><Suspense fallback=|| ()>{move || categories.get().and_then(Result::ok).map(|items|items.into_iter().map(|category|{let name=category.name.clone();let selected_name=name.clone();view!{<option value=category.name selected=query.get_untracked().category==selected_name>{name}</option>}}).collect_view())}</Suspense>
         </select></div>})}
-        <div class="filter-control"><label for="public-sort">"Řazení"</label><select id="public-sort" name="razeni" prop:value=move ||query.get().sort><option value="newest" selected=move ||query.get().sort=="newest">"Od nejnovějších"</option><option value="oldest" selected=move ||query.get().sort=="oldest">"Od nejstarších"</option><option value="title" selected=move ||query.get().sort=="title">"Podle názvu"</option></select></div>
+        <div class="filter-control"><label for="public-sort">"Řazení"</label><select node_ref=sort_input id="public-sort" name="razeni" autocomplete="off"><option value="relevance" selected=matches!(query.get_untracked().sort.as_str(),""|"relevance")>"Podle shody"</option><option value="newest" selected=query.get_untracked().sort=="newest">"Od nejnovějších"</option><option value="oldest" selected=query.get_untracked().sort=="oldest">"Od nejstarších"</option><option value="title" selected=query.get_untracked().sort=="title">"Podle názvu"</option></select></div>
         <button class="button secondary" type="submit">"Hledat"</button>
     </form>}
 }
@@ -74,7 +102,10 @@ fn documents_url(query: &SearchQuery, page: usize) -> String {
     if !query.category.is_empty() {
         params.push(format!("kategorie={}", encode(&query.category)));
     }
-    if !query.sort.is_empty() && query.sort != "newest" {
+    if !query.sort.is_empty()
+        && query.sort != "relevance"
+        && (query.sort != "newest" || !query.q.is_empty())
+    {
         params.push(format!("razeni={}", encode(&query.sort)));
     }
     if page > 1 {
@@ -114,13 +145,7 @@ pub fn NoticeListing() -> impl IntoView {
 fn CurrentNoticeListing() -> impl IntoView {
     let query = query("notice");
     let result = Resource::new(move || query.get(), crate::search::search);
-    let documents = move || {
-        let query = SearchQuery {
-            sort: "newest".into(),
-            ..query.get()
-        };
-        documents_url(&query, 1)
-    };
+    let documents = move || documents_url(&query.get(), 1);
     view! {<Title text="Úřední deska · Vyskeř"/><div class="page-width interior"><PageHeading title="Úřední deska" description="Aktuálně vyvěšené písemnosti obce." eyebrow="DOKUMENTY OBCE"/>
         <p class="field-note" id="board-search-scope">"Hledáte pouze mezi aktuálně vyvěšenými písemnostmi. "<A href=documents>"Všechny dokumenty"</A></p>
         <Filters query path="/uredni-deska" topics=true/>
@@ -142,7 +167,7 @@ pub fn DocumentListing() -> impl IntoView {
 }
 #[component]
 pub fn SearchListing() -> impl IntoView {
-    view! {<Results kind="all" path="/hledat" title="Co hledáte?" description="Prohledejte všechny veřejné dokumenty včetně vyvěšených a sejmutých písemností i stránky obce."/>}
+    view! {<Results kind="all" path="/hledat" title="Co hledáte?" description="Prohledejte veřejné dokumenty, obsah jejich příloh a stránky obce."/>}
 }
 #[component]
 fn Results(
@@ -172,17 +197,34 @@ fn ResultRow(hit: crate::search::Hit) -> impl IntoView {
     };
     let dated = hit.kind != "page";
     let date = crate::catalog::document_date(&hit.posted);
-    let preview = match hit.preview_html {
-        Some(html) => view! {
+    let attachment = hit.attachment;
+    let attachment_excerpt = attachment
+        .as_ref()
+        .filter(|passage| !passage.excerpt.is_empty())
+        .map(|passage| passage.excerpt.clone());
+    let preview = match (attachment_excerpt, hit.preview_html) {
+        (Some(excerpt), _) => view! {
+            <p class="site-result-preview">{excerpt}</p>
+        }
+        .into_any(),
+        (_, Some(html)) => view! {
             <div class="site-result-preview markdown-content" inner_html=html/>
         }
         .into_any(),
-        None => view! {
+        _ => view! {
             <p class="site-result-preview">{hit.description}</p>
         }
         .into_any(),
     };
-    view! {<article class="site-result"><div><p class="eyebrow">{label}</p><h2><A href=site_url(&hit.path)>{hit.title}</A></h2>{preview}
+    let attachment_link = attachment.map(|passage| {
+        let mut href = format!("/api/v1/attachments/{}", passage.id);
+        if passage.page > 0 && passage.name.to_ascii_lowercase().ends_with(".pdf") {
+            href.push_str(&format!("#page={}", passage.page));
+        }
+        let detail = if passage.label.is_empty() { passage.name } else { format!("{} · {}", passage.name, passage.label) };
+        view! {<p class="site-result-attachment field-note">"Nalezeno v příloze: "<a href=href rel="external">{detail}</a></p>}
+    });
+    view! {<article class="site-result"><div><p class="eyebrow">{label}</p><h2><A href=site_url(&hit.path)>{hit.title}</A></h2>{preview}{attachment_link}
         <div class="notice-meta">{(!hit.category.is_empty()).then(||view!{<span>{hit.category}</span>})}{dated.then(||view!{<time datetime=(!hit.posted.is_empty()).then_some(hit.posted)>{date}</time>})}</div>
     </div><Icon/></article>}
 }

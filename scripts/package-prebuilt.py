@@ -40,7 +40,7 @@ def main():
     output = args.output.resolve()
     if output.is_relative_to(root):
         parser.error('Use an output directory outside the checkout')
-    binaries = [root / 'target/release' / name for name in ('obecni-web', 'obec-admin')]
+    binaries = [root / 'target/release' / name for name in ('obecni-web', 'obec-admin', 'attachment-index')]
     for binary in binaries:
         if not binary.is_file():
             parser.error(f'Build the release binary first: {binary.name}')
@@ -63,7 +63,7 @@ def main():
     for name in ('database', 'monitor', 'postgres', 'legacy', 'legacy_galleries',
                  'legacy_import', 'legacy_scope', 'legacy_sync', 'legacy_archive',
                  'legacy_reimport', 'legacy_replace', 'legacy_notifications',
-                 'legacy_documents', 'document_migration_report'):
+                 'legacy_documents', 'document_migration_report', 'extract_attachment'):
         shutil.copy2(root / f'scripts/{name}.py', output / f'scripts/{name}.py')
     (output / 'config').mkdir()
     for name in ('legacy-vysker-pages.json', 'legacy-vysker-notices.json'):

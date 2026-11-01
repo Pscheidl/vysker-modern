@@ -18,7 +18,11 @@ then removes it on exit. Alternatively, supply `TEST_DATABASE_URL` for a test
 server account with `CREATEDB`. The script creates and removes a random database
 on that server, without using its existing application data. Python tests require
 psycopg, Beautiful Soup, timezone data and PostgreSQL 18 client tools, all included
-in Nix and the test image.
+in Nix and the test image. Attachment extraction also requires Poppler and
+Tesseract with Czech and English data, included in both environments.
+The format suite exercises real uploads, extraction, search and download for
+PDF, DOCX, ODT, XLSX, ODS, CSV, TXT, JSON and XML. See
+[attachment search](attachment-search.md) for bounded OCR benchmarks.
 
 ## Hourly digest preparation workload
 

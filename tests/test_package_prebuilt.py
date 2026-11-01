@@ -27,7 +27,7 @@ class ReleasePackaging(unittest.TestCase):
         for name in ('Cargo.toml', 'Dockerfile.prebuilt'):
             shutil.copy2(ROOT / name, source / name)
         (source / 'target/release').mkdir(parents=True)
-        for name in ('obecni-web', 'obec-admin'):
+        for name in ('obecni-web', 'obec-admin', 'attachment-index'):
             (source / 'target/release' / name).write_bytes(b'release fixture')
         (source / 'target/site/pkg').mkdir(parents=True)
         hashes = {'css': 'css-fixture-hash', 'js': 'js_fixture_hash', 'wasm': 'wasm-fixture-hash'}
@@ -59,7 +59,8 @@ class ReleasePackaging(unittest.TestCase):
         # Run outside the checkout so a missing packaged helper cannot be found
         # through the source directory. Do not connect to a database or run an import.
         for script, arguments in [('legacy_sync.py', ['run', '--help']),
-                                  ('legacy_archive.py', ['--help'])]:
+                                  ('legacy_archive.py', ['--help']),
+                                  ('extract_attachment.py', ['--help'])]:
             result = subprocess.run(
                 [sys.executable, str(context / 'scripts' / script), *arguments],
                 cwd=context, capture_output=True, text=True,
@@ -80,7 +81,7 @@ class ReleasePackaging(unittest.TestCase):
             for asset in (source / 'target/site/pkg').iterdir():
                 self.assertEqual((context / 'site/pkg' / asset.name).read_bytes(), asset.read_bytes())
                 self.assertIn(f'site/pkg/{asset.name}', manifest['files'])
-            self.assertIn('COPY obecni-web obec-admin hash.txt ./',
+            self.assertIn('COPY obecni-web obec-admin attachment-index hash.txt ./',
                           (context / 'Dockerfile').read_text())
             self.assert_runtime_imports(context)
 

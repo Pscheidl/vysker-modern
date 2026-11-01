@@ -3,6 +3,8 @@ mod accounts;
 #[cfg(not(feature = "demo"))]
 mod api;
 #[cfg(not(feature = "demo"))]
+mod attachment_progress;
+#[cfg(not(feature = "demo"))]
 mod document_actions;
 #[cfg(not(feature = "demo"))]
 mod editor;

@@ -50,7 +50,14 @@ fn DocumentContent(document: crate::catalog::Document) -> impl IntoView {
         </dl>
         <section class="attachments" aria-labelledby="document-attachments"><h2 id="document-attachments">"Veřejné přílohy"</h2>
             {document.files.is_empty().then(||view!{<p>"Dokument nemá veřejně dostupnou přílohu."</p>})}
-            {document.files.into_iter().map(|file|view!{<div class="attachment"><Icon name="paper"/><div><strong>{file.name}</strong><p>{file.size}</p></div>{file.url.map(|url|view!{<a class="text-link" href=url download>"Stáhnout"<Icon/></a>})}</div>}).collect_view()}
+            {document.files.iter().any(|file|file.text_url.is_some()).then(||view!{<p class="attachment-text-note">"Textová verze usnadňuje čtení a kopírování. U skenů může obsahovat chyby rozpoznání."</p>})}
+            {document.files.into_iter().map(|file|{
+                let preview_label=format!("Zobrazit text přílohy {} (otevře se v novém okně)",file.name);
+                let download_label=format!("Stáhnout text přílohy {}",file.name);
+                view!{<div class="attachment"><Icon name="paper"/><div class="attachment-content"><strong>{file.name}</strong><p>{file.size}</p>
+                    {file.text_url.map(|url|view!{<div class="attachment-text-links"><a href=url.clone() target="_blank" rel="external noopener noreferrer" aria-label=preview_label>"Zobrazit text"</a><a href=format!("{url}/download") download aria-label=download_label>"Stáhnout text"</a></div>})}
+                </div>{file.url.map(|url|view!{<a class="text-link" href=url download>"Stáhnout"<Icon/></a>})}</div>}
+            }).collect_view()}
         </section>
         {has_postings.then(||view!{<section class="document-postings" aria-labelledby="posting-history-title"><h2 id="posting-history-title">"Vyvěšení na úřední desce"</h2><ol class="posting-history">{document.postings.into_iter().map(|posting|{
             let posted=crate::catalog::document_event_date(posting.started_at.as_deref(),posting.started_on.as_deref());

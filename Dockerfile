@@ -12,21 +12,22 @@ COPY tests ./tests
 COPY scripts ./scripts
 
 FROM source AS test
-RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-psycopg python3-bs4 tzdata && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-psycopg python3-bs4 python3-pil poppler-utils tesseract-ocr tesseract-ocr-ces tesseract-ocr-eng tzdata && rm -rf /var/lib/apt/lists/*
 COPY --from=postgres-tools /usr/lib/postgresql/18/bin/ /usr/local/bin/
 COPY --from=postgres-tools /usr/lib/x86_64-linux-gnu/libpq.so.5* /usr/lib/x86_64-linux-gnu/
 CMD ["./scripts/test.sh", "--smtp"]
 
 FROM source AS build
-RUN cargo build --locked --release --bin obec-api --bin obec-admin
+RUN cargo build --locked --release --bin obec-api --bin obec-admin --bin attachment-index
 
 FROM debian:bookworm-slim AS runtime
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl python3 poppler-utils tesseract-ocr tesseract-ocr-ces tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 obec && useradd --uid 10001 --gid obec --no-create-home obec \
     && mkdir -p /app/data && chown obec:obec /app/data
 WORKDIR /app
-COPY --from=build /app/target/release/obec-api /app/target/release/obec-admin ./
+COPY --from=build /app/target/release/obec-api /app/target/release/obec-admin /app/target/release/attachment-index ./
+COPY scripts/extract_attachment.py ./scripts/
 USER 10001:10001
 ENV OBEC_ADRESA=0.0.0.0:3000
 EXPOSE 3000

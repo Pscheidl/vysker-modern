@@ -16,7 +16,7 @@
           rust = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
         in {
           default = pkgs.mkShell {
-            packages = with pkgs; [ rust pkg-config openssl postgresql_18 git curl (python3.withPackages (ps: [ ps.psycopg ps.beautifulsoup4 ])) nodejs pnpm cargo-leptos trunk mailpit docker-compose ];
+            packages = with pkgs; [ rust pkg-config openssl postgresql_18 git curl (python3.withPackages (ps: [ ps.psycopg ps.beautifulsoup4 ])) nodejs pnpm cargo-leptos trunk mailpit docker-compose poppler-utils (tesseract.override { enableLanguages = [ "ces" "eng" "osd" ]; }) ];
             RUST_BACKTRACE = "1";
             PYTHONTZPATH = "${pkgs.tzdata}/share/zoneinfo";
             shellHook = ''

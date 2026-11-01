@@ -1,5 +1,7 @@
 //! Backendové API. SQL, hesla a SMTP jsou dostupné výhradně ve feature ssr.
 pub mod accounts;
+pub mod attachment_index;
+pub mod attachment_text;
 pub mod auth;
 pub mod calendar;
 pub mod cez;
@@ -445,6 +447,10 @@ pub fn router(state: Backend) -> Router {
         .route("/api/v1/admin/audit", get(audit_list))
         .route("/api/v1/admin/overview", get(management::overview))
         .route(
+            "/api/v1/admin/attachment-index/status",
+            get(attachment_index::status),
+        )
+        .route(
             "/api/v1/admin/cez-outages/status",
             get(power_outages::status),
         )
@@ -566,6 +572,14 @@ pub fn router(state: Backend) -> Router {
         .route("/api/v1/admin/postings/{id}/plan", post(registry::plan))
         .route("/api/v1/documents", get(documents::public_list))
         .route("/api/v1/documents/{id}", get(documents::detail))
+        .route(
+            "/api/v1/attachments/{id}/text",
+            get(attachment_text::preview),
+        )
+        .route(
+            "/api/v1/attachments/{id}/text/download",
+            get(attachment_text::download),
+        )
         .route("/api/v1/attachments/{id}", get(documents::download))
         .route(
             "/api/v1/admin/pages",

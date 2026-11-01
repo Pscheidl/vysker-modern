@@ -11,7 +11,7 @@ async fn postgres_schema_is_repeatable_and_preserves_demo_records() {
     .fetch_all(&pool)
     .await
     .unwrap();
-    assert_eq!(feature_versions, vec![30]);
+    assert_eq!(feature_versions, vec![30, 31]);
     let rental_defaults: (bool, i64) =
         sqlx::query_as("SELECT enabled,version FROM rental_settings WHERE id=1")
             .fetch_one(&pool)

@@ -19,6 +19,7 @@ if [[ "${1:-}" != "--inside" ]]; then
 fi
 shift
 cargo test --locked --no-default-features --features ssr --lib --bins --tests
+python3 tests/test_attachment_extractor.py
 python3 tests/test_database.py
 python3 tests/test_monitor.py
 python3 tests/test_package_prebuilt.py

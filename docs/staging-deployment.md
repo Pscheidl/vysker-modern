@@ -17,7 +17,7 @@ v připraveném Rust prostředí a kořeni projektu:
 ```bash
 CARGO_NET_OFFLINE=true cargo leptos build --release \
   --lib-cargo-args=--locked --bin-cargo-args=--locked
-CARGO_NET_OFFLINE=true cargo build --locked --release --bin obec-admin
+CARGO_NET_OFFLINE=true cargo build --locked --release --bin obec-admin --bin attachment-index
 release_parent=$(mktemp -d /tmp/obecni-release.XXXXXX)
 python3 scripts/package-prebuilt.py "$release_parent/context"
 tar -C "$release_parent/context" -czf "$release_parent/release.tar.gz" .

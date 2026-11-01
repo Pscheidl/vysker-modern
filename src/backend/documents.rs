@@ -21,6 +21,8 @@ pub struct Attachment {
     pub size_bytes: i64,
     pub removed_at: Option<String>,
     pub available: bool,
+    #[sqlx(default)]
+    pub text_url: Option<String>,
 }
 pub async fn notice_files(s: &Backend, id: i64) -> Result<Vec<Attachment>> {
     Ok(sqlx::query_as("SELECT id,name,content_type,size_bytes,removed_at,(data IS NOT NULL AND removed_at IS NULL) AS available FROM attachments WHERE document_id=$1 ORDER BY sort_order,id").bind(id).fetch_all(&s.pool).await?)
@@ -40,7 +42,7 @@ pub async fn public_notice_files(
     if !visible {
         return Err(missing());
     }
-    Ok(sqlx::query_as("SELECT id,name,content_type,size_bytes,removed_at,(data IS NOT NULL AND removed_at IS NULL) AS available FROM attachments WHERE document_id=$1 AND is_public AND removed_at IS NULL AND data IS NOT NULL AND EXISTS(SELECT 1 FROM documents d WHERE d.id=$1 AND document_files_public(d,(now() AT TIME ZONE 'Europe/Prague')::date)) ORDER BY sort_order,id").bind(id).fetch_all(pool).await?)
+    Ok(sqlx::query_as("SELECT id,name,content_type,size_bytes,removed_at,(data IS NOT NULL AND removed_at IS NULL) AS available,CASE WHEN EXISTS(SELECT 1 FROM attachment_extractions e WHERE e.attachment_id=attachments.id AND e.status='ready' AND e.extractor_version=$2 AND e.source_name=attachments.name AND EXISTS(SELECT 1 FROM attachment_search_pages p WHERE p.attachment_id=e.attachment_id)) THEN '/api/v1/attachments/'||id||'/text' END AS text_url FROM attachments WHERE document_id=$1 AND is_public AND removed_at IS NULL AND data IS NOT NULL AND EXISTS(SELECT 1 FROM documents d WHERE d.id=$1 AND document_files_public(d,(now() AT TIME ZONE 'Europe/Prague')::date)) ORDER BY sort_order,id").bind(id).bind(super::attachment_index::EXTRACTOR_VERSION).fetch_all(pool).await?)
 }
 #[derive(sqlx::FromRow, Serialize)]
 pub struct Document {
@@ -275,7 +277,7 @@ pub async fn detail(State(s): State<Backend>, Path(id): Path<i64>) -> Result<Jso
         .fetch_optional(&s.pool)
         .await?
         .ok_or_else(missing)?;
-    let files=sqlx::query_as("SELECT id,name,content_type,size_bytes,removed_at,(data IS NOT NULL AND removed_at IS NULL) AS available FROM attachments WHERE document_id=$1 AND is_public AND removed_at IS NULL AND data IS NOT NULL AND EXISTS(SELECT 1 FROM documents d WHERE d.id=$1 AND document_files_public(d,(now() AT TIME ZONE 'Europe/Prague')::date)) ORDER BY sort_order,id").bind(id).fetch_all(&s.pool).await?;
+    let files=sqlx::query_as("SELECT id,name,content_type,size_bytes,removed_at,(data IS NOT NULL AND removed_at IS NULL) AS available,CASE WHEN EXISTS(SELECT 1 FROM attachment_extractions e WHERE e.attachment_id=attachments.id AND e.status='ready' AND e.extractor_version=$2 AND e.source_name=attachments.name AND EXISTS(SELECT 1 FROM attachment_search_pages p WHERE p.attachment_id=e.attachment_id)) THEN '/api/v1/attachments/'||id||'/text' END AS text_url FROM attachments WHERE document_id=$1 AND is_public AND removed_at IS NULL AND data IS NOT NULL AND EXISTS(SELECT 1 FROM documents d WHERE d.id=$1 AND document_files_public(d,(now() AT TIME ZONE 'Europe/Prague')::date)) ORDER BY sort_order,id").bind(id).bind(super::attachment_index::EXTRACTOR_VERSION).fetch_all(&s.pool).await?;
     Ok(Json(DocumentDetail {
         record: record.into_public(),
         attachments: files,
@@ -373,11 +375,26 @@ fn content_type(name: &str, bytes: &[u8]) -> Result<&'static str> {
         "jpg" | "jpeg" if bytes.starts_with(&[0xff, 0xd8, 0xff]) => Ok("image/jpeg"),
         "txt" if std::str::from_utf8(bytes).is_ok() => Ok("text/plain; charset=utf-8"),
         "csv" if std::str::from_utf8(bytes).is_ok() => Ok("text/csv; charset=utf-8"),
+        "json" if serde_json::from_slice::<serde_json::Value>(bytes).is_ok() => {
+            Ok("application/json")
+        }
+        "xml"
+            if std::str::from_utf8(bytes).is_ok_and(|text| {
+                text.trim_start_matches('\u{feff}')
+                    .trim_start()
+                    .starts_with('<')
+                    && !text.contains('\0')
+                    && !text.contains("<!DOCTYPE")
+                    && !text.contains("<!ENTITY")
+            }) =>
+        {
+            Ok("application/xml; charset=utf-8")
+        }
         "docx" | "xlsx" | "odt" | "ods" if bytes.starts_with(b"PK\x03\x04") => {
             Ok("application/octet-stream")
         }
         _ => Err(bad(
-            "Podporované soubory: PDF, PNG, JPEG, TXT, CSV, DOCX, XLSX, ODT, ODS. Obsah musí odpovídat formátu.",
+            "Podporované soubory: PDF, PNG, JPEG, TXT, CSV, JSON, XML, DOCX, XLSX, ODT, ODS. Obsah musí odpovídat formátu.",
         )),
     }
 }

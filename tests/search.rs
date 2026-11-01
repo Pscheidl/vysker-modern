@@ -293,6 +293,18 @@ async fn only_public_pages_are_searchable_and_filters_are_validated() {
         .await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(body_json(response).await["total"], 2);
+    let pages = search::query(
+        &app.state.pool,
+        &SearchQuery {
+            q: "poplatky".into(),
+            kind: "page".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(pages.total, 1);
+    assert_eq!(pages.items[0].path, "/stranky/poplatky");
     assert_eq!(
         app.call("GET", "/api/v1/search?sort=bad", None, false)
             .await
@@ -520,4 +532,405 @@ async fn detail_keeps_creation_date_distinct_from_source_publication_and_import(
         .unwrap();
     assert!(detail.document_date.is_none());
     assert_eq!(detail.source_published_on.as_deref(), Some("2019-05-06"));
+}
+
+async fn indexed_attachment(app: &App, document_id: i64, name: &str, pages: &[&str]) -> i64 {
+    let id: i64 = sqlx::query_scalar("INSERT INTO attachments(document_id,name,content_type,size_bytes,data) VALUES ($1,$2,'application/pdf',8,$3) RETURNING id")
+        .bind(document_id).bind(name).bind(b"%PDF-1.4".to_vec())
+        .fetch_one(&app.state.pool).await.unwrap();
+    sqlx::query("INSERT INTO attachment_extractions(attachment_id,source_sha256,source_name,extractor_version,status,method) SELECT id,sha256,name,$2,'ready','text' FROM attachments WHERE id=$1")
+        .bind(id).bind(obecni_web::backend::attachment_index::EXTRACTOR_VERSION)
+        .execute(&app.state.pool).await.unwrap();
+    for (index, content) in pages.iter().enumerate() {
+        sqlx::query("INSERT INTO attachment_search_pages(attachment_id,page,label,content) VALUES ($1,$2,$3,$4)")
+            .bind(id).bind((index+1) as i32).bind(format!("Strana {}", index+1)).bind(content)
+            .execute(&app.state.pool).await.unwrap();
+    }
+    id
+}
+
+async fn find(app: &App, term: &str) -> obecni_web::search::SearchPage {
+    search::query(
+        &app.state.pool,
+        &SearchQuery {
+            q: term.into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn relevance_prefers_titles_then_metadata_then_attachment_text_and_honors_explicit_sort() {
+    let app = App::new().await;
+    let exact = document(&app, "Pronájem hospody", None, Some("2010-01-01")).await;
+    let title = document(
+        &app,
+        "Záměr na pronájem obecní hospody",
+        None,
+        Some("2011-01-01"),
+    )
+    .await;
+    let partial = document(&app, "Pronájem obecního majetku", None, Some("2012-01-01")).await;
+    indexed_attachment(&app, partial, "zapis.pdf", &["Projednání hospody."]).await;
+    let metadata = document(&app, "Záměr obce", None, Some("2020-01-01")).await;
+    sqlx::query("UPDATE documents SET description='Pronájem hospody' WHERE id=$1")
+        .bind(metadata)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    let body = document(&app, "Zápis ze zasedání", None, Some("2026-01-01")).await;
+    indexed_attachment(
+        &app,
+        body,
+        "zapis.pdf",
+        &["Pronájem hospody. Pronájem hospody. Pronájem hospody."],
+    )
+    .await;
+    let found = find(&app, "pronajem hospody").await;
+    assert_eq!(
+        found.items.iter().map(|hit| hit.id).collect::<Vec<_>>(),
+        [exact, title, partial, metadata, body]
+    );
+    let newest = search::query(
+        &app.state.pool,
+        &SearchQuery {
+            q: "pronajem hospody".into(),
+            sort: "newest".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(newest.items[0].id, body);
+    assert_eq!(newest.items.last().unwrap().id, exact);
+    let alpha = search::query(
+        &app.state.pool,
+        &SearchQuery {
+            q: "pronajem hospody".into(),
+            sort: "title".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(alpha.items[0].id, exact);
+    let explicit = search::query(
+        &app.state.pool,
+        &SearchQuery {
+            q: "pronajem hospody".into(),
+            sort: "relevance".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(explicit.items[0].id, exact);
+    sqlx::query("INSERT INTO pages(slug,title,content,published,updated_at) VALUES ('pronajem','Pronájem hospody','Veřejné informace',TRUE,'2000-01-01')").execute(&app.state.pool).await.unwrap();
+    let found = find(&app, "pronajem hospody").await;
+    assert_eq!(found.items[1].kind, "page");
+    assert_eq!(found.items.last().unwrap().id, body);
+}
+
+#[tokio::test]
+async fn attachment_words_can_span_title_and_pages_without_duplicate_results() {
+    let app = App::new().await;
+    let id = document(&app, "Rozpočet", None, None).await;
+    let attachment = indexed_attachment(
+        &app,
+        id,
+        "rozpocet.pdf",
+        &[
+            "Oprava hospody.",
+            "Položka kanalizace.",
+            "Hospody a kanalizace společně.",
+        ],
+    )
+    .await;
+    indexed_attachment(&app, id, "priloha.pdf", &["Oprava hospody a kanalizace."]).await;
+    let found = find(&app, "rozpocet hospody kanalizace").await;
+    assert_eq!(found.total, 1);
+    let passage = found.items[0].attachment.as_ref().unwrap();
+    assert_eq!((passage.id, passage.page), (attachment, 3));
+    assert_eq!(passage.label, "Strana 3");
+    assert!(passage.excerpt.contains("Hospody"));
+    let spanning = find(&app, "oprava polozka").await;
+    assert_eq!(spanning.total, 1);
+    assert_eq!(find(&app, "rozpocet chybejici").await.total, 0);
+}
+
+#[tokio::test]
+async fn attachment_snippets_are_current_unicode_safe_literal_text_centered_on_the_match() {
+    let app = App::new().await;
+    let id = document(&app, "Zápis", None, None).await;
+    let content = format!(
+        "{} Nalezený žluťoučký 100% pod_tržítko \\ <script>alert(1)</script> {}",
+        "Úvod ".repeat(120),
+        "Konec ".repeat(100)
+    );
+    indexed_attachment(&app, id, "zapisy.pdf", &[&content]).await;
+    for query in ["ZLUTOUCKY", "%", "_", "\\"] {
+        let found = find(&app, query).await;
+        assert_eq!(found.total, 1, "{query}");
+        let passage = found.items[0].attachment.as_ref().unwrap();
+        assert!(passage.excerpt.starts_with('…'));
+        assert!(passage.excerpt.ends_with('…'));
+        assert!(passage.excerpt.contains("žluťoučký"));
+        assert!(passage.excerpt.contains("<script>alert(1)</script>"));
+        assert!(found.items[0].preview_html.is_none());
+    }
+    assert_eq!(find(&app, "podxtrzitko").await.total, 0);
+}
+
+#[tokio::test]
+async fn attachment_search_uses_exact_download_visibility_before_counting() {
+    let app = App::new().await;
+    let public = document(&app, "Veřejný", None, None).await;
+    let hidden_attachment = document(&app, "Skrytá příloha", None, None).await;
+    let hidden_file =
+        indexed_attachment(&app, hidden_attachment, "skryta.pdf", &["tajemstvi"]).await;
+    sqlx::query("UPDATE attachments SET is_public=FALSE WHERE id=$1")
+        .bind(hidden_file)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    // Even an old index forcibly retained by an operator must not override live permissions.
+    indexed_attachment(&app, public, "verejna.pdf", &["tajemstvi"]).await;
+    let hidden_document = document(&app, "Neveřejný", None, None).await;
+    indexed_attachment(&app, hidden_document, "interni.pdf", &["tajemstvi"]).await;
+    sqlx::query("UPDATE documents SET public_access=FALSE,access_blocked=TRUE WHERE id=$1")
+        .bind(hidden_document)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    let draft = document(&app, "Koncept", None, None).await;
+    indexed_attachment(&app, draft, "koncept.pdf", &["tajemstvi"]).await;
+    sqlx::query("UPDATE documents SET status='draft' WHERE id=$1")
+        .bind(draft)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    let future = document(&app, "Budoucí", None, Some("9998-01-01")).await;
+    indexed_attachment(&app, future, "budouci.pdf", &["tajemstvi"]).await;
+    sqlx::query("UPDATE documents SET board_status='scheduled',public_access=FALSE WHERE id=$1")
+        .bind(future)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    let expired = document(&app, "Uplynulá dostupnost", None, None).await;
+    indexed_attachment(&app, expired, "uplynule.pdf", &["tajemstvi"]).await;
+    sqlx::query("UPDATE documents SET public_until='2000-01-01' WHERE id=$1")
+        .bind(expired)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    let retained = document(
+        &app,
+        "Ponechaný archiv",
+        Some("archived"),
+        Some("2020-01-01"),
+    )
+    .await;
+    indexed_attachment(&app, retained, "archiv.pdf", &["tajemstvi"]).await;
+    posting(&app, retained, true).await;
+    let expired_archive = document(
+        &app,
+        "Archiv po lhůtě",
+        Some("withdrawn"),
+        Some("2020-01-01"),
+    )
+    .await;
+    indexed_attachment(&app, expired_archive, "archiv.pdf", &["tajemstvi"]).await;
+    posting(&app, expired_archive, true).await;
+    sqlx::query("UPDATE documents SET posting_public_until='2000-01-01' WHERE id=$1")
+        .bind(expired_archive)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    let found = find(&app, "tajemstvi").await;
+    assert_eq!(found.total, 2);
+    assert!(found.items.iter().any(|hit| hit.id == public));
+    assert!(found.items.iter().any(|hit| hit.id == retained));
+    sqlx::query("UPDATE documents SET attachments_public=FALSE WHERE id=$1")
+        .bind(public)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(find(&app, "tajemstvi").await.total, 1);
+    let title = find(&app, "verejny").await;
+    assert_eq!(title.total, 1);
+    assert!(title.items[0].attachment.is_none());
+    let archive = search::query(
+        &app.state.pool,
+        &SearchQuery {
+            q: "tajemstvi".into(),
+            kind: "notice".into(),
+            state: "archive".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(archive.total, 1);
+    assert_eq!(archive.items[0].id, retained);
+}
+
+#[tokio::test]
+async fn stale_failed_and_replaced_extractions_never_match() {
+    let app = App::new().await;
+    for (statement, value) in [
+        (
+            "UPDATE attachment_extractions SET status=$2 WHERE attachment_id=$1",
+            "failed",
+        ),
+        (
+            "UPDATE attachment_extractions SET source_name=$2 WHERE attachment_id=$1",
+            "old.pdf",
+        ),
+    ] {
+        let id = document(&app, "Záznam", None, None).await;
+        let a = indexed_attachment(&app, id, "soubor.pdf", &["nezverejnovat"]).await;
+        sqlx::query(statement)
+            .bind(a)
+            .bind(value)
+            .execute(&app.state.pool)
+            .await
+            .unwrap();
+    }
+    let id = document(&app, "Stará verze", None, None).await;
+    let a = indexed_attachment(&app, id, "soubor.pdf", &["nezverejnovat"]).await;
+    sqlx::query("UPDATE attachment_extractions SET extractor_version=0 WHERE attachment_id=$1")
+        .bind(a)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(find(&app, "nezverejnovat").await.total, 0);
+    for statement in [
+        "UPDATE attachments SET data=convert_to('new version','UTF8') WHERE id=$1",
+        "UPDATE attachments SET name='new.pdf' WHERE id=$1",
+        "UPDATE attachments SET data=NULL,removed_at='2026-11-01' WHERE id=$1",
+    ] {
+        let id = document(&app, "Nahrazená příloha", None, None).await;
+        let a = indexed_attachment(&app, id, "soubor.pdf", &["staryobsah"]).await;
+        assert_eq!(find(&app, "staryobsah").await.total, 1);
+        sqlx::query(statement)
+            .bind(a)
+            .execute(&app.state.pool)
+            .await
+            .unwrap();
+        assert_eq!(find(&app, "staryobsah").await.total, 0);
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM attachment_search_pages WHERE attachment_id=$1",
+        )
+        .bind(a)
+        .fetch_one(&app.state.pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 0);
+    }
+}
+
+#[tokio::test]
+async fn attachment_matches_are_deduplicated_before_pagination_and_filters() {
+    let app = App::new().await;
+    for n in 0..23 {
+        let id = document(&app, &format!("Zápis {n}"), None, Some("2026-01-01")).await;
+        indexed_attachment(&app, id, "zapis.pdf", &["spolecnyvyraz", "spolecnyvyraz"]).await;
+        indexed_attachment(&app, id, "usneseni.pdf", &["spolecnyvyraz"]).await;
+    }
+    let first = find(&app, "spolecnyvyraz").await;
+    assert_eq!((first.total, first.items.len()), (23, 20));
+    let last = search::query(
+        &app.state.pool,
+        &SearchQuery {
+            q: "spolecnyvyraz".into(),
+            page: 2,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!((last.total, last.items.len()), (23, 3));
+    assert!(
+        last.items
+            .iter()
+            .all(|hit| !first.items.iter().any(|old| old.id == hit.id))
+    );
+    let missing = search::query(
+        &app.state.pool,
+        &SearchQuery {
+            q: "spolecnyvyraz".into(),
+            category: "Neexistující".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(missing.total, 0);
+}
+
+#[tokio::test]
+async fn filenames_are_immediate_ranked_matches_with_the_same_public_download_rules() {
+    let app = App::new().await;
+    let title = document(&app, "Pronájem", None, Some("2010-01-01")).await;
+    let body = document(&app, "Obecní zápis", None, Some("2026-10-01")).await;
+    indexed_attachment(&app, body, "zapis.pdf", &["Pronájem"]).await;
+    for status in [None, Some("processing"), Some("failed")] {
+        let id = document(&app, "Podklady k jednání", None, Some("2015-01-01")).await;
+        let a = indexed_attachment(&app, id, "Pronájem_100%.pdf", &["Původní text"]).await;
+        if let Some(status) = status {
+            sqlx::query("UPDATE attachment_extractions SET status=$2 WHERE attachment_id=$1")
+                .bind(a)
+                .bind(status)
+                .execute(&app.state.pool)
+                .await
+                .unwrap();
+        } else {
+            sqlx::query("DELETE FROM attachment_extractions WHERE attachment_id=$1")
+                .bind(a)
+                .execute(&app.state.pool)
+                .await
+                .unwrap();
+        }
+        let specific = find(&app, "pronajem_100%").await;
+        let hit = specific.items.iter().find(|hit| hit.id == id).unwrap();
+        let attachment = hit.attachment.as_ref().unwrap();
+        assert_eq!(attachment.id, a);
+        assert_eq!(attachment.name, "Pronájem_100%.pdf");
+        assert_eq!(attachment.page, 0);
+        assert!(attachment.excerpt.is_empty());
+        assert_eq!(find(&app, "pronajemx100").await.total, 0);
+    }
+    let ranked = find(&app, "pronajem").await;
+    assert_eq!(ranked.total, 5);
+    assert_eq!(ranked.items[0].id, title);
+    assert_eq!(ranked.items.last().unwrap().id, body);
+    assert_eq!(find(&app, "podklady pronajem").await.total, 3);
+
+    for restriction in [
+        "UPDATE attachments SET is_public=FALSE WHERE id=$1",
+        "UPDATE attachments SET data=NULL,removed_at='2026-11-01' WHERE id=$1",
+        "UPDATE documents SET attachments_public=FALSE WHERE id=(SELECT document_id FROM attachments WHERE id=$1)",
+        "UPDATE documents SET public_access=FALSE WHERE id=(SELECT document_id FROM attachments WHERE id=$1)",
+        "UPDATE documents SET public_access=FALSE,access_blocked=TRUE WHERE id=(SELECT document_id FROM attachments WHERE id=$1)",
+    ] {
+        let id = document(&app, "Soukromé podklady", None, None).await;
+        let a = indexed_attachment(&app, id, "skrytynazev.pdf", &["Původní text"]).await;
+        sqlx::query(restriction)
+            .bind(a)
+            .execute(&app.state.pool)
+            .await
+            .unwrap();
+        assert_eq!(find(&app, "skrytynazev").await.total, 0);
+    }
+    let id = document(&app, "Opravené podklady", None, None).await;
+    let a = indexed_attachment(&app, id, "starynazev.pdf", &["Původní text"]).await;
+    sqlx::query("UPDATE attachments SET name='novynazev.pdf' WHERE id=$1")
+        .bind(a)
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(find(&app, "starynazev").await.total, 0);
+    assert_eq!(find(&app, "novynazev").await.total, 1);
 }

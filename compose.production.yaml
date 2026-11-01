@@ -17,6 +17,7 @@ services:
     networks:
       application:
         ipv4_address: 172.30.64.5
+      indexing: {}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
       interval: 5s
@@ -27,6 +28,39 @@ services:
       options:
         max-size: 10m
         max-file: "3"
+  attachment-index:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    # Aggregate cap includes Rust, Python, OCR and temporary in-memory files.
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: 1.0
+    pids_limit: 32
+    command: ["./attachment-index", "--loop", "--memory-mb", "384", "--timeout-seconds", "3600"]
+    environment:
+      OBEC_DATABAZE_FILE: /run/secrets/database_url
+      OMP_THREAD_LIMIT: "1"
+      OMP_NUM_THREADS: "1"
+    secrets: [database_url]
+    tmpfs: ["/tmp:size=96m,mode=1777"]
+    networks: [indexing]
+    depends_on:
+      web:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    logging:
+      driver: local
+      options:
+        max-size: 5m
+        max-file: "2"
+
   web:
     build:
       context: .
@@ -189,6 +223,8 @@ volumes:
   caddy-data:
   caddy-config:
 networks:
+  indexing:
+    internal: true
   application:
     ipam:
       config:

@@ -156,20 +156,21 @@ pub async fn document_from_pool(
     let Some(record) = record else {
         return Ok(None);
     };
-    let rows: Vec<(i64, String, i64)> = sqlx::query_as(
-        "SELECT id,name,size_bytes FROM attachments
+    let rows: Vec<(i64, String, i64, bool)> = sqlx::query_as(
+        "SELECT id,name,size_bytes,EXISTS(SELECT 1 FROM attachment_extractions e WHERE e.attachment_id=attachments.id AND e.status='ready' AND e.extractor_version=$3 AND e.source_name=attachments.name AND EXISTS(SELECT 1 FROM attachment_search_pages p WHERE p.attachment_id=e.attachment_id)) AS text_ready FROM attachments
          WHERE document_id=$1 AND is_public AND data IS NOT NULL AND removed_at IS NULL
          AND EXISTS(SELECT 1 FROM documents d WHERE d.id=$1 AND document_files_public(d,$2))
          ORDER BY sort_order,id",
     )
     .bind(id)
     .bind(today)
+    .bind(crate::backend::attachment_index::EXTRACTOR_VERSION)
     .fetch_all(pool)
     .await
     .map_err(|_| ServerFnError::new("Přílohy nelze načíst."))?;
     let files = rows
         .into_iter()
-        .map(|(id, name, size)| Attachment {
+        .map(|(id, name, size, text_ready)| Attachment {
             name,
             size: if size < 1024 {
                 format!("{size} B")
@@ -180,6 +181,7 @@ pub async fn document_from_pool(
             },
             removed: false,
             url: Some(format!("/api/v1/attachments/{id}")),
+            text_url: text_ready.then(|| format!("/api/v1/attachments/{id}/text")),
         })
         .collect();
     #[derive(sqlx::FromRow)]

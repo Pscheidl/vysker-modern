@@ -9,6 +9,8 @@ pub struct Attachment {
     pub removed: bool,
     #[serde(default)]
     pub url: Option<String>,
+    #[serde(default)]
+    pub text_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -182,6 +184,7 @@ pub(crate) async fn present_notice(
         attachments: files
             .into_iter()
             .map(|file| Attachment {
+                text_url: None,
                 name: file.name,
                 size: if file.size_bytes < 1024 {
                     format!("{} B", file.size_bytes)
@@ -278,6 +281,7 @@ mod tests {
                 size: "96 kB".into(),
                 removed: false,
                 url: None,
+                text_url: None,
             }],
         }
     }

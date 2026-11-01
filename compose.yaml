@@ -58,6 +58,30 @@ services:
       interval: 10s
       timeout: 3s
       retries: 10
+  attachment-index:
+    build:
+      context: .
+      target: runtime
+    command: ["./attachment-index", "--loop", "--memory-mb", "384", "--timeout-seconds", "3600"]
+    environment:
+      OBEC_DATABAZE: postgresql://vysker:vysker@postgres:5432/vysker
+      OMP_THREAD_LIMIT: "1"
+      OMP_NUM_THREADS: "1"
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: 1.0
+    pids_limit: 32
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=96m,mode=1777"]
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      disable: true
   tests:
     profiles: [test]
     build:
