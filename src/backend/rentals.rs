@@ -41,6 +41,9 @@ pub(super) async fn require_rental_write_access(
 }
 
 const FILE_LIMIT: usize = 10 * 1024 * 1024;
+const IMAGE_DECODE_LIMIT: u64 = 96 * 1024 * 1024;
+const IMAGE_DIMENSION_LIMIT: u32 = 12_000;
+const IMAGE_OUTPUT_DIMENSION: u32 = 2560;
 static IMAGE_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 static INVOICE_UPLOAD_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
@@ -714,14 +717,59 @@ fn check_image(bytes: &[u8]) -> Result<&'static str> {
         image::ImageFormat::WebP => "image/webp",
         _ => return Err(bad("Soubor musí být obrázek JPEG, PNG nebo WebP.")),
     };
-    let reader = image::ImageReader::with_format(std::io::Cursor::new(bytes), f);
-    let (w, h) = reader
-        .into_dimensions()
-        .map_err(|_| bad("Obrázek nelze přečíst."))?;
-    if w == 0 || h == 0 || (w as u64) * (h as u64) > 100_000_000 {
-        return Err(bad("Rozměry obrázku nejsou platné."));
-    }
+    let mut reader = image::ImageReader::with_format(std::io::Cursor::new(bytes), f);
+    reader.limits(image_limits());
+    let decoder = reader.into_decoder().map_err(image_read_error)?;
+    check_decoded_image_limits(&decoder)?;
     Ok(mime)
+}
+
+fn image_limits() -> image::Limits {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(IMAGE_DIMENSION_LIMIT);
+    limits.max_image_height = Some(IMAGE_DIMENSION_LIMIT);
+    limits.max_alloc = Some(IMAGE_DECODE_LIMIT);
+    limits
+}
+
+fn image_read_error(error: image::ImageError) -> super::Error {
+    if matches!(error, image::ImageError::Limits(_)) {
+        bad("Fotografie je příliš velká pro zpracování. Snižte její rozlišení a nahrajte ji znovu.")
+    } else {
+        bad("Fotografii nelze přečíst.")
+    }
+}
+
+fn check_decoded_image_limits(decoder: &impl image::ImageDecoder) -> Result<()> {
+    let (width, height) = decoder.dimensions();
+    // into_decoder + DynamicImage::from_decoder does not reserve the output
+    // buffer against Limits. Enforce this independently of codec support.
+    if width == 0
+        || height == 0
+        || width > IMAGE_DIMENSION_LIMIT
+        || height > IMAGE_DIMENSION_LIMIT
+        || u64::from(width) * u64::from(height) > 60_000_000
+        || decoder.total_bytes() > IMAGE_DECODE_LIMIT
+    {
+        return Err(bad(
+            "Fotografie je příliš velká pro zpracování. Snižte její rozlišení a nahrajte ji znovu.",
+        ));
+    }
+    Ok(())
+}
+
+async fn process_image_files<T: Send + 'static>(
+    slot: tokio::sync::SemaphorePermit<'static>,
+    work: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    tokio::task::spawn_blocking(move || {
+        // A disconnected request must not release the slot while its blocking
+        // decode still runs. The worker owns the permit until all buffers drop.
+        let _slot = slot;
+        work()
+    })
+    .await
+    .map_err(|_| bad("Fotografii nelze zpracovat."))?
 }
 // The camera clock is an untrusted, timezone-free hint, never proof of timing.
 // Read only DateTimeOriginal. No GPS or other metadata is retained.
@@ -755,21 +803,24 @@ fn photo_taken_at(bytes: &[u8]) -> Option<String> {
     Some(normalized)
 }
 fn sanitize_meter_photo(bytes: &[u8]) -> Result<Vec<u8>> {
-    use image::ImageDecoder;
     let format = image::guess_format(bytes).map_err(|_| bad("Neplatná fotografie."))?;
-    let reader = image::ImageReader::with_format(std::io::Cursor::new(bytes), format);
-    let mut decoder = reader
-        .into_decoder()
-        .map_err(|_| bad("Fotografii nelze přečíst."))?;
-    let (width, height) = decoder.dimensions();
-    if u64::from(width) * u64::from(height) > 60_000_000 {
-        return Err(bad("Fotografie je příliš velká, nejvýše 60 megapixelů."));
-    }
+    let mut reader = image::ImageReader::with_format(std::io::Cursor::new(bytes), format);
+    reader.limits(image_limits());
+    let decoder = reader.into_decoder().map_err(image_read_error)?;
+    sanitize_decoded_photo(decoder)
+}
+
+fn sanitize_decoded_photo(mut decoder: impl image::ImageDecoder) -> Result<Vec<u8>> {
+    check_decoded_image_limits(&decoder)?;
     let orientation = decoder
         .orientation()
         .map_err(|_| bad("Fotografii nelze přečíst."))?;
-    let mut image =
-        image::DynamicImage::from_decoder(decoder).map_err(|_| bad("Fotografii nelze přečíst."))?;
+    let mut image = image::DynamicImage::from_decoder(decoder).map_err(image_read_error)?;
+    // Thumbnail uses an output-sized buffer. Resize before orientation, which
+    // can otherwise allocate a second full-resolution image for a 90° turn.
+    if image.width() > IMAGE_OUTPUT_DIMENSION || image.height() > IMAGE_OUTPUT_DIMENSION {
+        image = image.thumbnail(IMAGE_OUTPUT_DIMENSION, IMAGE_OUTPUT_DIMENSION);
+    }
     image.apply_orientation(orientation);
     let mut output = Vec::new();
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, 90)
@@ -942,8 +993,11 @@ pub async fn create(
     )?;
     let identity =
         identity.ok_or_else(|| bad("Nahrajte kopii dokladu žadatele nebo odpovědné osoby."))?;
-    check_image(&identity)?;
-    let identity = sanitize_meter_photo(&identity)?;
+    let identity = process_image_files(image_slot, move || {
+        check_image(&identity)?;
+        sanitize_meter_photo(&identity)
+    })
+    .await?;
     let mime = "image/jpeg";
     let mut tx = crate::db::begin_write(&s.pool).await?;
     super::rental_settings::require_enabled(&mut tx).await?;
@@ -975,7 +1029,6 @@ pub async fn create(
     // Roll back every write if processing has crossed the start of the selected term.
     period.require_future_start(OffsetDateTime::now_utc())?;
     tx.commit().await?;
-    drop(image_slot);
     Ok((StatusCode::CREATED, Json(Created { id: rental_id })))
 }
 pub async fn admin_list(State(s): State<Backend>, _: auth::Admin) -> Result<Json<Vec<Rental>>> {
@@ -1239,14 +1292,15 @@ async fn admin_rental_form(
             .map_err(|error| super::Error(error.status(), "Neplatné údaje rezervace."))?;
         return Ok((input, None));
     }
-    let _slot = tokio::time::timeout(std::time::Duration::from_secs(60), IMAGE_SLOTS.acquire())
-        .await
-        .map_err(|_| bad("Zpracování souborů je zaneprázdněné, zkuste to znovu."))?
-        .map_err(|_| bad("Soubor nelze zpracovat."))?;
+    let image_slot =
+        tokio::time::timeout(std::time::Duration::from_secs(60), IMAGE_SLOTS.acquire())
+            .await
+            .map_err(|_| bad("Zpracování souborů je zaneprázdněné, zkuste to znovu."))?
+            .map_err(|_| bad("Soubor nelze zpracovat."))?;
     let mut form = Multipart::from_request(request, s)
         .await
         .map_err(|_| bad("Neplatný formulář."))?;
-    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+    let (input, identity) = tokio::time::timeout(std::time::Duration::from_secs(60), async {
         let mut input = None;
         let mut identity = None;
         while let Some(field) = form
@@ -1273,8 +1327,7 @@ async fn admin_rental_form(
                         .bytes()
                         .await
                         .map_err(|_| bad("Soubor se nepodařilo načíst."))?;
-                    check_image(&bytes)?;
-                    identity = Some(sanitize_meter_photo(&bytes)?);
+                    identity = Some(bytes.to_vec());
                 }
                 _ => return Err(bad("Neznámé nebo opakované pole formuláře.")),
             }
@@ -1285,7 +1338,17 @@ async fn admin_rental_form(
         ))
     })
     .await
-    .map_err(|_| bad("Nahrávání trvalo příliš dlouho, zkuste to znovu."))?
+    .map_err(|_| bad("Nahrávání trvalo příliš dlouho, zkuste to znovu."))??;
+    let identity = process_image_files(image_slot, move || {
+        identity
+            .map(|bytes| {
+                check_image(&bytes)?;
+                sanitize_meter_photo(&bytes)
+            })
+            .transpose()
+    })
+    .await?;
+    Ok((input, identity))
 }
 
 pub async fn create_admin_rental(
@@ -1784,8 +1847,13 @@ pub async fn upload(
     .await
     .map_err(|_| bad("Nahrávání trvalo příliš dlouho, zkuste to znovu."))??;
     // Validate and sanitize every selected photo before changing any stored photo.
-    let before = before.map(prepare_meter_photo).transpose()?;
-    let after = after.map(prepare_meter_photo).transpose()?;
+    let (before, after) = process_image_files(image_slot, move || {
+        Ok((
+            before.map(prepare_meter_photo).transpose()?,
+            after.map(prepare_meter_photo).transpose()?,
+        ))
+    })
+    .await?;
     let mut tx = s.pool.begin().await?;
     super::rental_settings::require_enabled(&mut tx).await?;
     let result: Option<(i64, bool)> = sqlx::query_as("UPDATE rentals SET before_photo=COALESCE($1,before_photo),before_type=CASE WHEN $1::bytea IS NOT NULL THEN 'image/jpeg' ELSE before_type END,before_photo_taken_at=CASE WHEN $1::bytea IS NOT NULL THEN $2 ELSE before_photo_taken_at END,after_photo=COALESCE($3,after_photo),after_type=CASE WHEN $3::bytea IS NOT NULL THEN 'image/jpeg' ELSE after_type END,after_photo_taken_at=CASE WHEN $3::bytea IS NOT NULL THEN $4 ELSE after_photo_taken_at END WHERE EXISTS(SELECT 1 FROM rental_access_tokens t WHERE t.rental_id=rentals.id AND t.token_hash=$5) AND status='approved' AND require_meter RETURNING id,before_photo IS NOT NULL AND after_photo IS NOT NULL")
@@ -1803,7 +1871,6 @@ pub async fn upload(
     }
     let access = access_data(&mut tx, &token_hash).await?;
     tx.commit().await?;
-    drop(image_slot);
     Ok(Json(access))
 }
 
@@ -2608,6 +2675,113 @@ pub async fn deliver_one(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct HeaderOnlyDecoder {
+        width: u32,
+        height: u32,
+        color: image::ColorType,
+    }
+    impl image::ImageDecoder for HeaderOnlyDecoder {
+        fn dimensions(&self) -> (u32, u32) {
+            (self.width, self.height)
+        }
+        fn color_type(&self) -> image::ColorType {
+            self.color
+        }
+        fn read_image(self, _: &mut [u8]) -> image::ImageResult<()> {
+            panic!("Header validation must not decode or allocate image pixels")
+        }
+        fn read_image_boxed(self: Box<Self>, bytes: &mut [u8]) -> image::ImageResult<()> {
+            (*self).read_image(bytes)
+        }
+    }
+
+    #[test]
+    fn image_header_budget_rejects_high_bit_depth_bombs_but_allows_camera_photos() {
+        let check = |width, height, color| {
+            check_decoded_image_limits(&HeaderOnlyDecoder {
+                width,
+                height,
+                color,
+            })
+        };
+        // These tests inspect only dimensions and color depth, without allocating pixels.
+        assert!(check(4000, 3000, image::ColorType::Rgb8).is_ok());
+        assert!(check(6000, 4000, image::ColorType::Rgb8).is_ok());
+        assert!(check(6000, 4000, image::ColorType::Rgba8).is_ok());
+        assert!(check(4096, 3072, image::ColorType::Rgba16).is_ok()); // Exactly 96 MiB.
+        assert!(check(4096, 3073, image::ColorType::Rgba16).is_err());
+        assert!(check(8000, 7500, image::ColorType::Rgba16).is_err()); // 480 MB at 60 MP.
+        assert!(check(12_001, 1, image::ColorType::L8).is_err());
+        assert!(check(10_000, 6001, image::ColorType::L8).is_err());
+        assert!(check(0, 1, image::ColorType::L8).is_err());
+        let limits = image_limits();
+        assert_eq!(limits.max_alloc, Some(96 * 1024 * 1024));
+        assert_eq!(limits.max_image_width, Some(12_000));
+        assert_eq!(limits.max_image_height, Some(12_000));
+    }
+
+    #[test]
+    fn sanitized_photo_is_bounded_rotated_and_has_no_exif() {
+        use image::ImageEncoder;
+        // A narrow real PNG exercises resize and rotation using only 18 KB of pixels.
+        let mut png = Vec::new();
+        let mut encoder = image::codecs::png::PngEncoder::new(&mut png);
+        let exif = vec![
+            b'I', b'I', 42, 0, 8, 0, 0, 0, 1, 0, 0x12, 0x01, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0,
+            0,
+        ];
+        encoder.set_exif_metadata(exif).unwrap();
+        encoder
+            .write_image(
+                &vec![127; 3000 * 2 * 3],
+                3000,
+                2,
+                image::ExtendedColorType::Rgb8,
+            )
+            .unwrap();
+        assert_eq!(check_image(&png).unwrap(), "image/png");
+        let output = sanitize_meter_photo(&png).unwrap();
+        let decoded = image::load_from_memory(&output).unwrap();
+        assert_eq!(decoded.height(), IMAGE_OUTPUT_DIMENSION);
+        assert!(decoded.width() <= 2);
+        assert!(
+            exif::Reader::new()
+                .read_from_container(&mut std::io::Cursor::new(output))
+                .is_err()
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelling_an_upload_keeps_its_image_slot_until_the_blocking_work_finishes() {
+        static SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+        let slot = SLOTS.acquire().await.unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finish_tx, finish_rx) = std::sync::mpsc::channel();
+        let request = tokio::spawn(process_image_files(slot, move || {
+            started_tx.send(()).unwrap();
+            finish_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            Ok(())
+        }));
+        tokio::time::timeout(std::time::Duration::from_secs(2), started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        request.abort();
+        assert!(request.await.unwrap_err().is_cancelled());
+        assert!(
+            SLOTS.try_acquire().is_err(),
+            "Cancelled request released a running decoder's slot"
+        );
+        finish_tx.send(()).unwrap();
+        let released = tokio::time::timeout(std::time::Duration::from_secs(2), SLOTS.acquire())
+            .await
+            .unwrap()
+            .unwrap();
+        drop(released);
+    }
 
     #[test]
     fn rental_start_must_stay_strictly_in_the_future_at_every_check() {

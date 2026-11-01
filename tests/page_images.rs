@@ -269,7 +269,7 @@ async fn imported_images_appear_once_in_their_page_library_and_have_private_prev
     let response = app.call("GET", &preview, None, true).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()["content-type"], "image/png");
-    assert_eq!(response.headers()["cache-control"], "no-store");
+    assert_eq!(response.headers()["cache-control"], "private, no-store");
     assert_eq!(
         response
             .into_body()

@@ -2,6 +2,8 @@ import { test, expect } from './fixtures'
 import { testRates } from './rental-test-data'
 
 test('hourly selection and recurring administration fit on a mobile screen', async ({ page }) => {
+  const pageErrors: string[] = []
+  page.on('pageerror', error => pageErrors.push(error.message))
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/admin')
   await page.getByLabel('E-mail', { exact: true }).fill('e2e-admin@vysker.test')
@@ -41,6 +43,15 @@ test('hourly selection and recurring administration fit on a mobile screen', asy
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1440)
   await page.screenshot({ path: 'target/rental-picker-full-desktop.png', fullPage: true, style: screenshotStyle })
 
+  await page.getByRole('button', { name: 'Tmavý motiv', exact: true }).click()
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 844 })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width)
+    await page.screenshot({ path: `target/rental-picker-dark-${width}.png`, fullPage: true, style: screenshotStyle })
+  }
+  await page.getByRole('button', { name: 'Světlý motiv', exact: true }).click()
+
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/admin/pronajmy/nova')
   await page.getByLabel('Předmět pronájmu').selectOption({ label: name })
@@ -49,4 +60,5 @@ test('hourly selection and recurring administration fit on a mobile screen', asy
   await expect(page.getByLabel('Opakovat do včetně')).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
   await page.screenshot({ path: 'target/rental-mobile-recurring.png', fullPage: true })
+  expect(pageErrors).toEqual([])
 })
