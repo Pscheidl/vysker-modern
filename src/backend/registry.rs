@@ -344,7 +344,7 @@ pub async fn visibility(
     Path(id): Path<i64>,
     Json(input): Json<Visibility>,
 ) -> Result<StatusCode> {
-    text(&input.reason, 2000)?;
+    let reason = text(&input.reason, 2000)?;
     let mut tx = crate::db::begin_write(&s.pool).await?;
     let (old, lock): (bool, String) =
         sqlx::query_as("SELECT public_access,lock_state FROM documents WHERE id=$1 FOR UPDATE")
@@ -363,10 +363,16 @@ pub async fn visibility(
         id,
         Some(admin.id),
         "visibility_changed",
-        &input.reason,
+        &reason,
         json!({"old":old,"new":input.public_access}),
     )
     .await?;
+    sqlx::query("INSERT INTO audit_log(actor_id,operation,entity_type,entity_id,details) VALUES($1,'visibility_changed','document',$2,$3)")
+        .bind(admin.id)
+        .bind(id)
+        .bind(json!({"reason":reason,"old":old,"new":input.public_access}).to_string())
+        .execute(&mut *tx)
+        .await?;
     if input.public_access && !old {
         super::mail::enqueue_publication(
             &mut tx,

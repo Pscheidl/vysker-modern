@@ -282,16 +282,64 @@ async fn full_withdrawal_blocks_detail_files_search_alias_and_public_api_immedia
     .execute(&app.state.pool)
     .await
     .unwrap();
+    let visibility_path = format!("/api/v1/admin/documents/{id}/visibility");
+    for reason in ["", " \n\t "] {
+        assert_eq!(
+            app.call(
+                "POST",
+                &visibility_path,
+                Some(json!({"public_access":false,"reason":reason})),
+                true,
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let snapshot_query = "SELECT jsonb_build_object('document',to_jsonb(d)-ARRAY['status','public_access','access_blocked']::text[],'postings',(SELECT jsonb_agg(to_jsonb(p) ORDER BY p.id) FROM document_postings p WHERE p.document_id=d.id),'files',(SELECT jsonb_agg(to_jsonb(a)-'data' ORDER BY a.id) FROM attachments a WHERE a.document_id=d.id),'mail',(SELECT count(*) FROM publication_outbox WHERE coalesce(document_id,notice_id)=d.id)) FROM documents d WHERE d.id=$1";
+    let before: Value = sqlx::query_scalar(snapshot_query)
+        .bind(id)
+        .fetch_one(&app.state.pool)
+        .await
+        .unwrap();
     assert_eq!(
         app.call(
             "POST",
-            &format!("/api/v1/admin/documents/{id}/visibility"),
-            Some(json!({"public_access":false,"reason":"Interní citlivý důvod"})),
+            &visibility_path,
+            Some(json!({"public_access":false,"reason":"  Interní citlivý důvod  "})),
             true
         )
         .await
         .status(),
         StatusCode::NO_CONTENT
+    );
+    let after: Value = sqlx::query_scalar(snapshot_query)
+        .bind(id)
+        .fetch_one(&app.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        after, before,
+        "Hiding preserves original dates, history and files"
+    );
+    let event: (i64, String, Value) = sqlx::query_as("SELECT actor_id,reason,payload FROM document_events WHERE document_id=$1 AND kind='visibility_changed'")
+        .bind(id).fetch_one(&app.state.pool).await.unwrap();
+    assert_eq!(
+        event,
+        (
+            app.admin_id,
+            "Interní citlivý důvod".into(),
+            json!({"old":true,"new":false})
+        )
+    );
+    let audit: (i64, Value) = sqlx::query_as("SELECT actor_id,details::jsonb FROM audit_log WHERE entity_type='document' AND entity_id=$1 AND operation='visibility_changed'")
+        .bind(id).fetch_one(&app.state.pool).await.unwrap();
+    assert_eq!(
+        audit,
+        (
+            app.admin_id,
+            json!({"reason":"Interní citlivý důvod","old":true,"new":false})
+        )
     );
     for path in [
         format!("/api/v1/documents/{id}"),
@@ -311,6 +359,14 @@ async fn full_withdrawal_blocks_detail_files_search_alias_and_public_api_immedia
     )
     .await;
     assert_eq!(search["total"], 0);
+    for path in [
+        "/api/v1/documents",
+        "/api/v1/notices",
+        "/api/v1/notices?archived=true",
+    ] {
+        let listing = body_json(app.call("GET", path, None, false).await).await;
+        assert!(listing.as_array().unwrap().is_empty(), "{path}");
+    }
     let detail = obecni_web::catalog::document_from_pool(&app.state.pool, id)
         .await
         .unwrap();
@@ -321,6 +377,12 @@ async fn full_withdrawal_blocks_detail_files_search_alias_and_public_api_immedia
             .status(),
         StatusCode::OK
     );
+    let original_bytes: Vec<u8> = sqlx::query_scalar("SELECT data FROM attachments WHERE id=$1")
+        .bind(f)
+        .fetch_one(&app.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(original_bytes, PDF);
     assert!(
         sqlx::query("UPDATE documents SET lock_state='draft' WHERE id=$1")
             .bind(id)

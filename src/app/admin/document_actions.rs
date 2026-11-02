@@ -49,10 +49,60 @@ pub fn DocumentActions(
             {(can_post&&prepared).then(move||view!{<section class="admin-panel admin-form-section"><h2>"Potvrzení vyvěšení"</h2><PostingForm entry=posting_entry.get_value() saved=true publication_epoch current_date publishing busy=disabled reload/></section>})}
             {(can_post&&!editable_draft).then(move||view!{<details class="admin-panel admin-form-section"><summary>"Nové vyvěšení na úřední desce"</summary><p>"Vznikne nový záznam vyvěšení. Obsah, který už je uzamčený, zůstane stejný."</p><PostingForm entry=posting_entry.get_value() saved=false publication_epoch current_date publishing busy=disabled reload/></details>})}
         </Show>
+        {public.then(move||view!{<HideDocument id publishing busy=disabled reload/>})}
         {scheduled.then(move ||view!{<CancelSchedule id busy=disabled reload/>})}
         <PostingHistory document_id=id postings=entry.postings busy=disabled reload/>
         <DocumentHistory id/>
     }
+}
+
+#[component]
+fn HideDocument(
+    id: i64,
+    publishing: RwSignal<bool>,
+    busy: Signal<bool>,
+    reload: RwSignal<u64>,
+) -> impl IntoView {
+    let ctx = expect_context::<AdminContext>();
+    let reason = RwSignal::new(String::new());
+    let error = RwSignal::new(None);
+    let hide = Action::new_local(move |_: &()| {
+        let payload = json!({"public_access":false,"reason":reason.get_untracked().trim()});
+        publishing.set(true);
+        async move {
+            error.set(None);
+            let result = api::save(
+                "POST",
+                &format!("/api/v1/admin/documents/{id}/visibility"),
+                Some(payload),
+            )
+            .await;
+            publishing.try_set(false);
+            match result {
+                Ok(_) if !reload.is_disposed() => {
+                    ctx.changed("Dokument je skrytý. Obsah, přílohy a historie zůstaly zachované v administraci.");
+                    reload.update(|value| *value += 1);
+                }
+                Err(failure) => {
+                    error.try_set(Some(failure));
+                }
+                _ => {}
+            }
+        }
+    });
+    let disabled = Signal::derive(move || {
+        let value = reason.get();
+        busy.get()
+            || hide.pending().get()
+            || value.trim().is_empty()
+            || value.chars().count() > 2000
+    });
+    view! {<details class="admin-panel admin-form-section"><summary>"Skrytí dokumentu"</summary><ErrorMessage error/>
+        <p>"Dokument se skryje z katalogu Dokumenty i z úřední desky. Veřejné odkazy na dokument a jeho přílohy přestanou být dostupné."</p>
+        <p>"Obsah, přílohy a historie zůstanou v administraci. Skrytí nemění původní údaje o vyvěšení ani sejmutí."</p>
+        <label class="admin-field" for="document-hide-reason"><span>"Důvod skrytí *"</span><textarea id="document-hide-reason" required maxlength="2000" rows="3" prop:value=move||reason.get() on:input=move|ev|reason.set(event_target_value(&ev))></textarea><small>"Důvod se uloží do interního auditu."</small></label>
+        <ConfirmButton label="Skrýt dokument" title="Skrýt dokument veřejnosti?" description="Dokument a jeho přílohy přestanou být veřejně dostupné. Původní obsah a historie zůstanou zachované v administraci." disabled danger=true on_confirm=Callback::new(move|()|{if !disabled.get_untracked(){hide.dispatch(());}})/>
+    </details>}
 }
 
 #[component]
