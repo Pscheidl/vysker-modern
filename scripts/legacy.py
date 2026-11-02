@@ -106,6 +106,31 @@ def is_page(url):
         '/vismo/galerie3.asp', '/vismo/isvs.asp')
 
 
+def gallery_family(key):
+    """Variants of a Vismo photo or gallery share their content ownership."""
+    match = re.match(r'^((?:g|gs):\d+)(?:[/?]|$)', key or '')
+    return match[1] if match else None
+
+
+def gallery_ownership(raw, item):
+    """Read content links separately from discovery, which includes global menus."""
+    soup = BeautifulSoup(raw, 'html.parser')
+    body = soup.select_one('#stred') or (soup.select_one('#uvod')
+        if urlsplit(item['url']).path == '/' else None)
+    links = set()
+    for anchor in body.select('a[href]') if body else []:
+        target = canonical(anchor['href'], item['url'])
+        family = gallery_family(source_key(target)) if target else None
+        if family and not anchor.find_parent(id=re.compile(r'^menu1?$')):
+            links.add(family)
+    breadcrumb = soup.select_one('.cesta')
+    board = any(node.get_text(' ', strip=True).replace('\xa0', ' ').casefold() == 'úřední deska'
+                for node in breadcrumb.select('a, span')) if breadcrumb else False
+    protected = (item['key'].startswith('a:') or bool(item.get('event'))
+                 or item.get('kind') == 'notice' or board)
+    return links, protected
+
+
 def escape(text):
     return re.sub(r'([\\`*_{}\[\]<>#!|])', r'\\\1', text)
 
@@ -276,7 +301,7 @@ class SafeRedirect(HTTPRedirectHandler):
 
 class Capture:
     def __init__(self, root, delay=.4, verbose=True, *, cache_root=None,
-                 refresh_assets=False, asset_loader=None):
+                 refresh_assets=False, asset_loader=None, skip_pages=False):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.delay = delay
@@ -287,6 +312,7 @@ class Capture:
             self.cache_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.refresh_assets = refresh_assets
         self.asset_loader = asset_loader
+        self.skip_pages = skip_pages
         self.stats = dict(network_requests=0, downloaded_bytes=0, assets_downloaded=0,
                           assets_reused=0, pages_downloaded=0, pages_not_modified=0,
                           assets_seeded=0, cache_repairs=0, cache_objects_pruned=0)
@@ -510,6 +536,7 @@ class Capture:
             urls = []
         queue = deque([ORIGIN + '/', ORIGIN + '/uredni-deska/2', ORIGIN + '/uredni-deska/1/archiv=1'] + urls)
         pages, aliases, assets, errors, skipped = {}, {}, {}, [], set()
+        rejected_photos, gallery_links, protected_pages = {}, {}, set()
         while queue:
             original = queue.popleft()
             url = canonical(original)
@@ -526,9 +553,23 @@ class Capture:
                 break
             try:
                 response, raw = self.fetch(url, 5_000_000)
+                if (self.skip_pages and (gallery_family(key) or '').startswith('g:')
+                        and raw.strip() == b'Invalid request (contact site operator)'):
+                    # The old website reports this unavailable photo as HTTP 200.
+                    # Its ownership may only become known later in discovery.
+                    pages[key] = dict(key=key, url=url, capture=response,
+                        error='Invalid request (contact site operator)')
+                    rejected_photos[key] = response
+                    continue
                 item = extract(raw, url)
                 item['capture'] = response
                 pages[key] = item
+                if self.skip_pages:
+                    links, protected = gallery_ownership(raw, item)
+                    owner = gallery_family(key) or key
+                    gallery_links.setdefault(owner, set()).update(links)
+                    if protected:
+                        protected_pages.add(owner)
                 for ref in item['assets']:
                     assets.setdefault(ref['url'], dict(ref, parents=[]))['parents'].append(key)
                 queue.extend(item['links'])
@@ -571,6 +612,33 @@ class Capture:
                         kind='asset', status=404, checked_at=now(), error=asset['error']))
                 else:
                     errors.append(dict(url=url, error=asset['error']))
+        if rejected_photos:
+            # A document can be an image attachment. Wait for actual asset types,
+            # and retain id_dokumenty ownership even if that download failed.
+            for url, asset in assets.items():
+                document = any(name.casefold() == 'id_dokumenty' and value
+                               for name, value in parse_qsl(urlsplit(url).query))
+                mime = asset.get('mime', '')
+                if document or (mime and not mime.startswith('image/')):
+                    protected_pages.update(gallery_family(key) or key
+                                           for key in asset.get('parents', []))
+            required = set(protected_pages)
+            pending = deque(protected_pages)
+            while pending:
+                for linked in gallery_links.get(pending.popleft(), set()) - required:
+                    required.add(linked)
+                    pending.append(linked)
+            for key, response in rejected_photos.items():
+                page = pages[key]
+                if gallery_family(key) in required:
+                    errors.append(dict(url=page['url'], error='ValueError: Required photo detail returned '
+                        'Invalid request (contact site operator)'))
+                else:
+                    unavailable_resources.append(dict(url=page['url'],
+                        final_url=response.get('final_url', page['url']), key=key,
+                        kind='page', status=200, checked_at=response.get('captured_at') or now(),
+                        error=page['error'], reason='Photo detail is excluded by --skip-pages '
+                        'and is not linked from imported documents, notices or calendar entries.'))
         manifest = dict(version=VERSION, origin=ORIGIN, started_at=started, completed_at=now(),
                         pages=list(pages.values()), assets=list(assets.values()), aliases=aliases,
                         errors=errors, unavailable_resources=unavailable_resources,

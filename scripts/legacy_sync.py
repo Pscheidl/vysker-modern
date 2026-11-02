@@ -176,7 +176,7 @@ def run_sync(conn, state, *, delay=.4, max_pages=1500, max_assets=5000,
         # Bootstrap lazily from the DB so the first optimized run also avoids downloads.
         with tempfile.TemporaryDirectory(prefix='capture-', dir=state) as bundle:
             crawler = Capture(bundle, delay, verbose=False, cache_root=state / 'capture-cache',
-                refresh_assets=refresh_assets,
+                refresh_assets=refresh_assets, skip_pages=skip_pages,
                 asset_loader=None if refresh_assets else imported_asset_loader(conn))
             capture = crawler.crawl(max_pages, max_assets)
             write_json(state / 'capture-unavailable.json', capture.get('unavailable_resources', []))

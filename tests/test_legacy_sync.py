@@ -294,6 +294,42 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(json.loads((Path(self.root) / 'last-success.json').read_text())['pending_reviews'], 1)
         self.assertEqual(len(json.loads((Path(self.root) / 'reviews.json').read_text())), 1)
 
+    def test_runner_audits_excluded_rejected_photo_and_imports_documents_idempotently(self):
+        photo = ORIGIN + '/old-photo/g-1055/id_obrazky=1088%26typ_sady=1'
+
+        def open_response(request, timeout):
+            url = request.full_url
+            if url == photo:
+                raw = b'Invalid request (contact site operator)'
+            elif url == FILE:
+                raw = b'%PDF-1.7\nfixture\n%%EOF'
+            elif url.endswith('/vismo/sitemap.asp'):
+                raw = ('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+                       f'<url><loc>{photo}</loc></url><url><loc>{URL}</loc></url></urlset>').encode()
+            else:
+                raw = HTML.encode() if url == URL else b'<div id="stred"><h1>Navigation</h1></div>'
+            return Response(url, raw)
+
+        with connect(self.url, autocommit=True) as conn, \
+                patch('urllib.request.OpenerDirector.open', side_effect=open_response):
+            with self.assertRaisesRegex(ValueError, 'Capture is incomplete'):
+                run_sync(conn, self.root, delay=0, publish_content=True)
+            self.assertEqual(conn.execute('SELECT count(*) FROM legacy_sources').fetchone()[0], 0)
+            for attempt in range(2):
+                report = run_sync(conn, self.root, delay=0, publish_content=True, skip_pages=True)
+                self.assertEqual(report['status'], 'ok')
+                self.assertEqual(report['capture_errors'], [])
+                self.assertEqual(report['new'], [source_key(FILE)] if attempt == 0 else [])
+                self.assertEqual(report['conflicts'], [])
+                unavailable, = report['unavailable_resources']
+                self.assertEqual((unavailable['url'], unavailable['status']), (photo, 200))
+                self.assertEqual(json.loads((Path(self.root) / 'capture-unavailable.json').read_text()),
+                                 report['unavailable_resources'])
+                self.assertEqual(json.loads((Path(self.root) / 'last-success.json').read_text())['status'], 'ok')
+            self.assertEqual(conn.execute('SELECT count(*) FROM attachments').fetchone()[0], 1)
+            self.assertEqual(conn.execute('SELECT count(*) FROM pages').fetchone()[0], 0)
+            self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
+
     def test_runner_bootstraps_existing_files_then_revalidates_every_attachment(self):
         html = [HTML.encode()]
         requested = []

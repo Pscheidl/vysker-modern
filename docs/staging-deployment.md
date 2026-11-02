@@ -251,7 +251,14 @@ Ověřit `status: ok`, aktuální čas dokončení, počty a ukázkové příloh
 Stav `skipped` nedokládá úspěšné dokončení. Odpovědi HTTP 404 import přeskakuje
 a zaznamenává do `/app/migration/capture-unavailable.json`, ostatní chyby
 stahování zůstávají důvodem neúspěchu. Nové dokumenty a události se publikují.
-Přepínač `--skip-pages` vynechá obsahové stránky a galerie. Přepínač
+Přepínač `--skip-pages` vynechá obsahové stránky a galerie. Pokud fotodetail
+původního webu vrátí přesný text `Invalid request (contact site operator)`
+s HTTP 200, import jej v tomto režimu přeskočí pouze tehdy, když není potřeba
+pro dokumenty, úřední desku nebo kalendář. Rozhodnutí se provede až po dokončení
+průchodu a ověření vazeb v obsahu stránek, včetně navazujících galerií.
+Výjimka zůstane v `capture-unavailable.json` se skutečným stavem 200 a důvodem.
+Jiné chybové odpovědi a chybějící obsah potřebných stránek dál zastaví import.
+Nepoužívat plošné `--allow-incomplete` jako náhradu této kontroly. Přepínač
 `--archive-notices` ukládá položky původní
 úřední desky rovnou do veřejného archivu a zachovává jejich názvy a přílohy.
 Nevyplněná zdrojová data zůstávají neznámá, datum importu se nevydává za

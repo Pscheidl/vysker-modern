@@ -107,6 +107,139 @@ class Response(io.BytesIO):
             self.headers[name] = value
 
 
+class ExcludedGalleryCaptureTests(unittest.TestCase):
+    photo = ORIGIN + '/photo/g-1055/id_obrazky=1088%26typ_sady=1'
+    rejection = b'Invalid request (contact site operator)'
+    plain = b'<div id="stred"><h1>Page</h1><p>Preserved content.</p></div>'
+
+    @staticmethod
+    def page(content, outside=''):
+        return (outside + '<div id="stred"><h1>Page</h1>' + content + '</div>').encode()
+
+    def crawl(self, resources=None, *, skip_pages=True):
+        resources = {self.photo: self.rejection, **(resources or {})}
+        # Dictionary order lets a failed photo be discovered before its owner.
+        sitemap = ('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+                   + ''.join('<url><loc>' + url.replace('&', '&amp;') + '</loc></url>'
+                             for url in resources if '/assets/' not in url)
+                   + '</urlset>').encode()
+        seeds = {ORIGIN + '/', ORIGIN + '/uredni-deska/2', ORIGIN + '/uredni-deska/1/archiv=1'}
+
+        def open_response(request, timeout):
+            url = request.full_url
+            if url.endswith('/vismo/sitemap.asp'):
+                raw = sitemap
+            elif url in resources:
+                raw = resources[url]
+            elif url in seeds:
+                raw = self.plain
+            else:
+                raise AssertionError('Unexpected request: ' + url)
+            if isinstance(raw, Exception):
+                raise raw
+            return Response(url, raw)
+
+        with tempfile.TemporaryDirectory() as root:
+            capture = Capture(root, delay=0, verbose=False, skip_pages=skip_pages)
+            capture.opener.open = Mock(side_effect=open_response)
+            # HTTP retries are part of fetch, but tests need no real backoff.
+            with patch('legacy.time.sleep'):
+                result = capture.crawl()
+            self.assertEqual(result, json.loads((Path(root) / 'manifest.json').read_text()))
+            return result
+
+    def test_excluded_rejected_photo_is_audited_without_importing_error_text(self):
+        result = self.crawl()
+        self.assertTrue(result['complete'])
+        self.assertEqual(result['errors'], [])
+        entry, = result['unavailable_resources']
+        self.assertEqual((entry['url'], entry['kind'], entry['status']), (self.photo, 'page', 200))
+        self.assertTrue(entry['checked_at'])
+        missing = next(page for page in result['pages'] if page['url'] == self.photo)
+        self.assertIn('error', missing)
+        self.assertNotIn('content', missing)
+
+    def test_full_capture_still_rejects_missing_photo(self):
+        result = self.crawl(skip_pages=False)
+        self.assertFalse(result['complete'])
+        self.assertEqual([error['url'] for error in result['errors']], [self.photo])
+        self.assertEqual(result['unavailable_resources'], [])
+
+    def test_rejection_on_document_article_or_gallery_listing_remains_fatal(self):
+        for path in ('/document/d-1200', '/article/ms-1200', '/gallery/gs-1200'):
+            with self.subTest(path=path):
+                url = ORIGIN + path
+                result = self.crawl({url: self.rejection})
+                self.assertFalse(result['complete'])
+                self.assertEqual([error['url'] for error in result['errors']], [url])
+
+    def test_other_gallery_failures_are_not_hidden(self):
+        for failure in (b'<html><p>Different unexpected response</p></html>',
+                        self.rejection + b' with additional unexpected content',
+                        HTTPError(self.photo, 500, 'Server Error', {}, None)):
+            with self.subTest(failure=failure):
+                result = self.crawl({self.photo: failure})
+                self.assertFalse(result['complete'])
+                self.assertEqual([error['url'] for error in result['errors']], [self.photo])
+                self.assertEqual(result['unavailable_resources'], [])
+
+    def test_relevant_owners_keep_photo_failure_fatal(self):
+        link = f'<a href="{self.photo}">Photo</a>'
+        scanned_document = ORIGIN + '/assets/Image.ashx?id_dokumenty=1200'
+        cases = (
+            ('calendar', ORIGIN + '/meeting/a-1200', self.page(link), {}),
+            ('notice', ORIGIN + '/notice/d-1200', self.page('Vyvěšeno: 1. 1. 2026' + link), {}),
+            ('noticeboard', ORIGIN + '/noticeboard/ms-1200',
+             self.page(link, '<p class="cesta"><a>Úřední deska</a></p>'), {}),
+            ('document', ORIGIN + '/documents/ms-1200',
+             self.page(link + f'<a href="{FILE}">Document</a>'), {FILE: b'%PDF-1.7\nexample'}),
+            ('scanned_document', ORIGIN + '/documents/ms-1200',
+             self.page(link + f'<a href="{scanned_document}">Document</a>'),
+             {scanned_document: b'\x89PNG\r\n\x1a\nexample'}),
+        )
+        for name, url, html, assets in cases:
+            with self.subTest(owner=name):
+                result = self.crawl({url: html, **assets})
+                self.assertFalse(result['complete'])
+                self.assertEqual([error['url'] for error in result['errors']], [self.photo])
+                self.assertEqual(result['unavailable_resources'], [])
+
+    def test_late_calendar_owner_protects_transitive_photo_variants(self):
+        gallery = ORIGIN + '/gallery/gs-1200'
+        other_variant = ORIGIN + '/photo/g-1055/prehravac=1'
+        event = ORIGIN + '/meeting/a-1200'
+        result = self.crawl({
+            gallery: self.page(f'<a href="{other_variant}">Photo</a>'),
+            other_variant: self.plain,
+            event: self.page(f'<a href="{gallery}">Gallery</a>'),
+        })
+        self.assertFalse(result['complete'])
+        self.assertEqual([error['url'] for error in result['errors']], [self.photo])
+        self.assertEqual(result['unavailable_resources'], [])
+
+    def test_global_menu_does_not_make_an_unrelated_photo_belong_to_event(self):
+        event = ORIGIN + '/meeting/a-1200'
+        menu = f'<nav id="menu"><a href="{self.photo}">Unrelated gallery</a></nav>'
+        result = self.crawl({event: self.page('<p>Meeting description.</p>', menu)})
+        self.assertTrue(result['complete'])
+        self.assertEqual(result['errors'], [])
+        self.assertEqual([entry['url'] for entry in result['unavailable_resources']], [self.photo])
+
+    def test_restored_photo_and_its_image_are_captured_normally(self):
+        image = ORIGIN + '/assets/Image.ashx?id_obrazky=1088'
+        result = self.crawl({self.photo: self.page(f'<img src="{image}" alt="Photo">'),
+                             image: b'\x89PNG\r\n\x1a\nexample'})
+        self.assertTrue(result['complete'])
+        self.assertEqual(result['unavailable_resources'], [])
+        photo = next(page for page in result['pages'] if page['url'] == self.photo)
+        self.assertIn('capture', photo)
+        self.assertNotIn('error', photo)
+        asset, = result['assets']
+        self.assertEqual(asset['url'], image)
+        self.assertEqual(asset['mime'], 'image/png')
+        self.assertIn('capture', asset)
+
+
 class IncrementalCaptureTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
