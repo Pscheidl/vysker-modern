@@ -262,8 +262,12 @@ Nepoužívat plošné `--allow-incomplete` jako náhradu této kontroly. Přepí
 `--archive-notices` ukládá položky původní
 úřední desky rovnou do veřejného archivu a zachovává jejich názvy a přílohy.
 Nevyplněná zdrojová data zůstávají neznámá, datum importu se nevydává za
-datum vyvěšení nebo sejmutí. Nové veřejné dokumenty a položky úřední desky,
-včetně přímého importu do archivu, uloží požadavky na oznámení do
+datum vyvěšení nebo sejmutí. Při povoleném zveřejňování zdroje zůstane převzatá
+archivní kopie dostupná v Dokumentech i bez těchto dat. Nejasná historie
+vyvěšení sama neblokuje dostupnost ověřené kopie. Pro již zablokované importy
+je určen cílený příkaz `publish-archive` podle [postupu migrace](migration.md).
+Historické importy ani oprava jejich dostupnosti nevytvářejí e-mailová oznámení.
+Nové místně zveřejněné dokumenty a položky úřední desky uloží požadavky na oznámení do
 `publication_outbox`. Web frontu kontroluje každých 30 sekund a po celé hodině
 seskupí čekající dokumenty do jednoho e-mailu pro každého odběratele podle jeho
 výběru. Potvrzení odběru, obnova hesla a hlášení závad na souhrn nečekají.

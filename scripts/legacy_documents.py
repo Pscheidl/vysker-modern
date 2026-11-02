@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 from psycopg.rows import dict_row
 
-from legacy import digest, source_key
+from legacy import canonical, digest, source_key
 
 SOURCE_ID = 'vismo:vysker.cz'
 
@@ -70,7 +70,8 @@ def finalize_board_documents(conn, document_ids, timestamp, allow_publication=Fa
         return
     with conn.cursor(row_factory=dict_row) as cursor:
         rows = cursor.execute('''SELECT id,published_on,withdraw_on,board_status,review_json,
-            retain_attachments,public_access FROM documents WHERE id=ANY(%s)''', (list(document_ids),)).fetchall()
+            retain_attachments,public_access,access_blocked,disposed_at
+            FROM documents WHERE id=ANY(%s)''', (list(document_ids),)).fetchall()
     for row in rows:
         origin = conn.execute('SELECT source_url,metadata,captured_at FROM legacy_sources WHERE document_id=%s ORDER BY attachment_id NULLS FIRST,source_key LIMIT 1',
                               (row['id'],)).fetchone()
@@ -86,7 +87,11 @@ def finalize_board_documents(conn, document_ids, timestamp, allow_publication=Fa
         archive = row['board_status'] == 'archived'
         initial_state = ('current' if row['board_status'] == 'published' else
                          'historical' if row['board_status'] in ('archived', 'withdrawn') else 'uncertain')
-        public = allow_publication and documented and row['board_status'] in ('published', 'archived') and (not archive or (documented and removed is not None))
+        # An explicitly imported public archive is a retained source snapshot.
+        # Its availability does not assert when the source posted or removed it.
+        public = (allow_publication and not row['access_blocked'] and row['disposed_at'] is None
+                  and ((archive and row['retain_attachments'])
+                       or (documented and row['board_status'] == 'published')))
         review = json.loads(row['review_json'])
         public_until = review.get('archive_until') if public and archive else None
         conn.execute('UPDATE documents SET source_published_on=CASE WHEN %s THEN published_on END WHERE id=%s', (documented, row['id']))
@@ -105,6 +110,107 @@ def finalize_board_documents(conn, document_ids, timestamp, allow_publication=Fa
             VALUES (%s,'source_snapshot_captured','document',%s,%s)''',
             (timestamp, row['id'], json.dumps(dict(captured_at=timestamp,
                 historical_bytes_verified=False, certainty='documented' if documented else 'uncertain'))))
+
+
+def publish_imported_archive(conn, document_id, reason):
+    """Restore catalog access to one verified, retained source archive snapshot.
+
+    This is an explicit correction of import visibility, not a local posting or
+    historical verification. The caller owns the transaction. All content, dates,
+    locks and original posting evidence remain unchanged, including uncertainty.
+    """
+    if not isinstance(document_id, int) or document_id <= 0 or not reason.strip() or len(reason) > 2000:
+        raise ValueError('A document ID and a nonempty reason of at most 2000 characters are required')
+    conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':vysker-write', 0))")
+    policy = source_policy(conn)
+    if policy['mode'] not in ('one_time', 'mirror') or not policy['allow_publication']:
+        raise ValueError('Source policy does not authorize publication of imported archives')
+    with conn.cursor(row_factory=dict_row) as cursor:
+        document = cursor.execute('''SELECT *,document_fingerprint(id) AS actual_fingerprint,
+            (now() AT TIME ZONE 'Europe/Prague')::date AS today
+            FROM documents WHERE id=%s FOR UPDATE''', (document_id,)).fetchone()
+        if document is None:
+            raise ValueError('Imported archive document does not exist')
+        if (document['board_status'] != 'archived' or document['status'] not in ('draft', 'published')
+                or document['lock_state'] not in ('review', 'locked')
+                or document['access_blocked'] or document['disposed_at'] is not None
+                or not document['retain_attachments'] or not document['attachments_public']
+                or document['metadata_restricted'] or document['scheduled_sha256'] is not None
+                or (document['public_until'] is not None and document['public_until'] <= document['today'])):
+            raise ValueError('Document is not an eligible retained source archive or has a local access restriction')
+        if not document['content_sha256'] or document['content_sha256'] != document['actual_fingerprint']:
+            raise ValueError('Imported archive fingerprint does not match its locked snapshot')
+        review = json.loads(document['review_json'])
+        try:
+            archive_until = date.fromisoformat(review.get('archive_until', ''))
+        except (TypeError, ValueError) as error:
+            raise ValueError('Imported archive has no valid retention decision') from error
+        if not review.get('archive_basis', '').strip() or archive_until <= document['today']:
+            raise ValueError('Imported archive retention decision is missing or expired')
+        sources = cursor.execute('''SELECT s.source_id,s.source_key,s.source_url,s.metadata,
+            s.attachment_id,i.metadata AS import_metadata
+            FROM legacy_sources s LEFT JOIN legacy_notice_imports i
+              ON i.source_key=s.source_key AND i.notice_id=s.document_id
+            WHERE s.document_id=%s ORDER BY s.source_key''', (document_id,)).fetchall()
+        if not sources or any(source['source_id'] != SOURCE_ID
+                              or source_key(source['source_url']) != source['source_key'] for source in sources):
+            raise ValueError('Imported archive has no exact trusted source provenance')
+        archive_sources = [source for source in sources
+                           if source['metadata'].get('archive_import') is True
+                           and (source['import_metadata'] or {}).get('archive_import') is True]
+        reference = canonical(review.get('original_reference', ''))
+        if not archive_sources or reference not in {canonical(source['source_url']) for source in archive_sources}:
+            raise ValueError('Document was not explicitly imported as a public-source archive')
+        postings = cursor.execute('''SELECT * FROM document_postings
+            WHERE document_id=%s ORDER BY id''', (document_id,)).fetchall()
+        source_urls = {source['source_url'] for source in archive_sources}
+        if not postings or any(posting['origin'] != 'source' or posting['initial_state'] != 'historical'
+                               or posting['started_at'] is not None or posting['removed_at'] is not None
+                               or posting['after_action'] != 'retain' or posting['redacted_document_id'] is not None
+                               or posting['source_url'] not in source_urls
+                               or posting['snapshot_sha256'] != document['content_sha256'] for posting in postings):
+            raise ValueError('Archive has local or incompatible posting history')
+        attachments = cursor.execute('''SELECT id,sha256,size_bytes,is_public,removed_at,
+            data IS NOT NULL AS retained,octet_length(data) AS actual_size,
+            encode(sha256(data),'hex') AS actual_sha256 FROM attachments
+            WHERE document_id=%s ORDER BY id''', (document_id,)).fetchall()
+        file_sources = {source['attachment_id']: source for source in sources if source['attachment_id'] is not None}
+        if not attachments or len(file_sources) != len(attachments):
+            raise ValueError('Archive does not have a complete retained source attachment set')
+        for attachment in attachments:
+            source = file_sources.get(attachment['id'])
+            capture = (source['metadata'].get('capture') or {}) if source else {}
+            if (not attachment['retained'] or not attachment['is_public'] or attachment['removed_at'] is not None
+                    or attachment['sha256'] != attachment['actual_sha256']
+                    or attachment['size_bytes'] != attachment['actual_size']
+                    or capture.get('sha256') != attachment['actual_sha256']
+                    or capture.get('size') != attachment['actual_size']):
+                raise ValueError('Archive attachment bytes do not match the trusted source capture')
+        if cursor.execute('''SELECT EXISTS(SELECT 1 FROM document_events WHERE document_id=%s
+                AND kind IN ('visibility_changed','published','posting_scheduled','posted','removed'))
+            OR EXISTS(SELECT 1 FROM audit_log WHERE entity_type IN ('document','notice') AND entity_id=%s
+                AND operation IN ('visibility_changed','document_visibility_changed','notice_visibility_changed'))
+            OR EXISTS(SELECT 1 FROM document_import_revisions WHERE document_id=%s AND state='pending')
+            OR NOT EXISTS(SELECT 1 FROM document_announcements WHERE document_id=%s
+                AND origin IN ('historical_import','existing_content')) AS ineligible''',
+            (document_id, document_id, document_id, document_id)).fetchone()['ineligible']:
+            raise ValueError('Archive has a local visibility decision, a pending revision or no historical mail suppression')
+    if document['public_access'] and document['status'] == 'published':
+        return dict(document_id=document_id, status='unchanged')
+    # Do not touch either source or local dates, the permanent review/locked
+    # state, posting evidence, attachment bytes or announcement records.
+    conn.execute("UPDATE documents SET public_access=TRUE,status='published' WHERE id=%s", (document_id,))
+    details = dict(source_id=SOURCE_ID, content_sha256=document['content_sha256'],
+                   before=dict(public_access=document['public_access'], status=document['status']),
+                   after=dict(public_access=True, status='published'),
+                   historical_bytes_verified=False, chronology_unchanged=True)
+    conn.execute('''INSERT INTO document_events(document_id,kind,reason,payload)
+        VALUES (%s,'source_archive_access_restored',%s,%s::jsonb)''',
+        (document_id, reason, json.dumps(details)))
+    conn.execute('''INSERT INTO audit_log(operation,entity_type,entity_id,details)
+        VALUES ('source_archive_access_restored','document',%s,%s)''',
+        (document_id, json.dumps(dict(details, reason=reason))))
+    return dict(document_id=document_id, status='published')
 
 
 def queue_revision(conn, item, signature, content_fingerprint, capture, timestamp, items):

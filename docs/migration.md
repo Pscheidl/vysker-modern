@@ -165,6 +165,26 @@ holds a database transaction open. Its `last-run.json`, `last-success.json`,
 `capture-errors.json` and `capture-unavailable.json` distinguish failed capture,
 committed import and failed report export. A retry after report failure is safe.
 
+With an explicit source policy allowing publication, `--archive-notices` makes
+verified imported archive copies available in Documents even when the source
+does not state posting or removal dates. Unknown dates and uncertain source
+history remain unknown. Public availability of the captured document is separate
+from evidence of a historical posting or removal. The captured content remains
+immutable and historical imports do not enqueue mail.
+
+To correct an existing source archive copy withheld only by the former date
+requirement, use the targeted operation after checking the source document:
+
+```sh
+python3 scripts/legacy_sync.py publish-archive --document-id DOCUMENT_ID \
+  --reason 'Verified public source copy withheld by the previous import date requirement'
+```
+
+This verifies provenance, immutable content and attachment integrity, respects
+the source publication policy and local access decisions, and records the
+availability correction. It does not change posting dates, unlock content,
+create another document or send a publication notice. It is safe to repeat.
+
 Unchanged content does not change public records, duplicate attachments, create
 postings or queue mail. Observation metadata is updated in bounded batches of
 500 rows. Mapping lookups select the current bundle's keys. Lists and reports do

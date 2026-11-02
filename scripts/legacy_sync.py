@@ -14,7 +14,7 @@ from psycopg.rows import dict_row
 
 from legacy import Capture, canonical, digest, file_type, now
 from legacy_import import import_bundle
-from legacy_documents import configure_source, decide_revision, source_policy
+from legacy_documents import configure_source, decide_revision, publish_imported_archive, source_policy
 from postgres import connect
 
 SYNC_LOCK = "hashtextextended(current_schema() || ':vysker-legacy-sync', 0)"
@@ -235,6 +235,9 @@ def main():
     decision.add_argument('--revision-id', required=True, type=int)
     decision.add_argument('--decision', required=True, choices=['accept', 'reject'])
     decision.add_argument('--reason', required=True)
+    archive = commands.add_parser('publish-archive', help='Publish one verified imported archive copy without altering source posting history or sending mail')
+    archive.add_argument('--document-id', required=True, type=int)
+    archive.add_argument('--reason', required=True)
     config = commands.add_parser('configure', help='Record an explicit source authority change')
     config.add_argument('--mode', required=True, choices=['one_time','mirror','proposals','disabled'])
     config.add_argument('--allow-publication', action='store_true')
@@ -264,6 +267,9 @@ def main():
             with conn.transaction():
                 configure_source(conn, args.mode, args.allow_publication, reason=args.reason)
             print('Source policy recorded.')
+        elif args.command == 'publish-archive':
+            with conn.transaction():
+                print(json.dumps(publish_imported_archive(conn, args.document_id, args.reason)))
         else:
             with conn.transaction():
                 acknowledge(conn, args.source_key, args.fingerprint)

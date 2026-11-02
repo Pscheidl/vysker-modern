@@ -11,7 +11,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from legacy import digest
 from legacy_import import import_bundle, prepare
-from legacy_documents import configure_source, decide_revision, refuse_destructive_reimport
+from legacy_documents import configure_source, decide_revision, publish_imported_archive, refuse_destructive_reimport
 from postgres import connect, temporary_database
 from test_legacy import bundle, FILE, LOCAL_PREVIEW_ENV, subscription_fixture
 from legacy_notifications import queue_publication
@@ -34,6 +34,20 @@ class UnifiedImportTests(unittest.TestCase):
 
     def save(self):
         (self.root / 'manifest.json').write_text(json.dumps(self.data))
+
+    def clear_source_dates(self):
+        self.data['pages'][0]['dates'] = {}
+        self.data['assets'][0].update(dates={}, evidence='')
+        self.save()
+
+    def hidden_archive(self, conn):
+        self.clear_source_dates()
+        self.allow(conn)
+        import_bundle(conn, self.root, archive_notices=True)
+        document = conn.execute('SELECT id FROM documents').fetchone()[0]
+        # Reproduce the old importer result without recording a local visibility decision.
+        conn.execute("UPDATE documents SET public_access=FALSE,status='draft' WHERE id=%s", (document,))
+        return document
 
     def replace_bytes(self, raw=b'%PDF-1.7\nchanged synthetic fixture\n%%EOF'):
         sha = digest(raw)
@@ -167,14 +181,121 @@ class UnifiedImportTests(unittest.TestCase):
             self.assertEqual(conn.execute('SELECT count(*) FROM documents').fetchone()[0], 0)
 
     def test_unknown_history_is_review_locked_without_invented_dates(self):
-        self.data['pages'][0]['dates'] = {}
-        self.data['assets'][0].update(dates={}, evidence='')
-        self.save()
+        self.clear_source_dates()
         with connect(self.database) as conn:
             self.allow(conn)
             import_bundle(conn, self.root, archive_notices=True)
-            self.assertEqual(conn.execute('SELECT lock_state,public_access,source_published_on FROM documents').fetchone(), ('review', False, None))
-            self.assertEqual(conn.execute('SELECT certainty,started_on,started_at FROM document_postings').fetchone(), ('uncertain', None, None))
+            self.assertEqual(conn.execute('SELECT lock_state,public_access,status,source_published_on FROM documents').fetchone(), ('review', True, 'published', None))
+            self.assertEqual(conn.execute('SELECT origin,initial_state,certainty,started_on,started_at,removed_on,removed_at FROM document_postings').fetchone(),
+                             ('source', 'historical', 'uncertain', None, None, None, None))
+            self.assertEqual(conn.execute('SELECT published_on,withdraw_on,board_published_at,withdrawn_at,has_current_posting,has_removed_posting FROM documents').fetchone(),
+                             (None, None, None, None, False, True))
+            self.assertEqual(conn.execute('SELECT document_is_public(d,current_date),document_files_public(d,current_date) FROM documents d').fetchone(), (True, True))
+            self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox').fetchone()[0], 0)
+
+    def test_unknown_archive_history_stays_private_without_source_publication_permission(self):
+        self.clear_source_dates()
+        with connect(self.database) as conn:
+            report = import_bundle(conn, self.root, archive_notices=True)
+            self.assertTrue(report['publication_blocked_by_source_policy'])
+            self.assertEqual(conn.execute('SELECT lock_state,public_access,status FROM documents').fetchone(), ('review', False, 'draft'))
+            self.assertEqual(conn.execute('SELECT initial_state,certainty,started_on,removed_on FROM document_postings').fetchone(),
+                             ('historical', 'uncertain', None, None))
+
+    def test_explicit_archive_repair_preserves_snapshot_history_and_never_announces(self):
+        with connect(self.database) as conn:
+            document = self.hidden_archive(conn)
+            subscription_fixture(conn)
+            snapshot_query = '''SELECT to_jsonb(d)-ARRAY['public_access','status'],
+                (SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM attachments a WHERE a.document_id=d.id),
+                (SELECT jsonb_agg(to_jsonb(p) ORDER BY p.id) FROM document_postings p WHERE p.document_id=d.id),
+                (SELECT jsonb_agg(to_jsonb(s) ORDER BY s.source_key) FROM legacy_sources s WHERE s.document_id=d.id)
+                FROM documents d WHERE id=%s'''
+            before = conn.execute(snapshot_query, (document,)).fetchone()
+            result = publish_imported_archive(conn, document, 'Restore source archive visibility after importer correction')
+            self.assertEqual(result, dict(document_id=document, status='published'))
+            self.assertEqual(conn.execute(snapshot_query, (document,)).fetchone(), before)
+            self.assertEqual(conn.execute('SELECT public_access,status,lock_state,document_files_public(d,current_date) FROM documents d WHERE id=%s',
+                                          (document,)).fetchone(), (True, 'published', 'review', True))
+            events = conn.execute('SELECT kind,reason FROM document_events WHERE document_id=%s', (document,)).fetchall()
+            self.assertEqual(events, [('source_archive_access_restored', 'Restore source archive visibility after importer correction')])
+            audit_count = conn.execute('SELECT count(*) FROM audit_log').fetchone()[0]
+            self.assertEqual(publish_imported_archive(conn, document, 'Repeated repair'), dict(document_id=document, status='unchanged'))
+            self.assertEqual(conn.execute('SELECT count(*) FROM audit_log').fetchone()[0], audit_count)
+            self.assertEqual(conn.execute('SELECT kind,reason FROM document_events WHERE document_id=%s', (document,)).fetchall(), events)
+            import_bundle(conn, self.root, archive_notices=True, sync=True)
+            queue_publication(conn, '2026-11-02T12:00:00Z', document_id=document)
+            queue_publication(conn, '2026-11-02T12:00:00Z', notice_id=document)
+            self.assertEqual(conn.execute('SELECT count(*) FROM publication_outbox').fetchone()[0], 0)
+            self.assertEqual(conn.execute('SELECT count(*) FROM mail_queue').fetchone()[0], 0)
+
+    def test_archive_repair_refuses_source_policy_and_local_privacy_overrides(self):
+        changes = {
+            'blocked': "UPDATE documents SET access_blocked=TRUE WHERE id=%s",
+            'hidden attachments': "UPDATE documents SET attachments_public=FALSE WHERE id=%s",
+            'unretained attachments': "UPDATE documents SET retain_attachments=FALSE WHERE id=%s",
+            'restricted metadata': "UPDATE documents SET metadata_restricted=TRUE WHERE id=%s",
+            'not an archive': "UPDATE documents SET board_status='draft' WHERE id=%s",
+            'expired public access': "UPDATE documents SET public_until=current_date-1 WHERE id=%s",
+            'manual visibility': "INSERT INTO document_events(document_id,kind,reason) VALUES (%s,'visibility_changed','Local editor hid this archive')",
+            'audited visibility': "INSERT INTO audit_log(operation,entity_type,entity_id,details) VALUES ('document_visibility_changed','document',%s,'{}')",
+            'local posting': """INSERT INTO document_postings(document_id,origin,certainty,initial_state,started_at,after_action,snapshot_sha256)
+                SELECT id,'local','documented','current',now(),'retain',document_fingerprint(id)
+                FROM documents WHERE id=%s""",
+        }
+        with connect(self.database) as conn:
+            document = self.hidden_archive(conn)
+            for label, statement in changes.items():
+                with self.subTest(label=label), self.assertRaises(ValueError), conn.transaction():
+                    conn.execute(statement, (document,))
+                    publish_imported_archive(conn, document, 'Fixture repair must be refused')
+            for mode, allow in [('proposals', True), ('one_time', False), ('disabled', True)]:
+                with self.subTest(mode=mode, allow=allow), self.assertRaises(ValueError), conn.transaction():
+                    configure_source(conn, mode, allow_publication=allow, reason='Fixture source restriction')
+                    publish_imported_archive(conn, document, 'Fixture repair must be refused')
+            with self.assertRaises(ValueError):
+                publish_imported_archive(conn, document, '  ')
+            self.assertEqual(conn.execute('SELECT public_access,status FROM documents WHERE id=%s', (document,)).fetchone(), (False, 'draft'))
+            self.assertEqual(conn.execute('SELECT count(*) FROM document_events').fetchone()[0], 0)
+
+    def test_archive_repair_refuses_missing_or_corrupted_retained_bytes(self):
+        with connect(self.database) as conn:
+            document = self.hidden_archive(conn)
+            for raw in [None, b'%PDF-1.7\ncorrupted retained bytes\n%%EOF']:
+                with self.subTest(missing=raw is None), self.assertRaisesRegex(ValueError, 'bytes'), conn.transaction():
+                    # Simulate storage corruption inside this disposable database only.
+                    # The savepoint restores both the bytes and the immutable trigger.
+                    conn.execute('ALTER TABLE attachments DISABLE TRIGGER attachments_document_guard')
+                    conn.execute('UPDATE attachments SET data=%s WHERE document_id=%s', (raw, document))
+                    conn.execute('ALTER TABLE attachments ENABLE TRIGGER attachments_document_guard')
+                    publish_imported_archive(conn, document, 'Fixture repair must reject unavailable or changed bytes')
+            self.assertFalse(conn.execute('SELECT public_access FROM documents WHERE id=%s', (document,)).fetchone()[0])
+
+    def test_archive_repair_refuses_archive_without_import_provenance(self):
+        with connect(self.database) as conn:
+            original = self.hidden_archive(conn)
+            local = conn.execute('''INSERT INTO documents(title,description,status,created_at,retain_attachments,review_json,board_status)
+                SELECT title,description,'draft',created_at,retain_attachments,review_json,board_status
+                FROM documents WHERE id=%s RETURNING id''', (original,)).fetchone()[0]
+            conn.execute('''INSERT INTO attachments(document_id,name,content_type,size_bytes,data,sha256)
+                SELECT %s,name,content_type,size_bytes,data,sha256 FROM attachments WHERE document_id=%s''', (local, original))
+            conn.execute("UPDATE documents SET lock_state='review' WHERE id=%s", (local,))
+            conn.execute('''INSERT INTO document_postings(document_id,origin,certainty,initial_state,after_action,snapshot_sha256,source_url)
+                SELECT %s,origin,certainty,initial_state,after_action,document_fingerprint(%s),source_url
+                FROM document_postings WHERE document_id=%s''', (local, local, original))
+            with self.assertRaisesRegex(ValueError, 'provenance'):
+                publish_imported_archive(conn, local, 'A source-looking local archive is not an imported archive')
+            self.assertFalse(conn.execute('SELECT public_access FROM documents WHERE id=%s', (local,)).fetchone()[0])
+
+    def test_archive_repair_refuses_pending_source_revision(self):
+        with connect(self.database) as conn:
+            document = self.hidden_archive(conn)
+            self.replace_bytes()
+            report = import_bundle(conn, self.root, archive_notices=True, sync=True)
+            self.assertEqual(report['pending_reviews'], 1)
+            with self.assertRaisesRegex(ValueError, 'pending revision'):
+                publish_imported_archive(conn, document, 'Review changed source content before publishing its old capture')
+            self.assertFalse(conn.execute('SELECT public_access FROM documents WHERE id=%s', (document,)).fetchone()[0])
 
     def test_extra_attachment_is_proposed_without_modifying_locked_list(self):
         with connect(self.database) as conn:
@@ -229,7 +350,7 @@ class UnifiedImportTests(unittest.TestCase):
                     import_bundle(conn, directory, archive_notices=archive, preview_notices=not archive, classify_navigation=not archive)
                 actual = conn.execute('SELECT planned_removal_on,removed_on,removed_at FROM document_postings').fetchone()
                 self.assertEqual(tuple(str(v) if v else None for v in actual), ('2030-03-20',None,None))
-                self.assertEqual(conn.execute('SELECT public_access FROM documents').fetchone()[0], not archive)
+                self.assertTrue(conn.execute('SELECT public_access FROM documents').fetchone()[0])
                 self.assertEqual(conn.execute('SELECT initial_state FROM document_postings').fetchone()[0], 'historical' if archive else 'current')
                 self.assertEqual(conn.execute('SELECT has_current_posting,has_removed_posting FROM documents').fetchone(), (not archive, archive))
 
