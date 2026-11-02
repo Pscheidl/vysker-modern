@@ -209,6 +209,38 @@ pub async fn body_json(response: Response) -> Value {
 }
 pub const PDF: &[u8] = b"%PDF-1.7\nukazkovy soubor pro test\n%%EOF";
 
+/// Inspect the message actually captured over SMTP, including multipart mail.
+pub fn assert_mail_headers(message: &str) -> &str {
+    let (headers, _) = message
+        .split_once("\r\n\r\n")
+        .expect("message header boundary");
+    let values = |name: &str| {
+        headers
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .filter(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.trim())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(values("MIME-Version"), ["1.0"]);
+    assert_eq!(values("Content-Type").len(), 1);
+    let ids = values("Message-ID");
+    assert_eq!(ids.len(), 1);
+    let id = ids[0];
+    let address = id
+        .strip_prefix('<')
+        .and_then(|value| value.strip_suffix('>'))
+        .expect("Message-ID must enclose its address in angle brackets");
+    let (local, domain) = address.split_once('@').expect("Message-ID address");
+    assert!(!local.is_empty() && !domain.is_empty());
+    assert!(
+        !address
+            .chars()
+            .any(|c| c.is_whitespace() || matches!(c, '<' | '>' | '\r' | '\n'))
+    );
+    id
+}
+
 pub async fn consent(state: &Backend) -> backend::subscriptions::ConsentAcceptance {
     backend::subscriptions::ConsentAcceptance {
         fingerprint: backend::privacy::notice(state).await.unwrap().fingerprint,

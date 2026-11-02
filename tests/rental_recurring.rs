@@ -603,6 +603,7 @@ async fn retried_series_confirmation_never_reconfirms_a_cancelled_occurrence() {
         .await
         .unwrap();
     let message = capture.await.unwrap();
+    common::assert_mail_headers(&message);
     assert!(
         !message.contains(&day.to_string()),
         "cancelled date must not be confirmed"
@@ -699,6 +700,7 @@ async fn automatic_hourly_billing_is_idempotent_and_closes_only_after_smtp_accep
         .await
         .unwrap();
     let mail = capture.await.unwrap();
+    common::assert_mail_headers(&mail);
     assert!(mail.contains("qr-platba.png"));
     assert!(mail.contains("vyuctovani-pronajmu.pdf"));
     let status: String = sqlx::query_scalar("SELECT status FROM rentals WHERE id=$1")

@@ -9,6 +9,14 @@ The selected service must allow the configured From address and provide SMTP
 credentials. A website-specific password or service credential can be rotated
 without changing a person's mailbox password.
 
+Outgoing text messages are serialized as MIME parts with `MIME-Version: 1.0`
+and UTF-8 content. Explicit message identifiers use the RFC 5322 form
+`<identifier@domain>` and remain stable across delivery retries. The SMTP capture
+tests verify the transmitted headers, decoded Czech text and retry identity.
+An accepted SMTP delivery does not establish placement in the recipient's inbox.
+Diagnosing spam placement also requires the received message's authentication
+results and the recipient provider's filtering information.
+
 All new public documents, official notices and calendar events save notification requests in
 `publication_outbox` in the same transaction as publication. This includes
 administration, scheduled publication and imports directly into the archive.

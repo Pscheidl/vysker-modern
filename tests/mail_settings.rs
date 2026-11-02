@@ -504,6 +504,7 @@ async fn test_message_uses_configured_sender_and_only_the_authenticated_admin_re
         .await
         .unwrap()
         .unwrap();
+    common::assert_mail_headers(&transcript);
     assert!(transcript.contains("MAIL FROM:<noreply@vysker.test>"));
     assert!(transcript.contains("RCPT TO:<admin@vysker.test>"));
     assert!(!transcript.contains("another@example.test"));
@@ -675,6 +676,7 @@ async fn staging_capture_ignores_saved_google_and_captures_every_delivery_path()
             .await
             .unwrap()
             .unwrap();
+        common::assert_mail_headers(&transcript);
         assert!(transcript.contains("MAIL FROM:<noreply@vysker.test>"));
         let recipient = if path == "subscription" {
             "captured@example.test"

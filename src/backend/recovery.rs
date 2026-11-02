@@ -5,7 +5,7 @@ use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
 };
-use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor, message::SinglePart};
 use serde::Deserialize;
 use time::OffsetDateTime;
 
@@ -169,7 +169,7 @@ pub async fn deliver_one(
     };
     let outcome = async {
         let message_id = format!(
-            "vysker-recovery-{}@{}",
+            "<vysker-recovery-{}@{}>",
             message.id,
             url::Url::parse(&s.config.public_url)?
                 .host_str()
@@ -180,8 +180,7 @@ pub async fn deliver_one(
             .to(address.parse()?)
             .message_id(Some(message_id))
             .subject("Obnova hesla správy webu Vyskeř")
-            .header(lettre::message::header::ContentType::TEXT_PLAIN)
-            .body(body)?;
+            .singlepart(SinglePart::plain(body))?;
         smtp.send(email).await?;
         Ok::<(), anyhow::Error>(())
     }

@@ -111,11 +111,40 @@ impl Capture {
         Backend::new(app.state.pool.clone(), config)
     }
     async fn message(&mut self) -> String {
-        tokio::time::timeout(std::time::Duration::from_secs(5), self.messages.recv())
+        let message = tokio::time::timeout(std::time::Duration::from_secs(5), self.messages.recv())
             .await
             .unwrap()
-            .unwrap()
+            .unwrap();
+        common::assert_mail_headers(&message);
+        message
     }
+}
+
+fn plain_text_body(message: &str) -> String {
+    let (headers, body) = message.split_once("\r\n\r\n").unwrap();
+    let headers = headers.to_ascii_lowercase();
+    assert!(headers.contains("content-type: text/plain; charset=utf-8"));
+    if headers.contains("content-transfer-encoding: 7bit") {
+        return body.to_owned();
+    }
+    assert!(headers.contains("content-transfer-encoding: quoted-printable"));
+    let mut decoded = Vec::new();
+    let mut bytes = body.bytes();
+    while let Some(byte) = bytes.next() {
+        if byte != b'=' {
+            decoded.push(byte);
+            continue;
+        }
+        let first = bytes.next().expect("quoted-printable escape");
+        let second = bytes.next().expect("quoted-printable escape");
+        if (first, second) != (b'\r', b'\n') {
+            decoded.push(
+                (first as char).to_digit(16).unwrap() as u8 * 16
+                    + (second as char).to_digit(16).unwrap() as u8,
+            );
+        }
+    }
+    String::from_utf8(decoded).expect("decoded UTF-8 email body")
 }
 
 #[tokio::test]
@@ -218,7 +247,7 @@ async fn retry_preserves_message_identity_and_permanently_excludes_hidden_items(
     let keep = document(
         &app,
         recipient,
-        "Keep document",
+        "Žluťoučký kůň: pozvánka na zasedání",
         cutoff - Duration::seconds(1),
     )
     .await;
@@ -244,6 +273,7 @@ async fn retry_preserves_message_identity_and_permanently_excludes_hidden_items(
     let smtp = mail::transport(&state).unwrap();
     assert!(mail::deliver_one(&state, &smtp, cutoff).await.unwrap());
     let first = capture.message().await;
+    assert!(plain_text_body(&first).contains("Žluťoučký kůň: pozvánka na zasedání"));
     assert!(first.contains(&format!("/dokumenty/{keep}")));
     assert!(!first.contains(&format!("/dokumenty/{hide}")));
     let retry: (i64, Option<i64>, i64, String) = sqlx::query_as(
@@ -272,14 +302,11 @@ async fn retry_preserves_message_identity_and_permanently_excludes_hidden_items(
     );
     let second = capture.message().await;
     assert!(!second.contains(&format!("/dokumenty/{hide}")));
-    let message_id = |value: &str| {
-        value
-            .lines()
-            .find(|line| line.starts_with("Message-ID:"))
-            .unwrap()
-            .to_owned()
-    };
-    assert_eq!(message_id(&first), message_id(&second));
+    assert_eq!(
+        common::assert_mail_headers(&first),
+        common::assert_mail_headers(&second)
+    );
+    assert!(plain_text_body(&second).contains("Žluťoučký kůň: pozvánka na zasedání"));
     let completed: (i64, bool, bool) = sqlx::query_as(
         "SELECT attempts,sent_at IS NOT NULL,body IS NULL FROM mail_queue WHERE purpose='document'",
     )
@@ -409,6 +436,8 @@ async fn verification_does_not_wait_for_the_next_hourly_digest() {
     common::request_subscription(&app.state, "confirm-now@example.test", now)
         .await
         .unwrap();
+    let original: String = sqlx::query_scalar("SELECT m.body FROM mail_queue m JOIN subscribers s ON s.id=m.subscriber_id WHERE s.email='confirm-now@example.test' AND m.purpose='verification'")
+        .fetch_one(&app.state.pool).await.unwrap();
     let mut capture = Capture::new(false).await;
     let state = capture.backend(&app);
     assert!(
@@ -417,6 +446,10 @@ async fn verification_does_not_wait_for_the_next_hourly_digest() {
             .unwrap()
     );
     let sent = capture.message().await;
+    assert_eq!(
+        plain_text_body(&sent).replace("\r\n", "\n").trim_end(),
+        original.trim_end()
+    );
     assert!(sent.contains("confirm-now@example.test"));
     assert!(!sent.contains("/dokumenty/"));
     assert_eq!(counts(&app).await, (1, 0, 0));

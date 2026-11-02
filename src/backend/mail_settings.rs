@@ -3,7 +3,10 @@ use super::{Backend, Error, Result, accounts, audit, auth, bad, mail};
 use crate::config::Config;
 use anyhow::Context;
 use axum::{Json, extract::State, http::StatusCode};
-use lettre::{AsyncTransport, Message, message::Mailbox};
+use lettre::{
+    AsyncTransport, Message,
+    message::{Mailbox, SinglePart},
+};
 use ring::{
     aead::{self, Aad, LessSafeKey, Nonce, UnboundKey},
     rand::{SecureRandom, SystemRandom},
@@ -255,9 +258,16 @@ pub async fn test(
     let message = Message::builder()
         .from(sender)
         .to(recipient)
+        .message_id(Some(format!(
+            "<vysker-test-{}@{}>",
+            auth::token(),
+            url::Url::parse(&configured.config.public_url)
+                .map_err(|_| configuration_error())?
+                .host_str()
+                .unwrap_or("localhost")
+        )))
         .subject("Vyskeř: zkouška odesílání e-mailů")
-        .header(lettre::message::header::ContentType::TEXT_PLAIN)
-        .body("Dobrý den,\n\ntento e-mail ověřuje nastavení odesílání z obecního webu Vyskeř.\n\nObec Vyskeř".to_owned())
+        .singlepart(SinglePart::plain("Dobrý den,\n\ntento e-mail ověřuje nastavení odesílání z obecního webu Vyskeř.\n\nObec Vyskeř".to_owned()))
         .map_err(|_| configuration_error())?;
     let smtp = mail::transport(&configured).map_err(|_| configuration_error())?;
     if smtp.send(message).await.is_err() {

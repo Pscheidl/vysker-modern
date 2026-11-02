@@ -15,7 +15,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
-use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor, message::SinglePart};
 use sqlx::PgPool;
 use std::{collections::BTreeSet, io::Cursor};
 use time::OffsetDateTime;
@@ -934,12 +934,9 @@ pub async fn deliver_one(
                     .unwrap_or("localhost")
             )))
             .subject(message.subject)
-            .header(lettre::message::header::ContentType::TEXT_PLAIN)
-            .body(
-                message
-                    .body
-                    .ok_or_else(|| anyhow::anyhow!("Missing report notification body"))?,
-            )?;
+            .singlepart(SinglePart::plain(message.body.ok_or_else(|| {
+                anyhow::anyhow!("Missing report notification body")
+            })?))?;
         smtp.send(email).await?;
         Ok::<(), anyhow::Error>(())
     }

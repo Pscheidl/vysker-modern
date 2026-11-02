@@ -8,7 +8,7 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor, message::SinglePart};
 use serde::{Deserialize, Serialize};
 use sqlx::PgConnection;
 use time::{
@@ -2624,9 +2624,7 @@ pub async fn deliver_one(
                 .map_err(anyhow::Error::msg)?,
             )?
         } else {
-            builder
-                .header(lettre::message::header::ContentType::TEXT_PLAIN)
-                .body(body)?
+            builder.singlepart(SinglePart::plain(body))?
         };
         smtp.send(email).await?;
         Ok::<(), anyhow::Error>(())

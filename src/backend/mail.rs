@@ -1,6 +1,6 @@
 use super::{Backend, Result, auth};
 use lettre::{
-    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
+    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor, message::SinglePart,
     transport::smtp::authentication::Credentials,
 };
 use sqlx::PgConnection;
@@ -572,15 +572,14 @@ pub async fn deliver_one(
             .from(s.config.email_from.parse()?)
             .to(address.parse()?)
             .message_id(Some(format!(
-                "vysker-post-{}@{}",
+                "<vysker-post-{}@{}>",
                 message.id,
                 url::Url::parse(&s.config.public_url)?
                     .host_str()
                     .unwrap_or("localhost")
             )))
             .subject(&message.subject)
-            .header(lettre::message::header::ContentType::TEXT_PLAIN)
-            .body(message.body.unwrap_or_default())?;
+            .singlepart(SinglePart::plain(message.body.unwrap_or_default()))?;
         smtp.send(email).await?;
         Ok::<(), anyhow::Error>(())
     }
