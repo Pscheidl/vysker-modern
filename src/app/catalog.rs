@@ -69,7 +69,7 @@ fn DocumentContent(document: crate::catalog::Document) -> impl IntoView {
                     </div>
                     {file.text_url.map(|url|view!{<div class="attachment-transcript">
                         <h3>"Přepis textu"</h3>
-                        <p class="attachment-text-note">"Automatický přepis pro čtení a kopírování. Může obsahovat chyby."</p>
+                        <p class="attachment-text-note">"Automatický přepis pro čtení a kopírování."</p>
                         <div class="attachment-text-links">
                             <a href=url.clone() target="_blank" rel="external noopener noreferrer" aria-label=preview_label><Icon name="external"/><span>"Zobrazit přepis textu"</span></a>
                             <a href=format!("{url}/download") download aria-label=download_label><Icon name="paper"/><span>"Stáhnout přepis textu"<span class="attachment-text-format">" (.txt)"</span></span></a>
