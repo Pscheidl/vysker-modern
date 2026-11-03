@@ -44,6 +44,7 @@ time-tz = { version = "2", optional = true }
 url = { version = "2", optional = true }
 percent-encoding = { version = "2", optional = true }
 rpassword = { version = "7", optional = true }
+rmcp = { version = "=3.8.0", optional = true, default-features = false, features = ["server", "transport-streamable-http-server"] }
 reqwest = { version = "0.12.28", optional = true, default-features = false, features = ["rustls-tls"] }
 gloo-net = { version = "0.6", optional = true, default-features = false, features = ["http", "json"] }
 leptos = "0.8"
@@ -69,7 +70,7 @@ skrifa = { version = "0.49", optional = true }
 
 [features]
 default = ["ssr"]
-ssr = ["dep:reqwest", "dep:image", "dep:qrcode", "dep:kamadak-exif", "dep:pdf-writer", "dep:skrifa", "dep:anyhow", "dep:axum", "dep:leptos_axum", "dep:sqlx", "dep:tokio", "dep:tower-http", "dep:tracing", "dep:tracing-subscriber", "dep:serde_json", "dep:argon2", "dep:rand", "dep:ring", "dep:sha2", "dep:lettre", "dep:time-tz", "dep:url", "dep:percent-encoding", "dep:rpassword", "leptos/ssr", "leptos_meta/ssr", "leptos_router/ssr"]
+ssr = ["dep:reqwest", "dep:image", "dep:qrcode", "dep:kamadak-exif", "dep:pdf-writer", "dep:skrifa", "dep:anyhow", "dep:axum", "dep:leptos_axum", "dep:sqlx", "dep:tokio", "dep:tower-http", "dep:tracing", "dep:tracing-subscriber", "dep:serde_json", "dep:argon2", "dep:rand", "dep:ring", "dep:sha2", "dep:lettre", "dep:time-tz", "dep:url", "dep:percent-encoding", "dep:rpassword", "dep:rmcp", "leptos/ssr", "leptos_meta/ssr", "leptos_router/ssr"]
 hydrate = ["leptos/hydrate", "dep:wasm-bindgen", "dep:console_error_panic_hook", "dep:gloo-net", "dep:serde_json", "dep:percent-encoding"]
 demo = ["leptos/csr", "dep:serde_json", "dep:console_error_panic_hook", "dep:percent-encoding"]
 

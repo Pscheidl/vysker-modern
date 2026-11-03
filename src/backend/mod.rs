@@ -1,5 +1,7 @@
 //! Backendové API. SQL, hesla a SMTP jsou dostupné výhradně ve feature ssr.
 pub mod accounts;
+pub mod agent_content;
+pub mod agent_docs;
 pub mod attachment_index;
 pub mod attachment_text;
 pub mod auth;
@@ -11,6 +13,7 @@ pub mod legacy;
 pub mod mail;
 pub mod mail_settings;
 pub mod management;
+pub mod mcp;
 pub mod navigation;
 pub mod notices;
 pub mod page_images;
@@ -191,6 +194,33 @@ async fn health(State(s): State<Backend>) -> Result<Json<serde_json::Value>> {
 
 pub fn router(state: Backend) -> Router {
     let config = state.config.clone();
+    let mcp_routes = mcp::router(state.clone());
+    let discovery_routes = Router::new()
+        .route(
+            "/llms.txt",
+            get(agent_docs::llms).options(agent_docs::options),
+        )
+        .route(
+            "/for-agents.md",
+            get(agent_docs::guide).options(agent_docs::options),
+        )
+        .route(
+            "/openapi.json",
+            get(agent_docs::openapi).options(agent_docs::options),
+        )
+        .route(
+            "/.well-known/ai-catalog.json",
+            get(agent_docs::catalog).options(agent_docs::options),
+        )
+        .route(
+            "/mcp/server-card",
+            get(agent_docs::server_card).options(agent_docs::options),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            config.clone(),
+            privacy::response_headers,
+        ))
+        .with_state(state.clone());
     let rental_routes = Router::new()
         .route("/api/v1/rental-assets", get(rentals::assets))
         .route(
@@ -594,6 +624,10 @@ pub fn router(state: Backend) -> Router {
                 .layer(DefaultBodyLimit::max(1024 * 1024)),
         )
         .route("/api/v1/pages/{slug}", get(pages::detail))
+        .route(
+            "/api/v1/pages/{slug}/markdown",
+            get(agent_docs::page_markdown),
+        )
         .route("/api/v1/admin/pages/{id}/revisions", get(pages::revisions))
         .route("/api/v1/subscriptions", post(subscriptions::subscribe))
         .route("/api/v1/subscriptions/verify", post(subscriptions::confirm))
@@ -620,6 +654,8 @@ pub fn router(state: Backend) -> Router {
             privacy::response_headers,
         ))
         .with_state(state)
+        .merge(mcp_routes)
+        .merge(discovery_routes)
 }
 
 async fn ready(State(s): State<Backend>) -> Result<Json<serde_json::Value>> {

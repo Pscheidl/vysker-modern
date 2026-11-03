@@ -530,7 +530,7 @@ pub fn Footer() -> impl IntoView {
     view! {
         <footer class="site-footer page-width">
             <span>"Obec Vyskeř"</span>
-            <nav aria-label="Patička"><A href=site_url("/povinne-informace")>"Povinné informace"</A><A href=site_url("/stranky")>"Informace obce"</A><A href=site_url("/pristupnost")>"Přístupnost"</A><A href=site_url("/ochrana-udaju")>"Ochrana údajů"</A><A href=site_url("/obec")>"Kontakt"</A><span class="app-install-link" data-app-install-link hidden><A href=site_url("/instalace") on:click=move |_| window().scroll_to_with_x_and_y(0.0, 0.0)>"Přidat na plochu"</A></span>{(!cfg!(feature="demo")).then(||view!{<A href="/admin">"Správa webu"</A>})}</nav>
+            <nav aria-label="Patička"><A href=site_url("/povinne-informace")>"Povinné informace"</A><A href=site_url("/stranky")>"Informace obce"</A><A href=site_url("/pristupnost")>"Přístupnost"</A><A href=site_url("/ochrana-udaju")>"Ochrana údajů"</A><A href=site_url("/obec")>"Kontakt"</A><span class="app-install-link" data-app-install-link hidden><A href=site_url("/instalace") on:click=move |_| window().scroll_to_with_x_and_y(0.0, 0.0)>"Přidat na plochu"</A></span>{(!cfg!(feature="demo")).then(||view!{<A href="/for-agents" attr:lang="en">"For agents"</A><A href="/admin">"Správa webu"</A>})}</nav>
             <p class="site-footer-note">"Neoficiální web obce Vyskeř. Informace o obci přehledněji."</p>
         </footer>
     }
