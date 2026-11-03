@@ -399,6 +399,44 @@ pub async fn availability(
     State(s): State<Backend>,
     Path(id): Path<i64>,
 ) -> Result<Json<Vec<Interval>>> {
+    Ok(Json(
+        public_availability(&s, id, today(OffsetDateTime::now_utc()), None, None, 0).await?,
+    ))
+}
+
+/// The same privacy projection as the public calendar, with a bounded date window.
+pub async fn public_availability_in_range(
+    state: &Backend,
+    id: i64,
+    from: Date,
+    to: Date,
+    limit: i64,
+    offset: i64,
+) -> Result<(Vec<Interval>, bool)> {
+    super::Pagination {
+        limit: Some(limit),
+        offset: Some(offset),
+    }
+    .bounds()?;
+    if from < today(OffsetDateTime::now_utc()) || to < from || (to - from).whole_days() > 365 {
+        return Err(bad(
+            "Rental availability covers today and future dates, in a window of at most 366 days.",
+        ));
+    }
+    let mut items = public_availability(state, id, from, Some(to), Some(limit + 1), offset).await?;
+    let more = items.len() > limit as usize;
+    items.truncate(limit as usize);
+    Ok((items, more))
+}
+
+async fn public_availability(
+    s: &Backend,
+    id: i64,
+    from: Date,
+    to: Option<Date>,
+    limit: Option<i64>,
+    offset: i64,
+) -> Result<Vec<Interval>> {
     let mut tx = s.pool.begin().await?;
     super::rental_settings::require_enabled(&mut tx).await?;
     let exists: bool =
@@ -410,9 +448,8 @@ pub async fn availability(
         return Err(missing());
     }
     let now = OffsetDateTime::now_utc();
-    let day = today(now);
-    Ok(Json(sqlx::query_as("SELECT start_date::text,end_date::text,CASE WHEN start_minute IS NOT NULL THEN lpad((start_minute/60)::text,2,'0')||':00' END AS start_time,CASE WHEN end_minute IS NOT NULL THEN lpad((end_minute/60)::text,2,'0')||':00' END AS end_time,status FROM (SELECT start_date,end_date,start_minute,end_minute,CASE WHEN status='pending' THEN 'pending' ELSE 'booked' END AS status FROM rentals WHERE asset_id=$1 AND status NOT IN ('rejected','cancelled') AND (status<>'pending' OR (starts_local AT TIME ZONE 'Europe/Prague')>$3) AND end_date >= $2 UNION ALL SELECT start_date,end_date,start_minute,end_minute,'booked' AS status FROM rental_blocks WHERE asset_id=$1 AND end_date >= $2) AS periods ORDER BY start_date,end_date,status")
-        .bind(id).bind(day).bind(now).fetch_all(&mut *tx).await?))
+    Ok(sqlx::query_as("SELECT start_date::text,end_date::text,CASE WHEN start_minute IS NOT NULL THEN lpad((start_minute/60)::text,2,'0')||':00' END AS start_time,CASE WHEN end_minute IS NOT NULL THEN lpad((end_minute/60)::text,2,'0')||':00' END AS end_time,status FROM (SELECT start_date,end_date,start_minute,end_minute,CASE WHEN status='pending' THEN 'pending' ELSE 'booked' END AS status FROM rentals WHERE asset_id=$1 AND status NOT IN ('rejected','cancelled') AND (status<>'pending' OR (starts_local AT TIME ZONE 'Europe/Prague')>$3) AND end_date >= $2 UNION ALL SELECT start_date,end_date,start_minute,end_minute,'booked' AS status FROM rental_blocks WHERE asset_id=$1 AND end_date >= $2) AS periods WHERE ($4::date IS NULL OR start_date<=$4) ORDER BY start_date,end_date,start_minute,end_minute,status LIMIT $5 OFFSET $6")
+        .bind(id).bind(from).bind(now).bind(to).bind(limit).bind(offset).fetch_all(&mut *tx).await?)
 }
 
 #[derive(Serialize, sqlx::FromRow)]

@@ -5,7 +5,7 @@ use super::{
 };
 use crate::catalog::{load_document, load_page};
 use leptos::prelude::*;
-use leptos_meta::Title;
+use leptos_meta::{Link, Title};
 use leptos_router::{components::A, hooks::use_params_map};
 
 #[component]
@@ -86,7 +86,7 @@ pub fn ContentPage() -> impl IntoView {
         load_page,
     );
     view! {<Show when=contact fallback=move || view! {<div class="page-width interior prose"><Suspense fallback=Loading>{move ||page.get().map(|result|match result {
-        Ok(Some(page))=>view!{<Title text=format!("{} · Vyskeř",page.title)/><header class="page-heading"><h1>{page.title}</h1></header><super::pages::PageBody content=page.content/>}.into_any(),
+        Ok(Some(page))=>view!{<Title text=format!("{} · Vyskeř",page.title)/><Link rel="alternate" type_="text/markdown" href=site_url(&format!("/api/v1/pages/{}/markdown",params.get().get("slug").unwrap_or_default()))/><header class="page-heading"><h1>{page.title}</h1></header><super::pages::PageBody content=page.content/>}.into_any(),
         Ok(None)=>view!{<NotFound/>}.into_any(),
         Err(_)=>view!{<p role="alert">"Stránku se nepodařilo načíst."</p>}.into_any()
     })}</Suspense></div>}><super::pages::ContactRedirect/></Show>}

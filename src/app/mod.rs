@@ -2,6 +2,7 @@ mod admin;
 mod catalog;
 mod components;
 mod events;
+mod for_agents;
 mod pages;
 mod rentals;
 mod reports;
@@ -55,6 +56,7 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <link rel="icon" type="image/png" sizes="128x128" href="/images/vysker-znak-mat-favicon-128.png"/>
                 <link rel="apple-touch-icon" href="/images/vysker-znak-mat-apple-touch-icon.png"/>
                 <link rel="manifest" href="/manifest.webmanifest"/>
+                <link rel="describedby" type="text/plain" href="/llms.txt"/>
                 <meta name="theme-color" content="#fdfdfd"/>
                 <script src="/install.js" defer></script>
                 <link rel="preload" href="/fonts/geist.woff2" r#as="font" type="font/woff2" crossorigin="anonymous"/>
@@ -95,6 +97,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("admin") view=admin::Administration/>
                     <Route path=path!("admin/*path") view=admin::Administration/>
                     <Route path=path!("") view=Home ssr=leptos_router::SsrMode::InOrder/>
+                    <Route path=path!("for-agents") view=for_agents::ForAgents ssr=leptos_router::SsrMode::InOrder/>
                     <Route path=path!("instalace") view=InstallApp ssr=leptos_router::SsrMode::InOrder/>
                     <Route path=path!("uredni-deska") view=NoticeBoard ssr=leptos_router::SsrMode::InOrder/>
                     <Route path=path!("uredni-deska/:id") view=NoticeDetail ssr=leptos_router::SsrMode::Async/>

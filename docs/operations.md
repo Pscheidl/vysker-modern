@@ -103,6 +103,51 @@ and `deploy/legacy-sync.cron.example` for the first run, scheduling and review.
 The private `migration-state` volume holds reports. Pending proposals and their
 captured bytes live in PostgreSQL and are included in database backups.
 
+## Public MCP and agent discovery
+
+The application implements a public, read-only MCP server at `/mcp` using
+Streamable HTTP and the pinned `rmcp` SDK. It shares the existing PostgreSQL
+pool and extracted attachment text. It does not run an LLM, start OCR, send
+email or create rental requests. The [English client guide](for-agents.md)
+is served at `/for-agents` and `/for-agents.md`. The Czech
+[design and scope](mcp-navrh.md) explain the evidence and privacy boundaries.
+
+Set `OBEC_VEREJNA_URL` to the real public origin. `/llms.txt`, `/openapi.json`,
+`/.well-known/ai-catalog.json` and `/mcp/server-card` derive their URLs from
+that configuration, never from a request's `Host` header. The card uses the
+same identity and supported protocol versions as the MCP runtime. The catalog
+and card are experimental discovery metadata, so clients may still need the
+explicit MCP URL. Their responses support cross-origin reads, ETags and a
+one-hour public cache. Public content and transcripts retain their existing
+visibility and cache protections. No indexing or robots setting changes here.
+
+Limits currently set in `src/backend/mcp.rs` are four simultaneous tool reads,
+10 seconds per read, 60 HTTP requests per minute per client IP, a 128 KiB request
+body, a JSON-RPC request ID of at most 1,024 JSON-encoded bytes, and a 256 KiB
+MCP response. The ID bound includes JSON quotes and escapes and is checked
+before the SDK can echo the ID into a response. Client IP handling follows the configured
+trusted proxy. `src/backend/agent_content.rs` returns complete transcripts when
+their serialized data fit within 96 KiB, otherwise it supplies a continuation
+cursor. Optional `max_chars` accepts 1 to 32,000. The complete public TXT link
+remains available. Document and page text default to 12,000 characters per
+part. Event and occupancy queries span at most 366 days, with pages of up to
+100 records. Occupancy queries cannot request past dates.
+
+There is no MCP enable/disable configuration flag. Disabling it currently
+requires removing the `mcp::router` merge in `src/backend/mod.rs`, removing the
+corresponding discovery routes and guide links, and rebuilding the application.
+Do not leave metadata advertising an endpoint that has been disabled. The
+existing rental feature switch still disables rental reads independently,
+with HTTP `503` and a corresponding unavailable MCP tool result.
+
+Before release, run the protocol, content and discovery integration tests plus
+the no-JavaScript browser guide test. Check anonymous visibility again after
+unpublishing a source, cursor invalidation after changing a transcript,
+disabled rentals and the absence of new notification work after tool reads.
+Check memory and response times with the website and OCR worker active. This
+section describes the implementation and required checks, not completed test
+results or a confirmed deployment.
+
 ## Backups and recovery
 
 The `backup` service creates a consistent PostgreSQL custom archive daily using

@@ -20,7 +20,7 @@ use time_tz::{
     timezones::db::europe::PRAGUE,
 };
 
-#[derive(sqlx::FromRow)]
+#[derive(Clone, sqlx::FromRow)]
 struct EventRecord {
     id: i64,
     title: String,
@@ -585,6 +585,91 @@ pub async fn public_event_from_pool_at(
 
 pub async fn public_event_from_pool(pool: &PgPool, id: i64) -> Result<Option<Event>> {
     public_event_from_pool_at(pool, id, OffsetDateTime::now_utc()).await
+}
+
+/// Public occurrence window for bounded agent reads, using the same recurrence rules
+/// as the website. The candidate limit fails explicitly instead of silently truncating.
+pub async fn public_events_in_range(
+    pool: &PgPool,
+    from: Date,
+    to: Date,
+    limit: i64,
+    offset: i64,
+) -> Result<(Vec<Event>, bool)> {
+    Pagination {
+        limit: Some(limit),
+        offset: Some(offset),
+    }
+    .bounds()?;
+    if to < from || (to - from).whole_days() > 365 || from.year() < 1 || to.year() > 9998 {
+        return Err(bad("Use a date window of at most 366 days."));
+    }
+    let start = parse_event_datetime(&format!("{from}T00:00:00"))?;
+    let until = parse_event_datetime(&format!(
+        "{}T00:00:00",
+        to.next_day().ok_or_else(|| bad("Invalid end date."))?
+    ))?;
+    let records: Vec<EventRecord> = sqlx::query_as("SELECT * FROM events WHERE published AND starts_at<$2 AND (ends_at>=$1 OR repeat_every_14_days) AND (NOT repeat_every_14_days OR repeat_until IS NULL OR repeat_until>=$3) ORDER BY id LIMIT 2001")
+        .bind(start).bind(until).bind(from - Duration::days(14)).fetch_all(pool).await?;
+    if records.len() > 2000 {
+        return Err(bad(
+            "Too many event series. Use the public calendar or a narrower source selection.",
+        ));
+    }
+    let mut matches = Vec::new();
+    for (record_index, record) in records.iter().enumerate() {
+        if !record.repeat_every_14_days {
+            if record.ends_at >= start && record.starts_at < until {
+                matches.push((
+                    record.starts_at,
+                    record.id,
+                    record_index,
+                    record.starts_at,
+                    record.ends_at,
+                ));
+            }
+            continue;
+        }
+        let anchor = record.starts_at.to_timezone(PRAGUE).date();
+        let last = record
+            .repeat_until
+            .unwrap_or(time::macros::date!(9999 - 12 - 31));
+        let duration_days = (record.ends_at - record.starts_at).whole_days().max(0) + 2;
+        if duration_days > 16 {
+            return Err(bad(
+                "An event series has an invalid duration. Consult the public calendar.",
+            ));
+        }
+        let first = ((from - anchor).whole_days() - duration_days)
+            .div_euclid(14)
+            .max(0);
+        let end = ((to.min(last) - anchor).whole_days()).div_euclid(14);
+        for index in first..=end {
+            if let Some((occurrence_start, occurrence_end)) = recurrence_at(record, index) {
+                if occurrence_start.to_timezone(PRAGUE).date() <= last
+                    && occurrence_end >= start
+                    && occurrence_start < until
+                {
+                    matches.push((
+                        occurrence_start,
+                        record.id,
+                        record_index,
+                        occurrence_start,
+                        occurrence_end,
+                    ));
+                }
+            }
+        }
+    }
+    matches.sort_unstable_by_key(|item| (item.0, item.1));
+    let more = matches.len() > offset as usize + limit as usize;
+    let items = matches
+        .into_iter()
+        .skip(offset as usize)
+        .take(limit as usize)
+        .map(|(_, _, record, start, end)| public_event(records[record].clone(), start, end))
+        .collect();
+    Ok((items, more))
 }
 
 pub async fn public_list(
