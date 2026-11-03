@@ -520,6 +520,7 @@ pub async fn load_site_info() -> Result<SiteInfo, ServerFnError> {
 pub fn default_navigation() -> Vec<NavigationLink> {
     [
         ("Přehled", "/"),
+        ("Kalendář akcí", "/kalendar"),
         ("Úřední deska", "/uredni-deska"),
         ("Dokumenty", "/dokumenty"),
         ("Obec a úřad", "/obec"),

@@ -371,6 +371,80 @@ async fn issue_reports_have_a_default_menu_link_and_can_be_managed() {
 }
 
 #[tokio::test]
+async fn calendar_navigation_is_added_after_overview_without_overwriting_custom_links() {
+    let app = App::new().await;
+    let navigation = navigation_from_pool(&app.state.pool).await.unwrap();
+    let default = obecni_web::catalog::default_navigation();
+    for links in [&navigation, &default] {
+        let overview = links.iter().position(|link| link.path == "/").unwrap();
+        assert_eq!(links[overview + 1].path, "/kalendar");
+        assert_eq!(links[overview + 1].label, "Kalendář akcí");
+    }
+
+    let calendar = navigation
+        .iter()
+        .find(|link| link.path == "/kalendar")
+        .unwrap();
+    let parent = navigation.iter().find(|link| link.path == "/obec").unwrap();
+    sqlx::query(
+        "UPDATE navigation_items SET label='Dění v obci',visible=FALSE,parent_id=$1,sort_order=73,version=2 WHERE id=$2",
+    )
+    .bind(parent.id)
+    .bind(calendar.id)
+    .execute(&app.state.pool)
+    .await
+    .unwrap();
+
+    sqlx::raw_sql(include_str!("../migrations/0032_calendar_navigation.sql"))
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    let calendars: Vec<(String, bool, Option<i64>, i64, i64)> = sqlx::query_as(
+        "SELECT label,visible,parent_id,sort_order,version FROM navigation_items WHERE path='/kalendar'",
+    )
+    .fetch_all(&app.state.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        calendars,
+        vec![("Dění v obci".into(), false, Some(parent.id), 73, 2)]
+    );
+}
+
+#[tokio::test]
+async fn calendar_navigation_migration_preserves_full_navigation() {
+    let app = App::new().await;
+    sqlx::query("DELETE FROM navigation_items WHERE path='/kalendar'")
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO navigation_items(label,path,sort_order)
+         SELECT 'Vlastní odkaz','/kontakt',100+i
+         FROM generate_series(1,20-(SELECT count(*) FROM navigation_items WHERE parent_id IS NULL)) AS i",
+    )
+    .execute(&app.state.pool)
+    .await
+    .unwrap();
+    sqlx::raw_sql(include_str!("../migrations/0032_calendar_navigation.sql"))
+        .execute(&app.state.pool)
+        .await
+        .unwrap();
+    let roots: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM navigation_items WHERE parent_id IS NULL")
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap();
+    assert_eq!(roots, 20);
+    let has_calendar: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM navigation_items WHERE path='/kalendar')")
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap();
+    assert!(!has_calendar);
+}
+
+#[tokio::test]
 async fn rental_navigation_starts_with_its_final_name_and_can_be_customized() {
     let app = App::new().await;
     let default = navigation_from_pool(&app.state.pool).await.unwrap();

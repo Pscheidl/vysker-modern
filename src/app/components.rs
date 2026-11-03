@@ -357,6 +357,7 @@ pub fn SearchBox() -> impl IntoView {
 pub fn Shortcuts() -> impl IntoView {
     view! {
         <nav class="shortcuts" aria-label="Nejčastější služby">
+            <A href=site_url("/kalendar") attr:class="shortcut-calendar"><Icon name="calendar"/><span>"Kalendář akcí"</span><Icon class="shortcut-arrow"/></A>
             <A href=site_url("/uredni-deska")><Icon name="board"/><span>"Úřední deska"</span><Icon class="shortcut-arrow"/></A>
             <A href=site_url("/dokumenty")><Icon name="paper"/><span>"Dokumenty a formuláře"</span><Icon class="shortcut-arrow"/></A>
             <A href=site_url("/obec#uredni-hodiny")><Icon name="clock"/><span>"Úřední hodiny"</span><Icon class="shortcut-arrow"/></A>
@@ -412,7 +413,7 @@ pub fn Newsletter() -> impl IntoView {
     let privacy = Resource::new(|| (), |_| crate::catalog::load_privacy_notice());
     view! {<section class="newsletter" aria-labelledby="newsletter-title">
         <Icon name="mail" class="newsletter-icon"/>
-        <div class="newsletter-copy"><h2 id="newsletter-title">"Nové dokumenty a akce do e-mailu"</h2><p>"Nové dokumenty a akce posíláme společně v hodinovém souhrnu. Odběr je dobrovolný a aktivujete jej potvrzením e-mailové adresy."</p></div>
+        <div class="newsletter-copy"><h2 id="newsletter-title">"Odběr dokumentů a oznámení o akcích"</h2><p>"E-mailem zasíláme hodinový souhrn nově zveřejněných dokumentů a oznámení o akcích. Odběr je dobrovolný a aktivujete jej potvrzením e-mailové adresy."</p></div>
         <Suspense fallback=||view!{<p role="status">"Načítám informace o odběru…"</p>}>
             {move || privacy.get().map(|result|match result {
                 Ok(Some(notice))=>view!{<NewsletterForm notice/>}.into_any(),

@@ -37,7 +37,7 @@ test('create, publish, edit and cancel an event with a public feed and permanent
     await publicPage.goto(`${origin}/kalendar/${id}`)
     await expect(publicPage.getByRole('heading', { name: title, exact: true })).toHaveCount(0)
     await publicPage.goto(`${origin}/`)
-    await expect(publicPage.locator(`.events-strip a[href="/kalendar/${id}"]`)).toHaveCount(0)
+    await expect(publicPage.locator(`.home-events a[href="/kalendar/${id}"]`)).toHaveCount(0)
 
     await page.getByLabel('Zveřejnit akci', { exact: true }).check()
     await page.getByRole('button', { name: 'Uložit akci', exact: true }).click()
@@ -51,7 +51,7 @@ test('create, publish, edit and cancel an event with a public feed and permanent
     await expect(publicPage.locator('.event-times')).toContainText('12:00')
 
     await publicPage.goto(`${origin}/`)
-    const feed = publicPage.getByRole('region', { name: 'Dění v obci' })
+    const feed = publicPage.getByRole('region', { name: 'Nejbližší akce' })
     await expect(feed.locator(`a[href="/kalendar/${id}"]`)).toContainText(title)
     await feed.locator(`a[href="/kalendar/${id}"]`).click()
     await expect(publicPage.getByRole('heading', { name: title, exact: true })).toBeVisible()
@@ -76,8 +76,8 @@ test('create, publish, edit and cancel an event with a public feed and permanent
     const cancelled = publicPage.locator('.event-row').filter({ has: publicPage.getByRole('link', { name: revisedTitle, exact: true }) })
     await expect(cancelled).toContainText('Zrušeno')
     await publicPage.goto(`${origin}/`)
-    await expect(publicPage.locator(`.events-strip a[href="/kalendar/${id}"]`)).toContainText('Zrušeno')
-    await expect(publicPage.locator(`.events-strip a[href="/kalendar/${id}"]`)).toContainText(revisedTitle)
+    await expect(publicPage.locator(`.home-events a[href="/kalendar/${id}"]`)).toContainText('Zrušeno')
+    await expect(publicPage.locator(`.home-events a[href="/kalendar/${id}"]`)).toContainText(revisedTitle)
     expect(errors).toEqual([])
   } finally {
     await publicContext.close()

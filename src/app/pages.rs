@@ -33,7 +33,7 @@ pub fn Home() -> impl IntoView {
                 })}</Suspense>
             </div>
         </section>
-        <div class="page-width"><Newsletter/><HomeEvents/></div>
+        <div class="page-width home-followup"><HomeEvents/><Newsletter/></div>
     }
 }
 
@@ -366,7 +366,19 @@ pub fn SearchResults() -> impl IntoView {
 #[component]
 fn HomeEvents() -> impl IntoView {
     #[cfg(feature = "demo")]
-    return view! {<PreviewOnly><section class="events-strip" aria-label="Ilustrační události"><h2>"Ilustrační události"</h2><A href=super::site_url("/kalendar#setkani")><span>"10. října"</span>"Podzimní setkání sousedů"</A><A href=super::site_url("/kalendar#svoz")><span>"12. října"</span>"Svoz bioodpadu"</A><A href=super::site_url("/kalendar") attr:class="text-link">"Kalendář akcí"<Icon name="external"/></A></section></PreviewOnly>};
+    return view! {<PreviewOnly><super::events::HomeEventsSection>
+        <ul class="home-event-list">
+            <li class="home-event"><A href=super::site_url("/kalendar#setkani") attr:class="home-event-link">
+                <time class="home-event-date" datetime="2026-10-10"><span class="home-event-day">"10"</span><span class="home-event-month">"říjen"</span><span class="sr-only">"2026"</span></time>
+                <span class="home-event-copy"><span class="home-event-title">"Podzimní setkání sousedů"</span><span class="home-event-meta">"Místo a čas budou upřesněny"</span></span>
+            </A></li>
+            <li class="home-event"><A href=super::site_url("/kalendar#svoz") attr:class="home-event-link">
+                <time class="home-event-date" datetime="2026-10-12"><span class="home-event-day">"12"</span><span class="home-event-month">"říjen"</span><span class="sr-only">"2026"</span></time>
+                <span class="home-event-copy"><span class="home-event-title">"Svoz bioodpadu"</span><span class="home-event-meta">"Podrobnosti poskytne obecní úřad"</span></span>
+            </A></li>
+        </ul>
+        <p class="home-events-note">"Události a termíny jsou pouze ilustrační."</p>
+    </super::events::HomeEventsSection></PreviewOnly>};
     #[cfg(not(feature = "demo"))]
     view! {<super::events::UpcomingEvents/>}
 }

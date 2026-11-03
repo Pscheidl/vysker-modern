@@ -160,7 +160,7 @@ test('fortnightly collection keeps its first date and shows its next occurrence 
   await expect(row.locator('.event-recurrence')).toContainText('každých 14 dní')
   await expect(row.getByRole('link', { name: `Přidat do kalendáře: ${title}`, exact: true })).toHaveAttribute('title', /celé řady/)
   await page.goto('/')
-  const homeEvent = page.locator(`.events-strip a[href="/kalendar/${id}"]`)
+  const homeEvent = page.locator(`.home-events a[href="/kalendar/${id}"]`)
   await expect(homeEvent.locator('time')).toHaveAttribute('datetime', next)
   await expect(homeEvent).toContainText('každých 14 dní')
   await page.goto(`/kalendar/${id}`)

@@ -5,8 +5,8 @@ use super::{
     site_url,
 };
 use crate::events::{
-    EVENT_CATEGORIES, EVENT_PAGE_SIZE, Event, category_label, load_calendar_url, load_event,
-    load_events,
+    EVENT_CATEGORIES, EVENT_PAGE_SIZE, Event, category_label, date_only_label, load_calendar_url,
+    load_event, load_events,
 };
 use leptos::prelude::*;
 use leptos_meta::Title;
@@ -393,20 +393,76 @@ pub fn EventDetail() -> impl IntoView {
 }
 
 #[component]
+pub(super) fn HomeEventsSection(children: Children) -> impl IntoView {
+    view! {<section class="home-events" aria-labelledby="upcoming-events-title">
+        <div class="home-events-heading">
+            <h2 id="upcoming-events-title">"Nejbližší akce"</h2>
+            <A href=site_url("/kalendar") attr:class="home-events-link">"Celý kalendář"<Icon name="arrow"/></A>
+        </div>
+        {children()}
+    </section>}
+}
+
+#[component]
+fn HomeEvent(event: Event) -> impl IntoView {
+    let href = site_url(&event.href());
+    let date = time::OffsetDateTime::parse(
+        event.display_start(),
+        &time::format_description::well_known::Rfc3339,
+    )
+    .ok();
+    let date_label = format!("{}, ", date_only_label(event.display_start()));
+    let datetime = if event.start_time_known && !event.all_day {
+        event.display_start().to_owned()
+    } else {
+        event.display_start().chars().take(10).collect::<String>()
+    };
+    let time_label = if event.all_day {
+        "Celý den".into()
+    } else if event.start_time_known {
+        date.map(|date| format!("{:02}:{:02}", date.hour(), date.minute()))
+            .unwrap_or_else(|| "Čas neuveden".into())
+    } else {
+        "Čas neuveden".into()
+    };
+    let recurrence = event.recurrence_label();
+    view! {<li class="home-event" class:is-cancelled=event.cancelled>
+        <A href attr:class="home-event-link">
+            {date.map(|date|view!{<div class="home-event-date" aria-hidden="true">
+                <strong class="home-event-day">{date.day()}</strong>
+                <span class="home-event-month">{EVENT_MONTH_NAMES[usize::from(u8::from(date.month())) - 1]}</span>
+            </div>})}
+            <div class="home-event-copy">
+                {event.cancelled.then(||view!{<span class="status-badge warning">"Zrušeno"</span>})}
+                <h3 class="home-event-title">{event.title}</h3>
+                <div class="home-event-meta">
+                    <time class="home-event-time" datetime=datetime><span class="sr-only">{date_label}</span>{time_label}</time>
+                    {(!event.location.trim().is_empty()).then(||view!{<span class="home-event-location">{event.location}</span>})}
+                </div>
+                {recurrence.map(|label|view!{<p class="home-event-recurrence">{label}</p>})}
+            </div>
+        </A>
+    </li>}
+}
+
+#[component]
+pub(super) fn HomeEventsList(events: Vec<Event>) -> impl IntoView {
+    if events.is_empty() {
+        return view! {<p class="home-events-empty">"Nejsou zveřejněné žádné nadcházející akce."</p>}.into_any();
+    }
+    view! {<ul class="home-event-list">
+        {events.into_iter().take(3).map(|event|view!{<HomeEvent event/>}).collect_view()}
+    </ul>}
+    .into_any()
+}
+
+#[component]
 pub fn UpcomingEvents() -> impl IntoView {
     let events = Resource::new(|| (), |_| load_events(false, 3, 0));
-    view! {<section class="events-strip" aria-labelledby="upcoming-events-title"><h2 id="upcoming-events-title">"Dění v obci"</h2>
+    view! {<HomeEventsSection>
         <Suspense fallback=EventLoading>{move ||events.get().map(|result|match result {
             Err(_)=>view!{<p role="alert">"Akce se nepodařilo načíst. "<button class="text-link" type="button" on:click=move |_|events.refetch()>"Zkusit znovu"</button></p>}.into_any(),
-            Ok(items) if items.is_empty()=>view!{<p>"Nejsou zveřejněné žádné nadcházející akce."</p>}.into_any(),
-            Ok(items)=>items.into_iter().map(|event|{
-                let href=site_url(&event.href());
-                let date=event.start_label();
-                let datetime=if event.start_time_known && !event.all_day {event.display_start().to_owned()} else {event.display_start().chars().take(10).collect()};
-                let recurrence=event.repeat_every_14_days.then_some(" · každých 14 dní");
-                view!{<A href><span><time datetime=datetime>{date}</time></span>{event.cancelled.then(||view!{<strong class="status-badge warning">"Zrušeno"</strong>})}{event.title}{recurrence}</A>}
-            }).collect_view().into_any(),
+            Ok(events)=>view!{<HomeEventsList events/>}.into_any(),
         })}</Suspense>
-        <A href=site_url("/kalendar") attr:class="text-link">"Kalendář akcí"<Icon name="external"/></A>
-    </section>}
+    </HomeEventsSection>}
 }
