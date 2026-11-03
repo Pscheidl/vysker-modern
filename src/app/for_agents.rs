@@ -11,6 +11,9 @@ pub const GUIDE: &str = include_str!("../../docs/for-agents.md");
 #[component]
 pub fn ForAgents() -> impl IntoView {
     let info = expect_context::<super::SiteResource>();
+    // These links return text and JSON documents, so let the browser load them.
+    let guide = crate::markdown::render(GUIDE.strip_prefix("# For agents\n").unwrap_or(GUIDE))
+        .replace("<a ", "<a rel=\"external\" ");
     view! {
         <Title text="For agents · Vyskeř"/>
         <Meta name="description" content="Public reading tools, MCP connection details and source guidance for the Vyskeř website."/>
@@ -27,7 +30,7 @@ pub fn ForAgents() -> impl IntoView {
                     Err(_)=>view!{<p role="status">"The operating mode is currently unavailable. Check the machine-readable guide before making assumptions about publication."</p>}.into_any()
                 })}
             </Suspense>
-            <div class="markdown-content" inner_html=crate::markdown::render(GUIDE.strip_prefix("# For agents\n").unwrap_or(GUIDE))></div>
+            <div class="markdown-content" inner_html=guide></div>
         </article>
     }
 }
