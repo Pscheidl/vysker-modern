@@ -3,10 +3,41 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
+
+
+BOOKWORM_INTERPRETER = '/lib64/ld-linux-x86-64.so.2'
+
+
+def validate_binary(binary):
+    """Reject binaries whose loader or runtime paths require the build host."""
+    if not binary.is_file():
+        raise ValueError(f'Build the release binary first: {binary.name}')
+    environment = dict(os.environ, LC_ALL='C')
+
+    def readelf(option):
+        return subprocess.check_output(['readelf', '--wide', option, binary],
+                                       text=True, env=environment)
+
+    headers = readelf('--program-headers')
+    interpreters = re.findall(r'\[Requesting program interpreter:\s*([^\]\r\n]+)\]', headers)
+    if interpreters != [BOOKWORM_INTERPRETER]:
+        raise ValueError(f'{binary.name} must use the Debian bookworm ELF interpreter {BOOKWORM_INTERPRETER}')
+    dynamic = readelf('--dynamic')
+    # Check runtime lookup paths and absolute library names, not harmless Nix
+    # source/debug strings that may remain embedded in the executable.
+    entries = re.findall(r'\((?:RPATH|RUNPATH|NEEDED|FILTER|AUXILIARY|AUDIT|DEPAUDIT)\)[^\n\[]*\[([^\]\n]*)\]', dynamic)
+    if any(path == '/nix' or path.startswith('/nix/')
+           for entry in entries for path in entry.split(':')):
+        raise ValueError(f'{binary.name} has a Nix runtime dependency or search path')
+    versions = readelf('--version-info')
+    required = {tuple(map(int, version.split('.'))) for version in re.findall(r'GLIBC_([0-9.]+)', versions)}
+    if required and max(required) > (2, 36):
+        raise ValueError(f'{binary.name} needs newer glibc than the Debian bookworm runtime')
 
 
 def validate_frontend(root):
@@ -41,16 +72,11 @@ def main():
     if output.is_relative_to(root):
         parser.error('Use an output directory outside the checkout')
     binaries = [root / 'target/release' / name for name in ('obecni-web', 'obec-admin', 'attachment-index')]
-    for binary in binaries:
-        if not binary.is_file():
-            parser.error(f'Build the release binary first: {binary.name}')
-        versions = subprocess.check_output(['readelf', '--version-info', binary], text=True)
-        required = {tuple(map(int, v.split('.'))) for v in re.findall(r'GLIBC_([0-9.]+)', versions)}
-        if required and max(required) > (2, 36):
-            parser.error(f'{binary.name} needs newer glibc than the Debian bookworm runtime')
     try:
+        for binary in binaries:
+            validate_binary(binary)
         hash_file = validate_frontend(root)
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.error(str(error))
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
     for binary in binaries:
