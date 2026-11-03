@@ -37,10 +37,17 @@ class ReleasePackaging(unittest.TestCase):
             (source / 'target/site/pkg' / f'obecni-web.{digest}.{kind}').write_bytes(b'frontend fixture')
         return source
 
-    def package_source(self, source, context):
+    def package_source(self, source, context, binary_metadata=None):
         def build_metadata(command, **_):
             if command[0] == 'readelf':
-                return 'GLIBC_2.36'
+                binary = Path(command[-1]).name
+                option = command[-2]
+                defaults = {
+                    '--program-headers': '[Requesting program interpreter: /lib64/ld-linux-x86-64.so.2]',
+                    '--dynamic': '0x0000000000000001 (NEEDED) Shared library: [libc.so.6]',
+                    '--version-info': 'GLIBC_2.36',
+                }
+                return (binary_metadata or {}).get((binary, option), defaults[option])
             if command[:3] == ['git', 'rev-parse', 'HEAD']:
                 return '0' * 40 + '\n'
             if command[:3] == ['git', 'status', '--porcelain']:
@@ -54,6 +61,51 @@ class ReleasePackaging(unittest.TestCase):
                 patch.object(package.subprocess, 'check_output', side_effect=build_metadata), \
                 patch('builtins.print'):
             package.main()
+
+    def test_bundle_rejects_nix_interpreter_even_with_bookworm_glibc_symbols(self):
+        for binary in ('obecni-web', 'obec-admin', 'attachment-index'):
+            with self.subTest(binary=binary), tempfile.TemporaryDirectory() as temporary:
+                temporary = Path(temporary)
+                source = self.create_source(temporary)
+                context = temporary / 'package'
+                metadata = {(binary, '--program-headers'):
+                            '[Requesting program interpreter: /nix/store/build-glibc-2.42/lib/ld-linux-x86-64.so.2]'}
+                with patch('sys.stderr', new_callable=io.StringIO) as stderr, self.assertRaises(SystemExit):
+                    self.package_source(source, context, metadata)
+                self.assertIn(binary, stderr.getvalue())
+                self.assertIn('Debian bookworm ELF interpreter', stderr.getvalue())
+                self.assertFalse(context.exists())
+
+    def test_bundle_rejects_nix_runtime_paths_after_interpreter_is_fixed(self):
+        for entry in (
+            '(RPATH) Library rpath: [/usr/lib:/nix/store/compiler/lib]',
+            '(RUNPATH) Library runpath: [/nix/store/compiler/lib:$ORIGIN]',
+            '(NEEDED) Shared library: [/nix/store/glibc/lib/libc.so.6]',
+            '(AUDIT) Audit library: [/nix/store/audit/libaudit.so]',
+        ):
+            with self.subTest(entry=entry), tempfile.TemporaryDirectory() as temporary:
+                temporary = Path(temporary)
+                source = self.create_source(temporary)
+                context = temporary / 'package'
+                metadata = {('obecni-web', '--dynamic'): entry}
+                with patch('sys.stderr', new_callable=io.StringIO) as stderr, self.assertRaises(SystemExit):
+                    self.package_source(source, context, metadata)
+                self.assertIn('Nix runtime dependency or search path', stderr.getvalue())
+                self.assertFalse(context.exists())
+
+    def test_bundle_rejects_missing_interpreter_and_newer_glibc(self):
+        for option, value, message in (
+            ('--program-headers', 'There are no program headers in this file.', 'ELF interpreter'),
+            ('--version-info', 'GLIBC_2.36 GLIBC_2.42', 'newer glibc'),
+        ):
+            with self.subTest(option=option), tempfile.TemporaryDirectory() as temporary:
+                temporary = Path(temporary)
+                source = self.create_source(temporary)
+                context = temporary / 'package'
+                with patch('sys.stderr', new_callable=io.StringIO) as stderr, self.assertRaises(SystemExit):
+                    self.package_source(source, context, {('attachment-index', option): value})
+                self.assertIn(message, stderr.getvalue())
+                self.assertFalse(context.exists())
 
     def assert_runtime_imports(self, context):
         # Run outside the checkout so a missing packaged helper cannot be found
