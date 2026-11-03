@@ -51,6 +51,12 @@ otevřít jako text UTF-8 v nové kartě nebo stáhnout jako soubor TXT, bez Jav
 - Náhled: `GET /api/v1/attachments/{id}/text`
 - Stažení: `GET /api/v1/attachments/{id}/text/download`
 
+Původní příloha je v detailu vždy první, s výrazným tlačítkem „Stáhnout původní
+přílohu“. Stejný soubor stáhne i odkaz v názvu. Pod oddělovací čarou následuje
+samostatná část „Přepis textu“ s odkazy „Zobrazit přepis textu“ a „Stáhnout
+přepis textu“. Na mobilu jsou hlavní tlačítko a oba odkazy přepisu pod sebou,
+s dotykovou plochou vysokou nejméně 48 px.
+
 Přepis obsahuje původní název souboru, odkaz na nadřazený dokument a originál,
 všechny stránky nebo části v původním pořadí a upozornění, pokud bylo použito
 OCR. Text XML nebo HTML uvnitř přílohy se zobrazuje doslova. Přepis se nesnaží

@@ -1137,5 +1137,35 @@
 .rental-invoice-missing{padding:12px 14px;border-radius:9px;background:var(--warning-bg);color:var(--warning);line-height:1.6}
 
 .site-result-attachment{position:relative;z-index:1;overflow-wrap:anywhere}.site-result-attachment a{text-decoration:underline;text-underline-offset:3px}
-.attachment-index-progress{padding:24px;margin-block:24px}.attachment-index-progress .admin-panel-heading{padding:0;margin-bottom:18px;gap:18px;align-items:flex-start}.attachment-index-progress .admin-panel-heading .button{flex-shrink:0}.attachment-index-summary{font-weight:550;margin:0 0 10px}.attachment-index-progress progress{display:block;width:100%;height:12px;border:0;border-radius:6px;overflow:hidden;appearance:none;background:var(--soft);accent-color:var(--accent)}.attachment-index-progress progress::-webkit-progress-bar{background:var(--soft);border-radius:6px}.attachment-index-progress progress::-webkit-progress-value{background:var(--accent);border-radius:6px}.attachment-index-progress progress::-moz-progress-bar{background:var(--accent);border-radius:6px}.attachment-index-counts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;margin:18px 0}.attachment-index-counts dt{font-size:12px;color:var(--muted)}.attachment-index-counts dd{font-size:24px;font-weight:550;margin:4px 0 0}.attachment-index-current,.attachment-index-failures{overflow-wrap:anywhere}.attachment-index-current{font-size:14px;margin:12px 0}.attachment-index-failures{border-top:1px solid var(--line);padding-top:18px;margin-top:18px}.attachment-index-failures h3{font-size:15px}.attachment-index-failures ul{margin:12px 0;padding-left:20px}.attachment-index-failures li+li{margin-top:8px}.attachment-text-links{display:flex;flex-wrap:wrap;gap:8px 20px;margin-top:10px;font-size:13px}.attachment-text-links a{text-decoration:underline;text-underline-offset:3px;color:var(--accent)}.attachment-text-note{font-size:14px;color:var(--muted);line-height:1.65}.attachment-content{min-width:0;overflow-wrap:anywhere}
-@media(max-width:600px){.attachment-index-progress{padding:18px}.attachment-index-progress .admin-panel-heading{flex-wrap:wrap}.attachment-index-counts{grid-template-columns:repeat(2,minmax(0,1fr))}.attachment-text-links{gap:8px 14px}.attachment .attachment-content{flex-basis:calc(100% - 44px)}.attachments .attachment{flex-wrap:wrap}.attachments .attachment>.text-link{margin-left:44px}}
+.attachment-index-progress{padding:24px;margin-block:24px}.attachment-index-progress .admin-panel-heading{padding:0;margin-bottom:18px;gap:18px;align-items:flex-start}.attachment-index-progress .admin-panel-heading .button{flex-shrink:0}.attachment-index-summary{font-weight:550;margin:0 0 10px}.attachment-index-progress progress{display:block;width:100%;height:12px;border:0;border-radius:6px;overflow:hidden;appearance:none;background:var(--soft);accent-color:var(--accent)}.attachment-index-progress progress::-webkit-progress-bar{background:var(--soft);border-radius:6px}.attachment-index-progress progress::-webkit-progress-value{background:var(--accent);border-radius:6px}.attachment-index-progress progress::-moz-progress-bar{background:var(--accent);border-radius:6px}.attachment-index-counts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;margin:18px 0}.attachment-index-counts dt{font-size:12px;color:var(--muted)}.attachment-index-counts dd{font-size:24px;font-weight:550;margin:4px 0 0}.attachment-index-current,.attachment-index-failures{overflow-wrap:anywhere}.attachment-index-current{font-size:14px;margin:12px 0}.attachment-index-failures{border-top:1px solid var(--line);padding-top:18px;margin-top:18px}.attachment-index-failures h3{font-size:15px}.attachment-index-failures ul{margin:12px 0;padding-left:20px}.attachment-index-failures li+li{margin-top:8px}
+@media(max-width:600px){.attachment-index-progress{padding:18px}.attachment-index-progress .admin-panel-heading{flex-wrap:wrap}.attachment-index-counts{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:600px){.attachments .attachment:not(.attachment-card){flex-wrap:wrap}.attachments .attachment:not(.attachment-card)>div{min-width:0;overflow-wrap:anywhere}.attachments .attachment:not(.attachment-card)>.text-link{margin-left:44px}}
+
+.attachments .attachment-card{display:block;padding:0;margin-top:16px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+.attachment-original{display:grid;grid-template-columns:22px minmax(0,1fr) auto;align-items:center;gap:16px;padding:20px}
+.attachment-original>.icon{color:var(--accent)}
+.attachment-content{min-width:0;overflow-wrap:anywhere}
+.attachment-card .attachment-name{display:block;font-size:16px;font-weight:500;line-height:1.5}
+.attachment-name a{display:inline-flex;align-items:center;min-height:44px;text-decoration:underline;text-decoration-color:var(--border);text-underline-offset:4px}
+.attachment-name a:hover{text-decoration-color:currentColor}
+.attachment-card .attachment-size{font-size:14px;margin-top:4px}
+.attachment-card .attachment-download{display:flex;align-items:center;justify-content:center;gap:10px;min-height:48px;padding:12px 16px;border-radius:8px;background:var(--accent);color:var(--accent-ink);font-size:15px;font-weight:500;line-height:1.5;text-align:center;text-decoration:none}
+.attachment-card .attachment-download:hover{background:var(--accent-hover);color:var(--accent-ink)}
+.attachment-download .icon{width:20px;height:20px}
+.attachment-transcript{padding:16px 20px;border-top:1px solid var(--line);border-radius:0 0 9px 9px;background:var(--soft)}
+.attachment-transcript h3{font-size:15px;line-height:1.5;font-weight:500;letter-spacing:0;margin:0}
+.attachment-card .attachment-text-note{font-size:14px;color:var(--muted);line-height:1.6;margin-top:4px}
+.attachment-text-links{display:flex;flex-wrap:wrap;gap:4px 24px;margin-top:8px;font-size:14px}
+.attachment-text-links a{display:flex;align-items:center;gap:10px;min-height:44px;padding:10px 0;color:var(--muted)}
+.attachment-text-links a>span{text-decoration:underline;text-underline-offset:4px}
+.attachment-text-links a:hover{color:var(--accent)}
+.attachment-text-links .icon{width:18px;height:18px}
+.attachment-text-format{white-space:nowrap}
+@media(max-width:700px){
+  .attachment-original{grid-template-columns:22px minmax(0,1fr);align-items:start;padding:16px;gap:12px}
+  .attachment-original>.icon{margin-top:10px}
+  .attachment-download{grid-column:1/-1;width:100%;min-height:48px}
+  .attachment-transcript{padding:16px}
+  .attachment-text-links{flex-direction:column;align-items:stretch;gap:4px}
+  .attachment-text-links a{min-height:48px}
+}

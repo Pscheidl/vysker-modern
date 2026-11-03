@@ -50,13 +50,32 @@ fn DocumentContent(document: crate::catalog::Document) -> impl IntoView {
         </dl>
         <section class="attachments" aria-labelledby="document-attachments"><h2 id="document-attachments">"Veřejné přílohy"</h2>
             {document.files.is_empty().then(||view!{<p>"Dokument nemá veřejně dostupnou přílohu."</p>})}
-            {document.files.iter().any(|file|file.text_url.is_some()).then(||view!{<p class="attachment-text-note">"Textová verze usnadňuje čtení a kopírování. U skenů může obsahovat chyby rozpoznání."</p>})}
             {document.files.into_iter().map(|file|{
-                let preview_label=format!("Zobrazit text přílohy {} (otevře se v novém okně)",file.name);
-                let download_label=format!("Stáhnout text přílohy {}",file.name);
-                view!{<div class="attachment"><Icon name="paper"/><div class="attachment-content"><strong>{file.name}</strong><p>{file.size}</p>
-                    {file.text_url.map(|url|view!{<div class="attachment-text-links"><a href=url.clone() target="_blank" rel="external noopener noreferrer" aria-label=preview_label>"Zobrazit text"</a><a href=format!("{url}/download") download aria-label=download_label>"Stáhnout text"</a></div>})}
-                </div>{file.url.map(|url|view!{<a class="text-link" href=url download>"Stáhnout"<Icon/></a>})}</div>}
+                let original_label=format!("Stáhnout původní přílohu {}",file.name);
+                let name_label=format!("{} (stáhnout původní přílohu)",file.name);
+                let preview_label=format!("Zobrazit přepis textu přílohy {} (otevře se v novém okně)",file.name);
+                let download_label=format!("Stáhnout přepis textu přílohy {}",file.name);
+                view!{<div class="attachment attachment-card">
+                    <div class="attachment-original">
+                        <Icon name="paper"/>
+                        <div class="attachment-content">
+                            <strong class="attachment-name">{match file.url.clone() {
+                                Some(url)=>view!{<a href=url download aria-label=name_label>{file.name}</a>}.into_any(),
+                                None=>file.name.into_any(),
+                            }}</strong>
+                            <p class="attachment-size">{file.size}</p>
+                        </div>
+                        {file.url.map(|url|view!{<a class="attachment-download" href=url download aria-label=original_label><Icon name="download"/><span>"Stáhnout původní přílohu"</span></a>})}
+                    </div>
+                    {file.text_url.map(|url|view!{<div class="attachment-transcript">
+                        <h3>"Přepis textu"</h3>
+                        <p class="attachment-text-note">"Automatický přepis pro čtení a kopírování. Může obsahovat chyby."</p>
+                        <div class="attachment-text-links">
+                            <a href=url.clone() target="_blank" rel="external noopener noreferrer" aria-label=preview_label><Icon name="external"/><span>"Zobrazit přepis textu"</span></a>
+                            <a href=format!("{url}/download") download aria-label=download_label><Icon name="paper"/><span>"Stáhnout přepis textu"<span class="attachment-text-format">" (.txt)"</span></span></a>
+                        </div>
+                    </div>})}
+                </div>}
             }).collect_view()}
         </section>
         {has_postings.then(||view!{<section class="document-postings" aria-labelledby="posting-history-title"><h2 id="posting-history-title">"Vyvěšení na úřední desce"</h2><ol class="posting-history">{document.postings.into_iter().map(|posting|{

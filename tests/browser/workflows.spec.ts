@@ -209,7 +209,7 @@ test('one document editor publishes multiple files and expiry remains in the ful
   for (const file of files) {
     const attachment = publicPage.locator('.attachment').filter({ has: publicPage.getByText(file.name, { exact: true }) })
     const downloadPromise = publicPage.waitForEvent('download')
-    await attachment.getByRole('link', { name: 'Stáhnout', exact: true }).click()
+    await attachment.getByRole('link', { name: `Stáhnout původní přílohu ${file.name}`, exact: true }).click()
     const download = await downloadPromise
     expect(download.suggestedFilename()).toBe(file.name)
     expect(readFileSync((await download.path())!)).toEqual(file.buffer)
